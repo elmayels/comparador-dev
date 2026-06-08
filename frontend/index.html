@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Quantia AI | Comparador</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b1020;--panel:#121a30;--panel-2:#17213d;--line:#293657;--line-2:#39507e;
+  --text:#eaf1ff;--muted:#9eb0d6;--soft:#7e92ba;--blue:#42c7ff;--green:#37d67a;--red:#ff7575;--yellow:#ffc857;
+}
+*{box-sizing:border-box} html,body{margin:0;padding:0} body{font-family:Inter,system-ui,sans-serif;background:linear-gradient(180deg,#09101d,#0f1730 30%,#0b1020);color:var(--text)}
+a{color:inherit}
+.wrap{max-width:1450px;margin:0 auto;padding:24px}
+.topbar,.hero,.grid,.panel{border:1px solid rgba(255,255,255,.08);background:rgba(18,26,48,.82);backdrop-filter:blur(8px);box-shadow:0 10px 30px rgba(0,0,0,.22)}
+.topbar{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-radius:18px;margin-bottom:18px}
+.brand{display:flex;gap:14px;align-items:center}.mark{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#42c7ff,#7d8cff);display:grid;place-items:center;font-weight:800;color:#07111d}
+.brand h1{margin:0;font-size:17px}.brand p{margin:2px 0 0;color:var(--muted);font-size:12px}
+.pills{display:flex;gap:10px;flex-wrap:wrap}.pill{font-size:12px;padding:8px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.04);color:var(--muted)}
+.hero{padding:28px;border-radius:22px;margin-bottom:18px}.hero h2{margin:0 0 10px;font-size:38px;line-height:1.05;letter-spacing:-.03em}.hero p{margin:0;color:var(--muted);max-width:880px;line-height:1.65}
+.grid{display:grid;grid-template-columns:410px 1fr;gap:0;border-radius:22px;overflow:hidden}.sidebar{padding:20px;border-right:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;gap:16px}.content{padding:20px;display:flex;flex-direction:column;gap:16px}
+.panel{border-radius:18px;padding:18px}.panel h3{margin:0 0 6px;font-size:16px}.sub{margin:0 0 14px;color:var(--muted);font-size:13px;line-height:1.55}
+.drop{border:1.5px dashed var(--line-2);background:rgba(255,255,255,.03);border-radius:16px;padding:18px;text-align:center;cursor:pointer;transition:.18s;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:96px;overflow:hidden}.drop:hover{border-color:var(--blue);background:rgba(66,199,255,.06)}.drop.selected{border-color:#37d67a;background:rgba(55,214,122,.10);box-shadow:0 0 0 1px rgba(55,214,122,.15) inset}
+.drop strong,.drop span{display:block;max-width:100%;line-height:1.35;overflow-wrap:anywhere}.drop strong{margin-bottom:0}.drop span{font-size:12px;color:var(--muted)}
+.hidden{display:none}
+.file-list,.provider-list,.stat-grid,.benchmark-grid,.insight-list{display:flex;flex-direction:column;gap:10px}
+.file-item,.provider-item,.bench-item,.insight-item{padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03)}
+.file-item{display:flex;justify-content:space-between;gap:12px;align-items:center}.file-name{font-size:13px;font-weight:600}.file-meta{font-size:11px;color:var(--soft);margin-top:4px}.file-actions button{border:none;background:transparent;color:#ff9a9a;font-size:18px;cursor:pointer}
+.provider-item{display:grid;grid-template-columns:28px 1fr;gap:10px;align-items:center}.provider-badge{width:28px;height:28px;border-radius:999px;display:grid;place-items:center;font-size:12px;font-weight:700;color:#08111f}.provider-item input,.form-grid input,.form-grid textarea,.admin-input{width:100%;padding:11px 12px;border-radius:12px;border:1px solid var(--line);background:#0d1427;color:var(--text);font:inherit}
+.form-grid{display:grid;gap:10px}.label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--soft);margin-bottom:6px;display:block}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap}.btn{border:none;border-radius:14px;padding:13px 16px;font:inherit;font-weight:700;cursor:pointer}.btn-primary{background:linear-gradient(135deg,#42c7ff,#66f5cf);color:#07111d}.btn-secondary{background:rgba(255,255,255,.06);color:var(--text);border:1px solid rgba(255,255,255,.08)}.btn:disabled{opacity:.45;cursor:not-allowed}
+.banner{padding:13px 14px;border-radius:14px;font-size:13px;line-height:1.55;border:1px solid transparent}.banner.info{background:rgba(66,199,255,.08);color:#9de8ff;border-color:rgba(66,199,255,.18)}.banner.success{background:rgba(55,214,122,.08);color:#9bf0be;border-color:rgba(55,214,122,.18)}.banner.error{background:rgba(255,117,117,.08);color:#ffb2b2;border-color:rgba(255,117,117,.18)}
+.section-title{display:flex;justify-content:space-between;align-items:end;gap:12px}.section-title h3{margin:0}.section-title p{margin:4px 0 0;color:var(--muted);font-size:13px}.mini{font-size:12px;color:var(--muted)}
+.stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.stat-card{padding:16px;border-radius:16px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03)}.stat-card label{display:block;color:var(--soft);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}.stat-card strong{font-size:28px;line-height:1;display:block}.stat-card span{display:block;color:var(--muted);font-size:12px;margin-top:8px;line-height:1.45}
+.benchmark-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.bench-item label{display:block;font-size:11px;color:var(--soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}.bench-item strong{display:block;font-size:14px}
+.table-shell{border:1px solid rgba(255,255,255,.08);border-radius:18px;overflow:hidden;background:rgba(7,12,24,.45)}.table-tools{display:flex;gap:10px;justify-content:space-between;align-items:center;padding:14px;border-bottom:1px solid rgba(255,255,255,.08);flex-wrap:wrap}.table-tools input,.table-tools select{padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:#0d1427;color:var(--text);font:inherit}
+.table-scroll{overflow:auto} table{width:100%;border-collapse:collapse;font-size:13px} th,td{padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top} th{background:#0d1427;color:var(--soft);font-size:11px;text-transform:uppercase;letter-spacing:.08em;position:sticky;top:0}.num{text-align:right;font-variant-numeric:tabular-nums} .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#b9c8e7;font-size:12px}.muted{color:var(--muted)} .tag{display:inline-flex;align-items:center;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:700}
+.tag.ok{background:rgba(66,199,255,.12);color:#9de8ff}.tag.warn{background:rgba(255,200,87,.14);color:#ffd97b}.tag.bad{background:rgba(255,117,117,.14);color:#ffb2b2}.tag.good{background:rgba(55,214,122,.14);color:#9bf0be}
+.rank-table td:first-child{font-weight:600}.empty{padding:38px;text-align:center;color:var(--muted)}
+.login-shell{min-height:100vh;display:grid;place-items:center;padding:24px}.login-card{width:min(440px,100%);padding:28px;border-radius:24px;border:1px solid rgba(255,255,255,.08);background:rgba(18,26,48,.92)}.login-card h2{margin:0 0 8px;font-size:28px}.login-card p{margin:0 0 18px;color:var(--muted);line-height:1.6}.demo{padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.04);border:1px dashed rgba(255,255,255,.08);color:var(--muted);font-size:13px;line-height:1.6;margin-top:14px}
+
+/* Step 14 UI refresh */
+.landing-shell{min-height:100vh;position:relative;overflow:hidden;background:radial-gradient(circle at 18% 16%,rgba(77,216,255,.24),transparent 32%),radial-gradient(circle at 82% 18%,rgba(106,245,207,.16),transparent 28%),linear-gradient(180deg,#07101d 0%,#081426 42%,#070b14 100%)}
+.landing-shell:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:72px 72px;mask-image:linear-gradient(180deg,black,transparent 86%);pointer-events:none}.landing-inner{position:relative;z-index:1;max-width:1240px;margin:0 auto;padding:28px 24px 72px}.landing-nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:70px}.landing-links{display:flex;gap:22px;color:#b8c7e8;font-size:12px;text-transform:uppercase;letter-spacing:.14em}.landing-cta{display:flex;gap:10px;align-items:center}.hero-sale{display:grid;grid-template-columns:1.05fr .95fr;gap:42px;align-items:center;margin-bottom:58px}.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.18em;color:#6af5cf;margin-bottom:18px}.hero-sale h1{font-size:clamp(52px,7.5vw,104px);line-height:.88;margin:0 0 24px;letter-spacing:-.075em}.hero-sale p{font-size:18px;line-height:1.7;color:#b4c2df;margin:0;max-width:650px}.hero-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px}.product-orb{position:relative;min-height:520px;border-radius:36px;border:1px solid rgba(255,255,255,.10);background:linear-gradient(160deg,rgba(255,255,255,.09),rgba(255,255,255,.025));box-shadow:inset 0 0 80px rgba(66,199,255,.08),0 30px 80px rgba(0,0,0,.35);overflow:hidden}.product-orb:before{content:"";position:absolute;width:330px;height:330px;border-radius:999px;left:50%;top:44%;transform:translate(-50%,-50%);background:radial-gradient(circle at 35% 30%,#eaf7ff 0,#72e8ff 20%,#3d7cff 42%,#101a40 66%,transparent 70%);filter:drop-shadow(0 0 60px rgba(66,199,255,.55))}.product-orb:after{content:"";position:absolute;inset:34px;border-radius:28px;border:1px solid rgba(255,255,255,.09)}.floating-card{position:absolute;z-index:2;padding:16px;border-radius:20px;background:rgba(8,14,26,.78);border:1px solid rgba(255,255,255,.11);backdrop-filter:blur(12px);box-shadow:0 18px 45px rgba(0,0,0,.28)}.floating-card strong{display:block;font-size:22px}.floating-card span{display:block;margin-top:6px;color:#a7b7d9;font-size:12px;line-height:1.45}.fc-1{left:28px;bottom:34px}.fc-2{right:26px;top:34px}.fc-3{right:42px;bottom:54px}.landing-band{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:28px}.landing-feature{padding:22px;border-radius:24px;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.035)}.landing-feature label{display:block;color:#72e8ff;font-size:11px;text-transform:uppercase;letter-spacing:.14em;margin-bottom:12px}.landing-feature strong{display:block;font-size:20px;margin-bottom:8px}.landing-feature p{margin:0;color:#aebdda;line-height:1.55;font-size:13px}.login-panel-sale{display:grid;grid-template-columns:1fr 420px;gap:18px;align-items:stretch}.login-copy{padding:28px;border-radius:28px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.09)}.login-copy h2{font-size:34px;line-height:1.04;margin:0 0 12px;letter-spacing:-.04em}.dashboard-focus{display:grid;grid-template-columns:1fr;gap:16px}.provider-score-card,.pmd-card{padding:18px;border-radius:18px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.035)}.provider-score-card{display:grid;grid-template-columns:1fr repeat(4,minmax(110px,auto));gap:14px;align-items:center}.provider-score-card label,.pmd-card label{display:block;font-size:10px;color:var(--soft);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px}.provider-score-card strong{font-size:20px}.metric-value{font-weight:800;font-variant-numeric:tabular-nums}.pmd-card{display:grid;gap:12px}.pmd-title{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.pmd-list{display:grid;gap:8px;margin:0;padding:0;list-style:none}.pmd-list li{color:#c6d4ef;font-size:13px;line-height:1.45}.pmd-list li:before{content:"•";color:#42c7ff;margin-right:8px}.download-focus{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+.grid.input-mode{grid-template-columns:410px}.grid.input-mode .content{display:none}.grid.results-mode{grid-template-columns:1fr}.grid.results-mode .sidebar{display:none}.result-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.dashboard-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap}.decision-card{border-radius:18px;padding:18px;border:1px solid rgba(255,255,255,.09);background:linear-gradient(135deg,rgba(66,199,255,.10),rgba(255,255,255,.035))}.decision-card h3{margin:0 0 8px}.decision-card p{margin:0;color:#c6d4ef;line-height:1.55}.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.chart-card{border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);border-radius:16px;padding:16px}.bar-row{display:grid;grid-template-columns:150px 1fr auto;gap:10px;align-items:center;margin:10px 0}.bar-label{font-size:12px;color:#c6d4ef;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar-track{height:12px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden}.bar-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,#a8d8ff,#c9f2d1)}.bar-value{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.mini-table{width:100%;border-collapse:collapse;font-size:12px}.mini-table th,.mini-table td{padding:10px;border-bottom:1px solid rgba(255,255,255,.08);vertical-align:top}.mini-table th{color:#c6d4ef;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.08em}.chatbox{display:grid;gap:12px}.chat-log{display:grid;gap:10px;max-height:320px;overflow:auto;padding-right:4px}.chat-msg{border-radius:14px;padding:12px 14px;line-height:1.5;font-size:13px}.chat-msg.user{background:rgba(66,199,255,.10);border:1px solid rgba(66,199,255,.22);margin-left:40px}.chat-msg.assistant{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);margin-right:40px}.chat-suggestions{display:flex;gap:8px;flex-wrap:wrap}.chat-suggestions button{border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:8px 10px;cursor:pointer;font-size:12px}.chat-input{display:grid;grid-template-columns:1fr auto;gap:10px}.chat-input textarea{min-height:54px;resize:vertical}
+@media (max-width:900px){.hero-sale,.login-panel-sale{grid-template-columns:1fr}.landing-band{grid-template-columns:1fr}.landing-links{display:none}.product-orb{min-height:420px}.provider-score-card{grid-template-columns:1fr 1fr}}
+
+@media (max-width:1100px){.grid{grid-template-columns:1fr}.sidebar{border-right:none;border-bottom:1px solid rgba(255,255,255,.08)}.stat-grid,.benchmark-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:700px){.wrap{padding:16px}.hero h2{font-size:30px}.stat-grid,.benchmark-grid{grid-template-columns:1fr}.table-tools{align-items:stretch}.table-tools > *{width:100%}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { createApp, computed, reactive } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js'
+
+const AUTH_USER = 'admin'
+const AUTH_PASS = 'quantia2026'
+const API_URL = window.location.origin
+
+window.addEventListener('error', (event) => {
+  console.error('Frontend error:', event.error || event.message)
+})
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Frontend promise rejection:', event.reason)
+})
+
+const app = createApp({
+  setup() {
+    const state = reactive({
+      authed: localStorage.getItem('quantia_demo_auth') === '1',
+      loginUser: '',
+      loginPass: '',
+      loginError: '',
+      files: [],
+      catalogFile: null,
+      officialSummaryFile: null,
+      project: { proyecto: '', cliente: 'Cliente del proyecto', ubicacion: '' },
+      status: { type: 'info', message: '1) Sube el Catálogo / presupuesto base del proyecto para generar Matriz Propuesta IA, o 2) carga cotizaciones para comparar proveedores.' },
+      benchmark: { cargado: false },
+      preview: null,
+      excelBlob: null,
+      loading: false,
+      filters: { search: '', area: 'Todas', status: 'Todos' },
+      pagination: { services: 1, materials: 1, labor: 1, equipment: 1, pageSize: 20 },
+      analysis: { mode: null, jobId: null, completed: false, downloadReady: false },
+      chat: { question: '', loading: false, messages: [] },
+    })
+
+    const benchmarkLoaded = computed(() => !!state.benchmark.cargado)
+    const canGenerate = computed(() => (!!state.catalogFile || state.files.length >= 1) && (!state.loading))
+    const modeLabel = computed(() => {
+      if (state.catalogFile && state.files.length <= 0) return 'Matriz propuesta IA'
+      if (state.files.length <= 0) return 'Sin archivos'
+      if (state.files.length === 1) return '1 proveedor vs benchmark'
+      return `${state.files.length} proveedores + benchmark`
+    })
+    const buttonLabel = computed(() => {
+      if (state.loading) return 'Procesando...'
+      if (state.catalogFile && state.files.length === 0) return 'Generar Matriz Propuesta IA'
+      return 'Generar comparativo'
+    })
+    const providerNames = computed(() => state.files.map((f, i) => f.nombre?.trim() || `Proveedor ${i + 1}`))
+    const areaOptions = computed(() => ['Todas', ...new Set((state.preview?.rows || []).map(r => r.area || 'General'))])
+    const filteredRows = computed(() => {
+      let rows = [...(state.preview?.rows || [])]
+      const q = state.filters.search.trim().toLowerCase()
+      if (q) rows = rows.filter(r => `${r.clave} ${r.descripcion}`.toLowerCase().includes(q))
+      if (state.filters.area !== 'Todas') rows = rows.filter(r => (r.area || 'General') === state.filters.area)
+      if (state.filters.status !== 'Todos') rows = rows.filter(r => r.status === state.filters.status)
+      return rows
+    })
+    const executive = computed(() => {
+      const rows = state.preview?.rows || []
+      const providers = state.preview?.provider_scores || []
+      return {
+        providers: providers.length,
+        concepts: rows.length,
+        overcosts: rows.filter(r => r.status === 'sobrecoste').length,
+        exclusive: rows.filter(r => r.status === 'exclusivo').length,
+        belowRef: rows.filter(r => r.status === 'debajo_referencia').length,
+        topProvider: providers[0]?.nombre || '—',
+      }
+    })
+    const topInsights = computed(() => {
+      const rows = state.preview?.rows || []
+      return rows
+        .filter(r => r.status === 'sobrecoste' || r.status === 'exclusivo' || r.ahorro)
+        .sort((a, b) => (b.ahorro || 0) - (a.ahorro || 0))
+        .slice(0, 12)
+    })
+
+    const providerRanking = computed(() => {
+      const rows = state.preview?.provider_scores || []
+      return rows.map((row, index) => ({
+        ...row,
+        rank: index + 1,
+        total_oferta: row.total_estimado ?? row.total_oferta ?? row.total_proveedor ?? null,
+        total_mercado: row.total_mercado ?? row.mercado_estimado ?? null,
+        diferencia: row.diferencia_total ?? row.diferencia ?? null,
+        desviacion: row.desviacion_total_pct ?? row.desviacion_pct ?? row.delta_pct ?? null,
+      }))
+    })
+
+    const pmdRows = computed(() => {
+      const cards = state.preview?.executive_analysis || []
+      if (cards.length) return cards.map(card => ({
+        proveedor: card.provider_name || card.proveedor || 'Proveedor',
+        ajuste: card.ajuste_global ?? card.desviacion_total_pct ?? null,
+        mercado: card.total_mercado ?? null,
+        drivers: card.drivers || [],
+        indirectos: card.indirectos_alertas || [],
+        texto: card.resumen || card.comentario || null,
+      }))
+      return topInsights.value.slice(0, 6).map(row => ({
+        proveedor: row.ganador || 'Proveedor líder',
+        ajuste: row.delta_pct_neodata ?? row.desviacion_total_pct ?? null,
+        mercado: row.pu_neodata ?? row.total_mercado ?? null,
+        drivers: [{ concepto: row.descripcion, tipo: row.status, impacto: row.ahorro || row.diferencia_total || 0 }],
+        indirectos: [],
+        texto: null,
+      }))
+    })
+
+    const dashboardKpis = computed(() => {
+      const rows = state.preview?.rows || []
+      const providers = providerRanking.value || []
+      if (analysisMode.value === 'proposed_matrix') {
+        return [
+          { label: 'Modo', value: 'Matriz IA', text: 'Presupuesto base desde catálogo.' },
+          { label: 'Archivo listo', value: state.excelBlob ? 'Sí' : '—', text: 'Descarga el Excel técnico.' },
+          { label: 'Catálogo', value: state.catalogFile ? '1' : '—', text: state.catalogFile?.name || 'Sin catálogo.' },
+          { label: 'Referencia', value: 'CD', text: 'Matrices Construdata.' },
+        ]
+      }
+      const best = providers[0]
+      const totals = providers.map(p => Number(p.total_oferta ?? p.total_estimado ?? 0)).filter(n => Number.isFinite(n) && n > 0)
+      const minTotal = totals.length ? Math.min(...totals) : null
+      const maxTotal = totals.length ? Math.max(...totals) : null
+      return [
+        { label: 'Resultado principal', value: best?.nombre || '—', text: best?.dictamen || 'Lectura del análisis unificado.' },
+        { label: providerRanking.value.length > 1 ? 'Total mínimo' : 'Total oferta', value: formatMoney(minTotal), text: providerRanking.value.length > 1 ? 'Menor total comparable detectado.' : 'Total de la cotización analizada.' },
+        { label: 'Ahorro potencial', value: formatMoney(maxTotal != null && minTotal != null ? maxTotal - minTotal : null), text: 'Diferencia entre mayor y menor.' },
+        { label: 'Conceptos', value: rows.length || best?.conceptos || '—', text: 'Conceptos usados en la lectura web.' },
+      ]
+    })
+
+    const providerBars = computed(() => {
+      const rows = providerRanking.value || []
+      const values = rows.map((p, idx) => ({
+        name: p.nombre || `Proveedor ${idx + 1}`,
+        total: Number(p.total_oferta ?? p.total_estimado ?? p.total_comparable ?? 0) || 0,
+        color: ['#b7d9ff','#c7f0d2','#ffe6a7','#ffd1d1','#d8ccff'][idx % 5],
+      })).filter(x => x.total > 0)
+      const max = Math.max(...values.map(v => v.total), 1)
+      return values.map(v => ({ ...v, pct: Math.max(3, (v.total / max) * 100) }))
+    })
+
+    const costMixRows = computed(() => {
+      const breakdown = state.preview?.cost_breakdown || {}
+      const keys = Object.keys(breakdown)
+      if (keys.length) {
+        const pick = (needle) => keys.find(k => k.toUpperCase().includes(needle))
+        const mat = breakdown[pick('MATERIAL') || ''] || {}
+        const mo = breakdown[pick('MANO') || ''] || {}
+        const eq = breakdown[pick('EQUIPO') || ''] || {}
+        const provider = providerRanking.value?.[0]?.nombre || providerNames.value?.[0] || 'Proveedor'
+        const material = Number(mat.contractor || 0)
+        const labor = Number(mo.contractor || 0)
+        const equipment = Number(eq.contractor || 0)
+        const total = material + labor + equipment
+        if (total > 0) return [{ name: provider, material, labor, equipment, total }]
+      }
+      const rows = state.preview?.rows || []
+      const names = providerNames.value.length ? providerNames.value : providerRanking.value.map(p => p.nombre).filter(Boolean)
+      return names.slice(0, 5).map((name, idx) => {
+        let total = 0
+        rows.forEach(r => {
+          const vals = r.proveedores_total || {}
+          const v = Number(vals[name])
+          if (Number.isFinite(v)) total += v
+        })
+        const material = total ? total * (0.45 + (idx % 2) * 0.04) : null
+        const labor = total ? total * (0.40 - (idx % 2) * 0.03) : null
+        const equipment = total ? Math.max(0, total - material - labor) : null
+        return { name, material, labor, equipment, total }
+      }).filter(r => r.total)
+    })
+
+    const criticalRows = computed(() => {
+      const structured = state.preview?.critical_concepts || []
+      if (structured.length) {
+        return structured.map(r => ({
+          code: r.code || r.codigo || '—',
+          desc: r.description || r.desc || '—',
+          provider: r.provider || r.proveedor || '—',
+          impact: r.impact ?? r.difference_amount ?? null,
+          risk: r.risk || r.riesgo || 'Revisar',
+          action: r.action || r.recommendation || 'Validar alcance y referencia en Excel.'
+        })).slice(0, 8)
+      }
+      const rows = state.preview?.rows || []
+      return rows.map(r => ({
+        code: r.clave || r.codigo || '—',
+        desc: r.descripcion || '—',
+        provider: r.ganador || (r.ganadores || [])[0] || '—',
+        impact: r.ahorro ?? r.diferencia_total ?? null,
+        risk: r.riesgo || r.status || 'Revisar',
+        action: r.ahorro ? 'Revisar diferencia entre proveedores.' : 'Validar alcance y referencia en Excel.'
+      })).filter(r => r.impact || String(r.risk).toLowerCase().includes('alto') || String(r.risk).toLowerCase().includes('sin'))
+        .sort((a,b) => Math.abs(Number(b.impact || 0)) - Math.abs(Number(a.impact || 0))).slice(0, 6)
+    })
+
+    const suggestedQuestions = computed(() => {
+      if (analysisMode.value === 'multi_provider') return ['¿Qué proveedor tiene mejor balance?', '¿Qué conceptos debo negociar primero?', '¿Dónde está el mayor riesgo de mano de obra?', '¿Qué diferencias explican el ahorro potencial?']
+      if (analysisMode.value === 'single_provider') return ['¿Por qué la cotización está arriba de referencia?', '¿Qué conceptos debo revisar primero?', '¿La diferencia viene de materiales o mano de obra?', '¿Qué debo pedirle al contratista?']
+      return ['¿Qué servicios quedaron sin matriz propuesta?', '¿Qué conceptos requieren revisión?', '¿Qué tan confiable es la matriz propuesta?', '¿Qué debo validar antes de usar el presupuesto?']
+    })
+
+    const hasResults = computed(() => !!(state.preview && ((state.preview.rows || []).length || (state.preview.provider_scores || []).length)))
+    const resultReady = computed(() => !!state.excelBlob || hasResults.value || state.analysis.completed)
+    const analysisMode = computed(() => {
+      if (state.analysis.mode) return state.analysis.mode
+      if (state.catalogFile && state.files.length === 0) return 'proposed_matrix'
+      if (state.files.length > 1) return 'multi_provider'
+      if (state.files.length === 1) return 'single_provider'
+      return 'idle'
+    })
+    const analysisModeLabel = computed(() => {
+      if (analysisMode.value === 'proposed_matrix') return 'Presupuesto propuesto IA'
+      if (analysisMode.value === 'multi_provider') return 'Análisis de cotizaciones'
+      if (analysisMode.value === 'single_provider') return 'Análisis de cotización'
+      return 'Sin análisis'
+    })
+    const marketRows = computed(() => {
+      const rows = state.preview?.rows || []
+      return rows
+        .filter(r => r.materiales_benchmark_resumen || r.materiales_benchmark_matches?.length)
+        .map(r => {
+          const resumen = r.materiales_benchmark_resumen || {}
+          return {
+            clave: r.clave,
+            descripcion: r.descripcion,
+            proveedor: r.ganador || '—',
+            comparados: resumen.comparados ?? (r.materiales_benchmark_matches?.length || 0),
+            con_match: resumen.con_match ?? 0,
+            sin_match: resumen.sin_match ?? 0,
+            score_promedio: resumen.score_promedio ?? null,
+          }
+        })
+        .sort((a, b) => (b.con_match - a.con_match) || ((b.score_promedio || 0) - (a.score_promedio || 0)))
+        .slice(0, 20)
+    })
+
+    const laborRows = computed(() => {
+      const rows = state.preview?.rows || []
+      return rows
+        .filter(r => r.mano_obra_benchmark_resumen?.comparados)
+        .map(r => {
+          const resumen = r.mano_obra_benchmark_resumen || {}
+          return {
+            clave: r.clave,
+            descripcion: r.descripcion,
+            proveedor: r.ganador || '—',
+            comparados: resumen.comparados || 0,
+            en_rango: resumen.en_rango || 0,
+            arriba: resumen.arriba || 0,
+            muy_arriba: resumen.muy_arriba || 0,
+            delta_promedio: resumen.delta_promedio ?? null,
+          }
+        })
+        .sort((a,b) => (b.muy_arriba - a.muy_arriba) || ((b.delta_promedio || 0) - (a.delta_promedio || 0)))
+    })
+
+    const equipmentRows = computed(() => {
+      const rows = state.preview?.rows || []
+      return rows
+        .filter(r => r.equipo_benchmark_resumen?.comparados || r.equipo_benchmark_matches?.length)
+        .map(r => {
+          const resumen = r.equipo_benchmark_resumen || {}
+          return {
+            clave: r.clave,
+            descripcion: r.descripcion,
+            proveedor: r.ganador || '—',
+            comparados: resumen.comparados || 0,
+            con_match: resumen.con_match || 0,
+            sin_match: resumen.sin_match || 0,
+            criticos: resumen.criticos || 0,
+            delta_promedio: resumen.delta_promedio ?? null,
+          }
+        })
+        .sort((a,b) => (b.criticos - a.criticos) || ((b.delta_promedio || 0) - (a.delta_promedio || 0)))
+    })
+
+    const executiveCards = computed(() => (state.preview?.executive_analysis || []).slice(0, 3))
+    const pagedServices = computed(() => {
+      const size = state.pagination.pageSize || 20
+      const start = (state.pagination.services - 1) * size
+      return filteredRows.value.slice(start, start + size)
+    })
+    const pagedMaterials = computed(() => {
+      const size = state.pagination.pageSize || 20
+      const start = (state.pagination.materials - 1) * size
+      return marketRows.value.slice(start, start + size)
+    })
+    const pagedLabor = computed(() => {
+      const size = state.pagination.pageSize || 20
+      const start = (state.pagination.labor - 1) * size
+      return laborRows.value.slice(start, start + size)
+    })
+    const pagedEquipment = computed(() => {
+      const size = state.pagination.pageSize || 20
+      const start = (state.pagination.equipment - 1) * size
+      return equipmentRows.value.slice(start, start + size)
+    })
+    const servicePages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / (state.pagination.pageSize || 20))))
+    const materialPages = computed(() => Math.max(1, Math.ceil(marketRows.value.length / (state.pagination.pageSize || 20))))
+    const laborPages = computed(() => Math.max(1, Math.ceil(laborRows.value.length / (state.pagination.pageSize || 20))))
+    const equipmentPages = computed(() => Math.max(1, Math.ceil(equipmentRows.value.length / (state.pagination.pageSize || 20))))
+
+    async function refreshBenchmark() {
+      try {
+        const res = await fetch(`${API_URL}/benchmark/status`)
+        state.benchmark = await res.json()
+      } catch {
+        state.benchmark = { cargado: false, mensaje: 'No se pudo consultar el benchmark.' }
+      }
+    }
+
+    function login() {
+      if (state.loginUser.trim() === AUTH_USER && state.loginPass.trim() === AUTH_PASS) {
+        localStorage.setItem('quantia_demo_auth', '1')
+        state.authed = true
+        state.loginError = ''
+        return
+      }
+      state.loginError = 'Credenciales inválidas.'
+    }
+
+    function logout() {
+      localStorage.removeItem('quantia_demo_auth')
+      state.authed = false
+    }
+
+    function addFiles(list) {
+      const valid = [...list].filter(f => /\.(xlsx|xls)$/i.test(f.name))
+      if (!valid.length) {
+        state.status = { type: 'error', message: 'Solo se aceptan archivos Excel (.xlsx o .xls).' }
+        return
+      }
+      const merged = [...state.files]
+      for (const f of valid) {
+        if (merged.length >= 5) break
+        merged.push({ raw: f, resumen: null, nombre: f.name.replace(/\.(xlsx|xls)$/i, '').slice(0, 40) })
+      }
+      state.files = merged
+      state.status = { type: 'info', message: `Listo para procesar. Modo actual: ${state.files.length === 1 ? '1 proveedor vs benchmark' : state.files.length + ' proveedores'}.` }
+    }
+
+    function removeFile(index) { state.files.splice(index, 1) }
+    function setCatalog(file) { if (file) state.catalogFile = file }
+    function setOfficialSummary(file) {
+      if (file) {
+        state.officialSummaryFile = file
+        state.status = { type: 'success', message: `Resumen PU del proveedor cargado: ${file.name}. Se usará como base de cantidades para todos los proveedores.` }
+      }
+    }
+    function removeOfficialSummary() {
+      state.officialSummaryFile = null
+      state.status = { type: 'info', message: 'Resumen PU del proveedor removido. Se usará el resumen individual de cada proveedor si está cargado.' }
+    }
+    function setResumenFile(index, file) {
+      if (file && state.files[index]) {
+        state.files[index].resumen = file
+        state.status = { type: 'success', message: `Resumen PU cargado para ${state.files[index].nombre || ('Proveedor ' + (index + 1))}: ${file.name}` }
+      }
+    }
+    function removeResumenFile(index) {
+      if (state.files[index]) {
+        state.files[index].resumen = null
+        state.status = { type: 'info', message: `Resumen PU removido para ${state.files[index].nombre || ('Proveedor ' + (index + 1))}.` }
+      }
+    }
+
+    function setPage(section, delta) {
+      const key = section
+      const pages = key === 'services'
+        ? servicePages.value
+        : (key === 'materials'
+            ? materialPages.value
+            : (key === 'labor' ? laborPages.value : equipmentPages.value))
+      state.pagination[key] = Math.min(pages, Math.max(1, state.pagination[key] + delta))
+    }
+
+    function formatMoney(v) {
+      if (v == null || Number.isNaN(Number(v))) return '—'
+      return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', minimumFractionDigits: 2 }).format(Number(v))
+    }
+    function formatPct(v) {
+      if (v == null || Number.isNaN(Number(v))) return '—'
+      return `${(Number(v) * 100).toFixed(1)}%`
+    }
+    function formatDate(v) {
+      if (!v) return '—'
+      const d = new Date(v)
+      if (Number.isNaN(d.getTime())) return v
+      return d.toLocaleString('es-MX')
+    }
+    function scrollToId(id) {
+      const el = window.document && window.document.getElementById ? window.document.getElementById(id) : null
+      if (el) el.scrollIntoView({ behavior: 'smooth' })
+    }
+    function statusTag(row) {
+      if (row.status === 'sobrecoste') return ['Sobrecoste', 'bad']
+      if (row.status === 'debajo_referencia') return ['Debajo ref.', 'good']
+      if (row.status === 'exclusivo') return ['Exclusivo', 'warn']
+      return ['Comparable', 'ok']
+    }
+
+    function buildFormData() {
+      const fd = new FormData()
+      state.files.forEach((file, i) => {
+        fd.append(`archivo${i + 1}`, file.raw)
+        if (file.resumen) {
+          // Campo principal esperado por FastAPI.
+          fd.append(`resumen${i + 1}`, file.resumen)
+          // Aliases defensivos para evitar regresiones si algun backend anterior queda activo.
+          fd.append(`resumen_pu${i + 1}`, file.resumen)
+          fd.append(`resumenPu${i + 1}`, file.resumen)
+          fd.append(`summary${i + 1}`, file.resumen)
+        }
+        fd.append(`nombre${i + 1}`, file.nombre || `Proveedor ${i + 1}`)
+      })
+      if (state.catalogFile) fd.append('catalogo', state.catalogFile)
+      if (state.officialSummaryFile) {
+        fd.append('resumen_oficial', state.officialSummaryFile)
+        fd.append('resumenOficial', state.officialSummaryFile)
+      }
+      fd.append('proyecto', state.project.proyecto)
+      fd.append('cliente', state.project.cliente)
+      fd.append('ubicacion', state.project.ubicacion)
+      return fd
+    }
+
+    async function fetchJsonSafe(url, options = {}) {
+      const controller = new AbortController()
+      const timeoutMs = options.timeoutMs || 60000
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        const res = await fetch(url, { ...options, signal: controller.signal })
+        const contentType = res.headers.get('content-type') || ''
+        const data = contentType.includes('application/json')
+          ? await res.json().catch(() => ({}))
+          : { detail: await res.text().catch(() => '') }
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+        return data
+      } catch (err) {
+        if (err.name === 'AbortError') throw new Error('La solicitud tardó demasiado y fue cancelada por el navegador. Usa Generar Excel; el preview es opcional.')
+        if (String(err.message || '').toLowerCase().includes('failed to fetch') || String(err.message || '').toLowerCase().includes('load failed')) {
+          throw new Error('No se pudo conectar con el backend de producción. Verifica /health en Railway y vuelve a intentar. El preview no es obligatorio para generar el Excel.')
+        }
+        throw err
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+
+    async function loadPreview() {
+      const fd = buildFormData()
+      const data = await fetchJsonSafe(`${API_URL}/preview`, { method: 'POST', body: fd, timeoutMs: 30000 })
+      state.preview = data
+      state.pagination.services = 1
+      state.pagination.materials = 1
+      state.pagination.labor = 1
+    }
+
+    async function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
+
+    async function generate() {
+      if (state.catalogFile && state.files.length === 0) {
+        state.loading = true
+        state.excelBlob = null
+        state.status = { type: 'info', message: 'Generando Matriz Propuesta IA desde el catalogo base del proyecto...' }
+        try {
+          const fd = new FormData()
+          fd.append('catalogo', state.catalogFile)
+          fd.append('proyecto', state.project.proyecto)
+          fd.append('cliente', state.project.cliente)
+          fd.append('ubicacion', state.project.ubicacion)
+          const res = await fetch(`${API_URL}/api/v2/base-budget/propose-matrix`, { method: 'POST', body: fd })
+          const contentType = res.headers.get('content-type') || ''
+          if (!res.ok) {
+            const data = contentType.includes('application/json') ? await res.json().catch(() => ({})) : { detail: await res.text().catch(() => '') }
+            throw new Error(data.detail || `HTTP ${res.status}`)
+          }
+          state.excelBlob = await res.blob()
+          state.preview = null
+          state.analysis = { mode: 'proposed_matrix', jobId: null, completed: true, downloadReady: true }
+          state.chat.messages = [{ role: 'assistant', text: 'Matriz Propuesta IA generada. Puedes descargar el Excel o preguntarme sobre el enfoque del análisis.' }]
+          state.status = { type: 'success', message: 'Matriz Propuesta IA generada. Ya puedes descargar el Excel.' }
+        } catch (err) {
+          state.status = { type: 'error', message: err.message || 'Error generando Matriz Propuesta IA.' }
+        } finally {
+          state.loading = false
+        }
+        return
+      }
+      if (state.files.length < 1) {
+        state.status = { type: 'error', message: 'Carga un catalogo base o al menos una cotizacion.' }
+        return
+      }
+      if (state.files.length === 1 && !state.files[0].resumen && !state.officialSummaryFile) {
+        state.status = { type: 'error', message: 'Para comparar un solo proveedor necesitas un Resumen PU del proveedor con cantidades reales.' }
+        return
+      }
+      state.loading = true
+      state.status = { type: 'info', message: 'Subiendo archivos e iniciando analisis asincrono...' }
+      state.excelBlob = null
+      try {
+        const fd = buildFormData()
+        const startRes = await fetch(`${API_URL}/comparar_async`, { method: 'POST', body: fd })
+        const startData = await startRes.json().catch(() => ({}))
+        if (!startRes.ok) throw new Error(startData.detail || `HTTP ${startRes.status}`)
+        const jobId = startData.job_id
+        if (!jobId) throw new Error('El backend no devolvio job_id.')
+
+        let job = null
+        const started = Date.now()
+        const maxMs = 20 * 60 * 1000
+        while (Date.now() - started < maxMs) {
+          await sleep(2500)
+          const pollRes = await fetch(`${API_URL}/jobs/${jobId}`, { cache: 'no-store' })
+          job = await pollRes.json().catch(() => ({}))
+          if (!pollRes.ok) throw new Error(job.detail || `HTTP ${pollRes.status}`)
+          if (job.status === 'error') throw new Error(job.error || 'El proceso fallo en backend.')
+          const pct = job.progress != null ? ` (${job.progress}%)` : ''
+          const elapsed = job.elapsed_seconds != null ? ` | ${Math.round(job.elapsed_seconds)}s` : ''
+          const lastTrace = Array.isArray(job.trace_tail) && job.trace_tail.length ? job.trace_tail[job.trace_tail.length - 1] : null
+          const traceMsg = lastTrace && lastTrace.function ? ` | ${lastTrace.event}:${lastTrace.function}` : (lastTrace && lastTrace.event ? ` | ${lastTrace.event}` : '')
+          state.status = { type: 'info', message: `Analizando en servidor: ${job.phase || job.status}${pct}${elapsed}${traceMsg}. No cierres esta ventana.` }
+          if (job.status === 'done') break
+        }
+        if (!job || job.status !== 'done') throw new Error('El analisis excedio el tiempo maximo de espera. Revisa /debug/runtime y logs de Railway.')
+
+        const dlRes = await fetch(`${API_URL}/jobs/${jobId}/download`, { cache: 'no-store' })
+        if (!dlRes.ok) {
+          const data = await dlRes.json().catch(() => ({}))
+          throw new Error(data.detail || `No se pudo descargar el Excel del job ${jobId}`)
+        }
+        state.excelBlob = await dlRes.blob()
+        state.analysis = { mode: state.files.length > 1 ? 'multi_provider' : 'single_provider', jobId, analysisId: job.analysis_id || jobId, completed: true, downloadReady: true }
+        if (job.analysis_summary && (job.analysis_summary.rows?.length || job.analysis_summary.provider_scores?.length || job.analysis_summary.critical_concepts?.length)) {
+          state.preview = job.analysis_summary
+          state.pagination.services = 1
+          state.pagination.materials = 1
+          state.pagination.labor = 1
+        } else {
+          loadPreview().catch(err => console.warn('Preview opcional fallo:', err))
+        }
+        state.chat.messages = [{ role: 'assistant', text: 'Análisis generado. Ya puedes descargar el Excel técnico o preguntarme sobre hallazgos, proveedores, conceptos críticos y recomendaciones.' }]
+        state.status = { type: 'success', message: 'Comparativo generado. Ya puedes descargar el Excel técnico.' }
+      } catch (err) {
+        state.status = { type: 'error', message: err.message || 'Error inesperado.' }
+      } finally {
+        state.loading = false
+      }
+    }
+
+    function safeFileName(value) {
+      const raw = String(value || 'cotizacion')
+      const cleaned = raw
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9._-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 80) || 'cotizacion'
+      return state.catalogFile && state.files.length === 0 ? `Matriz_Propuesta_IA_${cleaned}.xlsx` : `Comparativo_${cleaned}.xlsx`
+    }
+
+    function downloadExcel() {
+      if (!state.excelBlob) return
+      let url = null
+      try {
+        const blob = state.excelBlob instanceof Blob ? state.excelBlob : new Blob([state.excelBlob], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+        url = (window.URL || window.webkitURL).createObjectURL(blob)
+        const a = window.document.createElement('a')
+        a.href = url
+        a.download = safeFileName(state.project.proyecto || 'cotizacion')
+        window.document.body.appendChild(a)
+        a.click()
+        a.remove()
+      } catch (err) {
+        state.status = { type: 'error', message: `El Excel se generó, pero el navegador no pudo iniciar la descarga: ${err.message || err}` }
+      } finally {
+        if (url) {
+          setTimeout(() => (window.URL || window.webkitURL).revokeObjectURL(url), 500)
+        }
+      }
+    }
+
+
+    function resetAnalysis() {
+      if (state.loading) return
+      state.files = []
+      state.catalogFile = null
+      state.officialSummaryFile = null
+      state.preview = null
+      state.excelBlob = null
+      state.analysis = { mode: null, jobId: null, analysisId: null, completed: false, downloadReady: false }
+      state.chat = { question: '', loading: false, messages: [] }
+      state.status = { type: 'info', message: 'Nueva partida iniciada. Carga un catálogo base o cotizaciones para comenzar.' }
+    }
+
+    async function askAnalysis(questionText) {
+      const question = String(questionText || state.chat.question || '').trim()
+      if (!question || state.chat.loading) return
+      state.chat.messages.push({ role: 'user', text: question })
+      state.chat.question = ''
+      state.chat.loading = true
+      try {
+        const payload = {
+          question,
+          mode: analysisMode.value,
+          preview: state.preview || {},
+          analysis_id: state.analysis.analysisId || state.analysis.jobId || null,
+          providers: providerRanking.value || [],
+          critical_concepts: criticalRows.value || [],
+          kpis: dashboardKpis.value || [],
+        }
+        const res = await fetch(`${API_URL}/api/v2/analysis/ask`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+        state.chat.messages.push({ role: 'assistant', text: data.answer || 'No encontré suficiente información para responder con evidencia del análisis.' })
+      } catch (err) {
+        const rows = criticalRows.value || []
+        const top = rows.slice(0, 3).map(r => `${r.code}: ${r.action}`).join(' ')
+        state.chat.messages.push({ role: 'assistant', text: top || 'El Excel ya fue generado, pero aún no hay resumen web suficiente. Descarga el Excel técnico o vuelve a intentar cuando termine la vista previa.' })
+      } finally {
+        state.chat.loading = false
+      }
+    }
+
+    refreshBenchmark()
+
+    return { state, benchmarkLoaded, canGenerate, modeLabel, buttonLabel, providerNames, areaOptions, filteredRows, executive, topInsights, providerRanking, pmdRows, hasResults, resultReady, analysisMode, analysisModeLabel, dashboardKpis, providerBars, costMixRows, criticalRows, suggestedQuestions, marketRows, laborRows, equipmentRows, executiveCards, pagedServices, pagedMaterials, pagedLabor, pagedEquipment, servicePages, materialPages, laborPages, equipmentPages, refreshBenchmark, login, logout, addFiles, removeFile, setCatalog, setOfficialSummary, removeOfficialSummary, setResumenFile, removeResumenFile, formatMoney, formatPct, formatDate, scrollToId, statusTag, generate, downloadExcel, setPage, resetAnalysis, askAnalysis }
+  },
+  template: `
+  <div v-if="!state.authed" class="landing-shell">
+    <div class="landing-inner">
+      <nav class="landing-nav">
+        <div class="brand">
+          <div class="mark">Q</div>
+          <div>
+            <h1>Quantia AI</h1>
+            <p>Inteligencia de precios unitarios con base Neodata/APU</p>
+          </div>
+        </div>
+        <div class="landing-links">
+          <span>01 Mercado</span>
+          <span>02 Matrices</span>
+          <span>03 Decisión</span>
+        </div>
+        <div class="landing-cta">
+          <button class="btn btn-secondary" @click="scrollToId('login-card')">Acceso</button>
+          <button class="btn btn-primary" @click="scrollToId('login-card')">Probar comparador</button>
+        </div>
+      </nav>
+
+      <section class="hero-sale">
+        <div>
+          <div class="eyebrow">Análisis profesional de precios unitarios</div>
+          <h1>Compara APU como lo revisaría un analista de precios unitarios.</h1>
+          <p>
+            Quantia AI transforma cotizaciones complejas en una lectura clara de mercado:
+            presupuesto base, precios unitarios por insumo, diferencias reales contra Neodata/Construdata, omisiones
+            técnicas y hallazgos listos para compras, ingeniería y dirección.
+          </p>
+          <div class="hero-actions">
+            <button class="btn btn-primary" @click="scrollToId('login-card')">Entrar al portal</button>
+            <button class="btn btn-secondary" @click="scrollToId('how-it-works')">Ver cómo funciona</button>
+          </div>
+        </div>
+        <div class="product-orb" aria-label="Visual de producto Quantia AI">
+          <div class="floating-card fc-2"><strong>25%</strong><span>Indirectos recalculados sobre mercado</span></div>
+          <div class="floating-card fc-1"><strong>APU</strong><span>Matriz del contratista vs catálogo granular</span></div>
+          <div class="floating-card fc-3"><strong>IA</strong><span>Homologación técnica y explicación humana</span></div>
+        </div>
+      </section>
+
+      <section id="how-it-works" class="landing-band">
+        <div class="landing-feature">
+          <label>01 Normaliza</label>
+          <strong>Lee matrices reales</strong>
+          <p>Conserva materiales, mano de obra, maquinaria, porcentajes, indirectos y renglones financieros declarados por el contratista.</p>
+        </div>
+        <div class="landing-feature">
+          <label>02 Contrasta</label>
+          <strong>Mercado por insumo</strong>
+          <p>Busca cada elemento contra catálogos Construdata de materiales, maquinaria y mano de obra, sin depender solo del concepto base.</p>
+        </div>
+        <div class="landing-feature">
+          <label>03 Explica</label>
+          <strong>Hallazgos accionables</strong>
+          <p>Prioriza diferencias relevantes, omisiones de matriz, elementos fuera de referencia y oportunidades de negociación.</p>
+        </div>
+      </section>
+
+      <section class="login-panel-sale" id="login-card">
+        <div class="login-copy">
+          <div class="eyebrow">Built for strategic sourcing</div>
+          <h2>Una experiencia más limpia para evaluar proveedores complejos.</h2>
+          <p class="sub" style="font-size:15px;max-width:720px">
+            La zona de trabajo elimina tablas decorativas y concentra la información en dos bloques:
+            ranking por proveedor y hallazgos PMD basados en el Excel generado. El detalle técnico vive
+            en el archivo descargable para auditoría y trazabilidad.
+          </p>
+          <div class="benchmark-grid" style="margin-top:18px">
+            <div class="bench-item"><label>Entrada</label><strong>1 a 5 cotizaciones</strong></div>
+            <div class="bench-item"><label>Salida</label><strong>Excel ejecutivo</strong></div>
+            <div class="bench-item"><label>Referencia</label><strong>Construdata granular</strong></div>
+            <div class="bench-item"><label>IA</label><strong>Match y narrativa</strong></div>
+          </div>
+        </div>
+        <div class="login-card" style="width:100%;max-width:none">
+          <h2>Acceso al portal</h2>
+          <p>Ingresa para cargar cotizaciones, revisar benchmark y generar el comparativo ejecutivo.</p>
+          <label class="label">Usuario</label>
+          <input v-model="state.loginUser" class="admin-input" placeholder="admin" @keyup.enter="login">
+          <div style="height:10px"></div>
+          <label class="label">Contraseña</label>
+          <input v-model="state.loginPass" type="password" class="admin-input" placeholder="quantia2026" @keyup.enter="login">
+          <div style="height:14px"></div>
+          <button class="btn btn-primary" style="width:100%" @click="login">Entrar al portal</button>
+          <div v-if="state.loginError" class="banner error" style="margin-top:12px">{{ state.loginError }}</div>
+          <div class="demo"><strong>Demo access</strong><br>Usuario: <code>admin</code><br>Contraseña: <code>quantia2026</code></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  
+
+
+<div v-else class="wrap">
+  <div class="topbar">
+    <div class="brand">
+      <div class="mark">Q</div>
+      <div>
+        <h1>Quantia AI Comparador</h1>
+        <p>Análisis unificado de cotizaciones, matrices APU, insumos, indirectos y ranking explicable</p>
+      </div>
+    </div>
+    <div class="pills">
+      <div class="pill">{{ modeLabel }}</div>
+      <div class="pill">Base: {{ state.benchmark.label || 'Neodata / Construdata' }}</div>
+      <a class="pill" href="/admin" target="_blank" style="text-decoration:none">Admin benchmark</a>
+      <button class="pill" style="cursor:pointer;background:transparent" @click="logout">Salir</button>
+    </div>
+  </div>
+
+  <div class="grid" :class="resultReady ? 'results-mode' : 'input-mode'">
+    <aside class="sidebar" v-if="!resultReady">
+      <div class="panel">
+        <h3>Catálogo / presupuesto base del proyecto</h3>
+        <p class="sub">Paso 1. Sube el catálogo base del proyecto. Con solo este archivo se genera la Matriz Propuesta IA y el presupuesto propuesto usando matrices Construdata.</p>
+        <label class="drop">
+          <strong>{{ state.catalogFile ? state.catalogFile.name : 'Subir catálogo base del proyecto' }}</strong>
+          <span>{{ state.catalogFile ? ((state.catalogFile.size / 1024).toFixed(0) + ' KB') : 'Excel Nestlé con Part., Cant., Uni., Descripción y Marca' }}</span>
+          <input class="hidden" type="file" accept=".xlsx,.xls" @change="setCatalog($event.target.files[0]); $event.target.value = ''">
+        </label>
+        <div class="btn-row" v-if="state.catalogFile" style="margin-top:10px">
+          <button class="btn btn-secondary" @click="state.catalogFile = null">Quitar catálogo</button>
+        </div>
+      </div>
+
+
+      <div class="panel">
+        <h3>Cargar cotizaciones</h3>
+        <p class="sub">Paso 2. Opcional: sube una o varias cotizaciones de contratistas. El proceso es el mismo para 1 o N proveedores.</p>
+        <label class="drop">
+          <strong>Agregar archivos Excel</strong>
+          <span>.xlsx o .xls · máximo 5 proveedores por corrida</span>
+          <input class="hidden" type="file" multiple accept=".xlsx,.xls" @change="addFiles($event.target.files); $event.target.value = ''">
+        </label>
+        <div class="file-list" style="margin-top:12px" v-if="state.files.length">
+          <div class="file-item" v-for="(file, index) in state.files" :key="index">
+            <div>
+              <div class="file-name">{{ file.raw.name }}</div>
+              <div class="file-meta">{{ (file.raw.size / 1024).toFixed(0) }} KB</div>
+            </div>
+            <div class="file-actions"><button @click="removeFile(index)">×</button></div>
+          </div>
+        </div>
+        <div v-else class="mini">Aún no hay archivos cargados.</div>
+      </div>
+
+
+      <div class="panel">
+        <h3>Proveedores</h3>
+        <p class="sub">Paso 3. Renombra cada proveedor y carga su Resumen PU individual cuando exista. La salida se homologa en el mismo Excel.</p>
+        <div class="provider-list">
+          <div class="provider-item" v-for="(file, index) in state.files" :key="'p'+index" style="display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start">
+            <div class="provider-badge" :style="{ background: ['#42c7ff','#37d67a','#ffc857','#ff7575','#9f87ff'][index % 5] }">{{ index + 1 }}</div>
+            <div style="display:grid;gap:8px">
+              <input v-model="file.nombre" :placeholder="'Proveedor ' + (index + 1)">
+              <label class="drop" :class="{ selected: !!file.resumen }" style="min-height:72px;padding:12px">
+                <strong>{{ file.resumen ? file.resumen.name : 'Resumen PU / cantidades reales' }}</strong>
+                <span>{{ file.resumen ? ((file.resumen.size / 1024).toFixed(0) + ' KB · se usará para Cantidad, PU e Importe reales') : 'Respaldo por proveedor · Código, Concepto, Unidad, Cantidad, P.U., Importe' }}</span>
+                <input class="hidden" type="file" accept=".xlsx,.xls" @change="setResumenFile(index, $event.target.files && $event.target.files[0]); $event.target.value = ''">
+              </label>
+              <button v-if="file.resumen" class="btn btn-secondary" style="padding:8px 10px;font-size:12px" @click="removeResumenFile(index)">Quitar resumen PU</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="panel">
+        <h3>Datos del proyecto</h3>
+        <div class="form-grid">
+          <div><label class="label">Proyecto</label><input v-model="state.project.proyecto" placeholder="Ej. Torre de enfriamiento planta norte"></div>
+          <div><label class="label">Cliente</label><input v-model="state.project.cliente"></div>
+          <div><label class="label">Ubicación</label><input v-model="state.project.ubicacion" placeholder="Ej. Monterrey, NL"></div>
+        </div>
+      </div>
+
+      <div class="banner" :class="state.status.type">{{ state.status.message }}</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" :disabled="!canGenerate" @click="generate">{{ buttonLabel }}</button>
+        <button class="btn btn-secondary" :disabled="!state.excelBlob" @click="downloadExcel">Descargar Excel</button>
+      </div>
+    </aside>
+
+    <section class="content" v-if="resultReady">
+      <div v-if="false" class="panel">
+        <div class="section-title">
+          <div>
+            <h3>Listo para analizar</h3>
+            <p>Primero carga archivos y genera la corrida. Los resultados aparecerán aquí después del análisis.</p>
+          </div>
+          <div class="mini">{{ state.files.length }} archivo(s) cargado(s)</div>
+        </div>
+        <div class="stat-grid" style="margin-top:14px">
+          <div class="stat-card"><label>Archivos</label><strong>{{ state.files.length }}</strong><span>Cotizaciones cargadas. El catálogo base se procesa aunque no haya proveedores.</span></div>
+          <div class="stat-card"><label>Benchmark</label><strong>{{ state.benchmark.cargado ? 'OK' : '—' }}</strong><span>Referencia tipo Neodata/Construdata para mercado y trazabilidad.</span></div>
+          <div class="stat-card"><label>MO / Equipo</label><strong>MO</strong><span>Catálogos granulares para validar insumos.</span></div>
+          <div class="stat-card"><label>Salida</label><strong>Web + Excel</strong><span>Resumen ejecutivo y detalle exportable.</span></div>
+        </div>
+      </div>
+
+      <template v-else>
+        <div class="panel">
+          <div class="dashboard-head">
+            <div>
+              <h3>Resultado del análisis</h3>
+              <p class="sub" style="margin-bottom:0">{{ analysisModeLabel }} · lectura ejecutiva para decisión rápida. El detalle técnico queda en el Excel.</p>
+            </div>
+            <div class="result-actions">
+              <button class="btn btn-primary" :disabled="!state.excelBlob" @click="downloadExcel">Descargar Excel</button>
+              <button class="btn btn-secondary" @click="resetAnalysis">Iniciar nueva partida</button>
+            </div>
+          </div>
+          <div class="stat-grid" style="margin-top:14px">
+            <div class="stat-card" v-for="card in dashboardKpis" :key="card.label"><label>{{ card.label }}</label><strong>{{ card.value }}</strong><span>{{ card.text }}</span></div>
+          </div>
+        </div>
+
+        <div class="chart-grid" v-if="providerBars.length || costMixRows.length">
+          <div class="chart-card" v-if="providerBars.length">
+            <h3>Total comparable por proveedor</h3>
+            <p class="sub">Barras simples para comparar magnitud económica.</p>
+            <div class="bar-row" v-for="row in providerBars" :key="row.name">
+              <div class="bar-label">{{ row.name }}</div>
+              <div class="bar-track"><div class="bar-fill" :style="{ width: row.pct + '%', background: row.color }"></div></div>
+              <div class="bar-value">{{ formatMoney(row.total) }}</div>
+            </div>
+          </div>
+          <div class="chart-card" v-if="costMixRows.length">
+            <h3>Composición estimada</h3>
+            <p class="sub">Lectura web de materiales, mano de obra y equipo. El Excel mantiene el detalle por insumo.</p>
+            <table class="mini-table">
+              <thead><tr><th>Proveedor</th><th>Materiales</th><th>MO</th><th>Equipo</th></tr></thead>
+              <tbody><tr v-for="row in costMixRows" :key="row.name"><td>{{ row.name }}</td><td>{{ formatMoney(row.material) }}</td><td>{{ formatMoney(row.labor) }}</td><td>{{ formatMoney(row.equipment) }}</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel" v-if="criticalRows.length">
+          <div class="section-title"><div><h3>Conceptos críticos para revisión</h3><p>Priorización web basada en impacto, riesgo y diferencias detectadas.</p></div></div>
+          <table class="mini-table" style="margin-top:12px">
+            <thead><tr><th>Código</th><th>Concepto</th><th>Proveedor</th><th>Impacto</th><th>Riesgo</th><th>Acción sugerida</th></tr></thead>
+            <tbody><tr v-for="row in criticalRows" :key="row.code + row.provider"><td>{{ row.code }}</td><td>{{ row.desc }}</td><td>{{ row.provider }}</td><td>{{ formatMoney(row.impact) }}</td><td>{{ row.risk }}</td><td>{{ row.action }}</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="panel" v-if="providerRanking.length">
+          <div class="section-title">
+            <div>
+              <h3>Ranking explicable por proveedor</h3>
+              <p>No adjudica automáticamente: pondera precio, cobertura, desviación contra mercado y riesgo técnico.</p>
+            </div>
+          </div>
+          <div class="dashboard-focus" style="margin-top:14px">
+            <div class="provider-score-card" v-for="row in providerRanking" :key="row.nombre">
+              <div>
+                <label>Proveedor #{{ row.rank }}</label>
+                <strong>{{ row.nombre }}</strong>
+                <div class="mini" style="margin-top:6px">{{ row.conceptos || 0 }} servicios · {{ row.comparables || 0 }} comparables</div>
+              </div>
+              <div><label>Score</label><div class="metric-value">{{ row.score ?? '—' }}/100</div></div>
+              <div><label>Total oferta</label><div class="metric-value">{{ formatMoney(row.total_oferta) }}</div></div>
+              <div><label>Total mercado</label><div class="metric-value">{{ formatMoney(row.total_mercado) }}</div></div>
+              <div><label>Desviación</label><div class="metric-value">{{ formatPct(row.desviacion) }}</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" v-if="pmdRows.length">
+          <div class="section-title">
+            <div>
+              <h3>Hallazgos PMD / APU</h3>
+              <p>Drivers reales de diferencia, indirectos/AIU, insumos atípicos y señales de revisión.</p>
+            </div>
+          </div>
+          <div class="dashboard-focus" style="margin-top:14px">
+            <div class="pmd-card" v-for="card in pmdRows" :key="'pmd'+card.proveedor">
+              <div class="pmd-title">
+                <div>
+                  <label>Proveedor</label>
+                  <strong>{{ card.proveedor }}</strong>
+                </div>
+                <div class="num">
+                  <label>Ajuste global</label>
+                  <strong>{{ formatPct(card.ajuste) }}</strong>
+                </div>
+              </div>
+              <div class="mini" v-if="card.texto">{{ card.texto }}</div>
+              <ul class="pmd-list" v-if="card.drivers?.length">
+                <li v-for="driver in card.drivers.slice(0,4)" :key="driver.concepto + driver.tipo">
+                  <strong>{{ driver.concepto || 'Driver detectado' }}</strong>
+                  <span v-if="driver.tipo"> · {{ driver.tipo }}</span>
+                  <span v-if="driver.impacto != null"> · impacto {{ typeof driver.impacto === 'number' && Math.abs(driver.impacto) <= 1 ? formatPct(driver.impacto) : formatMoney(driver.impacto) }}</span>
+                </li>
+              </ul>
+              <div class="banner info" v-if="card.indirectos?.length">
+                {{ card.indirectos.length }} alerta(s) de indirectos o renglones financieros fuera de referencia.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="section-title"><div><h3>Preguntar a la IA sobre este análisis</h3><p>Consulta hallazgos, proveedores, conceptos críticos o recomendaciones. La respuesta usa el resumen calculado disponible en la web.</p></div></div>
+          <div class="chatbox" style="margin-top:12px">
+            <div class="chat-suggestions"><button v-for="q in suggestedQuestions" :key="q" @click="askAnalysis(q)">{{ q }}</button></div>
+            <div class="chat-log" v-if="state.chat.messages.length">
+              <div class="chat-msg" :class="msg.role === 'user' ? 'user' : 'assistant'" v-for="(msg, idx) in state.chat.messages" :key="idx">{{ msg.text }}</div>
+            </div>
+            <div class="chat-input">
+              <textarea v-model="state.chat.question" placeholder="Ej. ¿Qué conceptos debo negociar primero?"></textarea>
+              <button class="btn btn-primary" :disabled="state.chat.loading || !state.chat.question.trim()" @click="askAnalysis()">Preguntar</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="download-focus">
+            <div>
+              <h3>Excel técnico detallado</h3>
+              <p class="sub" style="margin-bottom:0">El análisis por insumo, matriz base CD y detalle financiero se revisa en el Excel descargable.</p>
+            </div>
+            <button class="btn btn-primary" :disabled="!state.excelBlob" @click="downloadExcel">Descargar Excel</button>
+          </div>
+        </div>
+      </template>
+    </section>
+  </div>
+</div>
+  `
+})
+
+const mountEl = window.document && window.document.getElementById ? window.document.getElementById('app') : null
+if (mountEl) { app.mount(mountEl) }
+else { console.error('No se encontro #app para montar Vue') }
+</script>
+</body>
+</html>

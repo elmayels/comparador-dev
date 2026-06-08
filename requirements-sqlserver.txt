@@ -1,0 +1,2 @@
+# Opcional: solo para tools/export_construdata_matrices_sqlserver.py
+pyodbc>=5.0.0

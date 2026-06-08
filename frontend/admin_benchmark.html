@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Quantia AI | Admin catalogos</title>
+<style>
+:root{--bg:#0b1020;--panel:#121a30;--line:#2b3a5f;--text:#eef4ff;--muted:#9db0d8;--blue:#42c7ff;--green:#37d67a;--red:#ff7575;--yellow:#ffd166}*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:linear-gradient(180deg,#0b1020,#111b33);color:var(--text)}.wrap{max-width:1040px;margin:0 auto;padding:24px}.card{background:rgba(18,26,48,.9);border:1px solid rgba(255,255,255,.08);border-radius:22px;padding:22px;margin-bottom:16px}h1,h2,h3{margin:0 0 8px}p{margin:0;color:var(--muted);line-height:1.55}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.item{padding:14px;border-radius:16px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03)}.item label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}.item strong{font-size:14px}.label{display:block;font-size:12px;color:var(--muted);margin:12px 0 6px}input,textarea,button{width:100%;padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:#0d1427;color:var(--text);font:inherit}button{background:linear-gradient(135deg,#42c7ff,#66f5cf);color:#07111d;font-weight:800;cursor:pointer;border:none}.row{display:grid;grid-template-columns:1fr 1fr;gap:16px}.banner{padding:13px 14px;border-radius:14px;font-size:13px;margin-top:14px;border:1px solid transparent}.success{background:rgba(55,214,122,.08);border-color:rgba(55,214,122,.18);color:#9bf0be}.error{background:rgba(255,117,117,.08);border-color:rgba(255,117,117,.18);color:#ffb2b2}.info{background:rgba(66,199,255,.08);border-color:rgba(66,199,255,.18);color:#9de8ff}.pill{display:inline-flex;gap:8px;align-items:center;border-radius:999px;padding:8px 12px;font-weight:800;font-size:12px}.on{background:rgba(55,214,122,.12);color:#9bf0be}.off{background:rgba(255,209,102,.12);color:#ffe2a3}pre{margin:0;padding:14px;border-radius:16px;background:#0d1427;border:1px solid var(--line);overflow:auto;white-space:pre-wrap}@media(max-width:820px){.grid,.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Administrador de catalogos</h1>
+    <p>Los archivos se guardan en el servidor y se usan automaticamente en cada comparacion. No se cargan por sesion.</p>
+    <div style="height:12px"></div>
+    <span id="aiPill" class="pill off">IA materiales: revisando...</span>
+  </div>
+  <div class="row">
+    <div class="card">
+      <h3>Construdata / Benchmark materiales</h3>
+      <p>Sube el Excel de Construdata o benchmark interno. Se guarda como referencia persistente.</p>
+      <label class="label">Archivo Excel</label><input id="benchFile" type="file" accept=".xlsx,.xls">
+      <label class="label">Fuente</label><input id="source_name" value="Construdata">
+      <label class="label">Maestro / version</label><input id="source_budget_code" value="CONSTRUDATA">
+      <label class="label">Notas</label><textarea id="notes" rows="3"></textarea>
+      <div style="height:14px"></div><button onclick="uploadBenchmark()">Cargar Construdata</button><div id="benchMsg"></div>
+    </div>
+    <div class="card">
+      <h3>Jornada mano de obra 2026</h3>
+      <p>Sube o reemplaza el tabulador de mano de obra 2026. Tambien queda persistente.</p>
+      <label class="label">Archivo Excel</label><input id="laborFile" type="file" accept=".xlsx,.xls">
+      <div style="height:14px"></div><button onclick="uploadLabor()">Cargar jornada 2026</button><div id="laborMsg"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Índice Voyage generado localmente</h3>
+    <p>Sube aquí el JSON ya vectorizado de Construdata. Se guardará en <code>/data/vector_index</code> en producción/Railway, escribiendo por chunks para archivos grandes.</p>
+    <label class="label">Archivo JSON de índice Voyage</label><input id="vectorFile" type="file" accept=".json,application/json">
+    <div style="height:14px"></div><button onclick="uploadVectorIndex()">Cargar índice Voyage JSON</button><div id="vectorMsg"></div>
+  </div>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:end;flex-wrap:wrap"><div><h3>Estado actual</h3><p>Confirma catalogos, estado de IA y uso real de APIs.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button style="width:auto;padding:12px 16px" onclick="refreshStatus()">Actualizar estado</button><button style="width:auto;padding:12px 16px;background:#66f5cf" onclick="testAiNow()">Probar IA ahora</button><button style="width:auto;padding:12px 16px;background:#bde0fe" onclick="diagnoseNetwork()">Diagnosticar red/APIs</button><button style="width:auto;padding:12px 16px;background:#ffd166" onclick="resetAiUsage()">Reiniciar contador IA</button><button style="width:auto;padding:12px 16px;background:#d8bbff" onclick="rebuildVectorIndex()">Reconstruir índice vectorial</button><button style="width:auto;padding:12px 16px;background:#ffafcc" onclick="clearMaterialCache()">Limpiar cache materiales</button></div></div>
+    <div class="grid" id="statusGrid"></div><div style="height:14px"></div><pre id="statusRaw">Cargando...</pre>
+  </div>
+</div>
+<script>
+const API_URL = window.location.origin;
+function msg(id,type,text){document.getElementById(id).innerHTML=text?`<div class="banner ${type}">${text}</div>`:''}
+function fmtDate(v){if(!v)return '—'; const d=new Date(v); return isNaN(d.getTime())?v:d.toLocaleString('es-MX')}
+function yes(v){return v?'Cargado':'No cargado'}
+async function refreshStatus(){
+  const bench = await fetch(`${API_URL}/benchmark/status`).then(r=>r.json()).catch(e=>({error:String(e)}));
+  const labor = await fetch(`${API_URL}/admin/labor/status`).then(r=>r.json()).catch(e=>({error:String(e)}));
+  const ai = await fetch(`/admin/ai/status`).then(r=>r.json()).catch(e=>((bench.material_ai)||{error:String(e)}));
+  const vector = await fetch(`/admin/vector-index/status`).then(r=>r.json()).catch(e=>((bench.vector_index)||{error:String(e)}));
+  const active = !!(ai.active || ai.enabled);
+  document.getElementById('aiPill').className = `pill ${active?'on':'off'}`;
+  document.getElementById('aiPill').textContent = active ? ('IA materiales activa · ' + (ai.mode || '')) : 'IA materiales inactiva';
+  document.getElementById('statusGrid').innerHTML = `
+    <div class="item"><label>Construdata</label><strong>${yes(bench.cargado)}</strong></div>
+    <div class="item"><label>Fuente</label><strong>${bench.source_name || '—'} / ${bench.source_budget_code || '—'}</strong></div>
+    <div class="item"><label>Conceptos</label><strong>${bench.conceptos_cargados || 0}</strong></div>
+    <div class="item"><label>Materiales</label><strong>${bench.materiales_cargados || 0}</strong></div>
+    <div class="item"><label>Índice vectorial Construdata</label><strong>${((vector||{}).exists || ((vector||{}).records>0)) ? 'Activo' : 'No construido'} · ${((vector||{}).records || 0)} vectores</strong></div>
+    <div class="item"><label>Modelo índice Voyage</label><strong>${((vector||{}).model || ai.voyage_model || '—')}</strong></div>
+    <div class="item"><label>Cache materiales</label><strong>${((bench.material_cache||{}).cache_entries || 0)} exactos · ${((bench.material_cache||{}).history_entries || 0)} historial</strong></div>
+    <div class="item"><label>Ultima carga Construdata</label><strong>${fmtDate(bench.loaded_at)}</strong></div>
+    <div class="item"><label>Jornada MO 2026</label><strong>${yes(labor.cargado)} · ${labor.registros_2026 || 0} registros</strong></div>
+    <div class="item"><label>Archivo MO</label><strong>${labor.archivo || '—'}</strong></div>
+    <div class="item"><label>IA materiales</label><strong>${active ? 'Activa' : 'Inactiva'} · ${ai.mode || 'disabled'}</strong></div>
+    <div class="item"><label>Modelo Claude</label><strong>${ai.anthropic_model || '—'}</strong></div>
+    <div class="item"><label>Modelo Voyage</label><strong>${ai.voyage_model || '—'}</strong></div>
+    <div class="item"><label>Threshold match materiales</label><strong>${ai.material_match_threshold || '60'}%</strong></div>
+    <div class="item"><label>Claude / Anthropic</label><strong>${ai.anthropic_enabled ? 'ANTHROPIC_API_KEY detectada' : 'No detectada'}</strong></div>
+    <div class="item"><label>Voyage IA</label><strong>${ai.voyage_enabled ? 'VOYAGE_API_KEY detectada' : 'No detectada'}</strong></div>
+    <div class="item"><label>Internet precios</label><strong>${ai.internet_search_enabled ? (ai.internet_provider || 'configurado') : 'No disponible'} · ${ai.internet_endpoint || '—'}</strong></div>
+    <div class="item"><label>Claude llamadas</label><strong>${((ai.usage||{}).counters||{}).anthropic_calls || 0} ok · ${((ai.usage||{}).counters||{}).anthropic_errors || 0} errores</strong></div>
+    <div class="item"><label>Voyage llamadas</label><strong>${((ai.usage||{}).counters||{}).voyage_calls || 0} ok · ${((ai.usage||{}).counters||{}).voyage_errors || 0} errores</strong></div>
+    <div class="item"><label>Internet/ML llamadas</label><strong>${(((ai.usage||{}).counters||{}).internet_calls || 0) + (((ai.usage||{}).counters||{}).mercadolibre_calls || 0) + (((ai.usage||{}).counters||{}).searxng_calls || 0)} ok · ${((ai.usage||{}).counters||{}).internet_errors || 0} errores</strong></div>
+    <div class="item"><label>Ultima ejecucion IA</label><strong>${fmtDate((ai.usage||{}).updated_at)}</strong></div>
+    <div class="item"><label>Listo para IA + Construdata</label><strong>${ai.ready ? 'Si' : 'No'} · ${ai.ready_reason || ai.reason || ''}</strong></div>`;
+  document.getElementById('statusRaw').textContent = JSON.stringify({benchmark:bench,labor:labor,material_ai:ai,vector_index:vector},null,2);
+}
+async function uploadBenchmark(){
+  const file=document.getElementById('benchFile').files[0]; if(!file){msg('benchMsg','error','Selecciona un Excel.');return}
+  const fd=new FormData(); fd.append('archivo',file); fd.append('source_name',document.getElementById('source_name').value||'Construdata'); fd.append('source_budget_code',document.getElementById('source_budget_code').value||'CONSTRUDATA'); fd.append('notes',document.getElementById('notes').value||'');
+  msg('benchMsg','info','Subiendo Construdata...'); const res=await fetch(`${API_URL}/benchmark/upload`,{method:'POST',body:fd}); const data=await res.json().catch(()=>({})); if(!res.ok){msg('benchMsg','error',data.detail||'No se pudo cargar.');return} msg('benchMsg','success',data.mensaje||'Construdata cargado.'); refreshStatus();
+}
+async function uploadLabor(){
+  const file=document.getElementById('laborFile').files[0]; if(!file){msg('laborMsg','error','Selecciona un Excel.');return}
+  const fd=new FormData(); fd.append('archivo',file); msg('laborMsg','info','Subiendo jornada 2026...'); const res=await fetch(`${API_URL}/admin/labor/upload`,{method:'POST',body:fd}); const data=await res.json().catch(()=>({})); if(!res.ok){msg('laborMsg','error',data.detail||'No se pudo cargar.');return} msg('laborMsg','success',data.mensaje||'Jornada cargada.'); refreshStatus();
+}
+async function resetAiUsage(){ await fetch(`/admin/ai/usage/reset`,{method:'POST'}).catch(()=>null); refreshStatus(); }
+async function testAiNow(){ document.getElementById('statusRaw').textContent='Ejecutando prueba real de Claude/Voyage... '; const r=await fetch(`/admin/ai/test`,{method:'POST'}); const data=await r.json().catch(()=>({error:'sin json'})); await refreshStatus(); document.getElementById('statusRaw').textContent=JSON.stringify({ai_test:data},null,2); }
+async function diagnoseNetwork(){ document.getElementById('statusRaw').textContent='Diagnosticando conectividad HTTPS a Anthropic, Voyage y MercadoLibre... '; const r=await fetch(`/admin/ai/network`); const data=await r.json().catch(()=>({error:'sin json'})); document.getElementById('statusRaw').textContent=JSON.stringify({network:data},null,2); }
+async function uploadVectorIndex(){
+  const file=document.getElementById('vectorFile').files[0];
+  if(!file){msg('vectorMsg','error','Selecciona el JSON generado por Voyage.');return}
+  if(!file.name.toLowerCase().endsWith('.json')){msg('vectorMsg','error','El archivo debe ser .json');return}
+  const mb=(file.size/(1024*1024)).toFixed(1);
+  msg('vectorMsg','info',`Subiendo índice Voyage (${mb} MB). No cierres esta pestaña... 0%`);
+  const fd=new FormData(); fd.append('archivo',file);
+  await new Promise((resolve)=>{
+    const xhr=new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}/admin/vector-index/upload`);
+    xhr.upload.onprogress=(evt)=>{
+      if(evt.lengthComputable){
+        const pct=Math.round((evt.loaded*100)/evt.total);
+        msg('vectorMsg','info',`Subiendo índice Voyage (${mb} MB)... ${pct}%`);
+      }
+    };
+    xhr.onload=async()=>{
+      let data={}; try{data=JSON.parse(xhr.responseText||'{}')}catch(e){}
+      if(xhr.status>=200 && xhr.status<300){
+        msg('vectorMsg','success',`${data.message||'Índice cargado.'} Archivo: ${data.filename||file.name} · ${data.size_mb||mb} MB`);
+        await refreshStatus();
+      }else{
+        msg('vectorMsg','error',data.detail||`No se pudo cargar el índice. HTTP ${xhr.status}`);
+      }
+      resolve();
+    };
+    xhr.onerror=()=>{msg('vectorMsg','error','Error de red al subir el índice.'); resolve();};
+    xhr.send(fd);
+  });
+}
+async function rebuildVectorIndex(){
+  msg('benchMsg','info','Iniciando reconstrucción del índice vectorial. El proceso seguirá en segundo plano y se actualizará el progreso aquí...');
+  const res=await fetch(`${API_URL}/admin/vector-index/rebuild`,{method:'POST'});
+  const data=await res.json().catch(()=>({}));
+  if(!res.ok){msg('benchMsg','error',data.detail||'No se pudo iniciar índice.');return}
+  await pollVectorIndexProgress();
+}
+async function pollVectorIndexProgress(){
+  for(let i=0;i<720;i++){
+    const s=await fetch(`${API_URL}/admin/vector-index/status`).then(r=>r.json()).catch(e=>({error:String(e)}));
+    const job=s.job||{};
+    const pct=(job.progress_pct!=null)?job.progress_pct:0;
+    const done=job.records_done||0;
+    const total=job.total_records||s.total_catalog_records||0;
+    const built=job.built_records||s.records||0;
+    const skipped=job.skipped_records||s.skipped_records||0;
+    const batch = job.total_batches ? ` · batch ${job.batch_no || 0}/${job.total_batches}` : "";
+    if(job.running){
+      const retry=job.retry_stats||{};
+      const preview=(job.skipped_preview||[]).slice(-2).map(x=>x.reason).filter(Boolean).join(', ');
+      const extra=(retry.rate_limit_batches?` · rate-limit: ${retry.rate_limit_batches}`:"") + (retry.partial_batches?` · parciales: ${retry.partial_batches}`:"") + (preview?` · motivos: ${preview}`:"");
+      msg('benchMsg','info',`Reconstruyendo índice: ${pct}% · ${done}/${total} registros${batch} · vectores: ${built} · omitidos: ${skipped}${extra}`);
+    } else if(job.phase==='finished' || s.exists){
+      msg('benchMsg','success',`Índice listo: ${(s.records||built)||0} vectores · modelo ${s.model||''}. Omitidos: ${s.skipped_records||skipped||0}`);
+      await refreshStatus(); return;
+    } else if(job.phase==='failed' || job.error){
+      msg('benchMsg','error',job.error||'Falló reconstrucción del índice.');
+      await refreshStatus(); return;
+    } else {
+      msg('benchMsg','info',`Esperando inicio del índice... ${pct}%`);
+    }
+    await new Promise(r=>setTimeout(r,2000));
+  }
+  msg('benchMsg','error','El índice sigue ejecutándose o no reportó fin después de 24 minutos. Revisa /admin/vector-index/status.');
+}
+async function clearMaterialCache(){
+  const res=await fetch(`${API_URL}/admin/material-cache/clear`,{method:'POST'});
+  const data=await res.json().catch(()=>({}));
+  msg('benchMsg','success',`Cache limpiado: ${data.cache_entries||0} entradas.`);
+  refreshStatus();
+}
+
+refreshStatus();
+</script>
+</body>
+</html>
