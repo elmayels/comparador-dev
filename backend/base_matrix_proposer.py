@@ -903,3 +903,401 @@ def generate_matrix_proposal_workbook(
     summary = write_matrix_proposal_excel(output_path, services, base, project_meta=project_meta, indirect_pct=indirect_pct)
     summary.update({"catalog_services": len(services), "output_path": output_path})
     return summary
+
+
+# ============================================================================
+# V0.3.3 - Etapa 1 Excel ideal: SOLO tab Comparativa para matriz propuesta
+# ============================================================================
+# Se redefine el writer al final del módulo para que generate_matrix_proposal_workbook
+# use esta versión en runtime. No se generan Detalle, Resumen Profesional,
+# Analisis experto IA, Trazabilidad ni Matriz Propuesta en esta etapa.
+
+def _v033_style_header(cell, fill="1F4E79", font_color="FFFFFF"):
+    cell.fill = PatternFill("solid", fgColor=fill)
+    cell.font = Font(bold=True, color=font_color, size=9)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell.border = Border(bottom=Side(style="thin", color="B7B7B7"))
+
+
+def _v033_style_group(cell, fill="17365D", font_color="FFFFFF"):
+    cell.fill = PatternFill("solid", fgColor=fill)
+    cell.font = Font(bold=True, color=font_color, size=10)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell.border = Border(bottom=Side(style="thin", color="B7B7B7"))
+
+
+def _v033_blue80(service_rows, importes_by_row):
+    positives = [(r, float(importes_by_row.get(r) or 0.0)) for r in service_rows if (importes_by_row.get(r) or 0) > 0]
+    total = sum(v for _, v in positives)
+    if total <= 0:
+        return set()
+    threshold = total * 0.80
+    selected = set()
+    running = 0.0
+    for r, v in sorted(positives, key=lambda x: x[1], reverse=True):
+        if running < threshold:
+            selected.add(r)
+            running += v
+        else:
+            break
+    return selected
+
+
+def write_matrix_proposal_excel(
+    output_path: str,
+    services: List[ServiceItem],
+    base: ConstrudataMatrixBase,
+    project_meta: Optional[Dict[str, str]] = None,
+    indirect_pct: float = 0.25,
+    max_services: Optional[int] = None,
+) -> Dict[str, Any]:
+    """V0.3.3: genera únicamente el tab Comparativa.
+
+    El presupuesto/matriz propuesta se representa como un bloque comparable
+    llamado "Presupuesto Propuesto" y las columnas de Mercado reflejan el PU
+    base calculado desde matrices Construdata.
+    """
+    project_meta = project_meta or {}
+    visible_services = services[:max_services] if max_services else services
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Comparativa"
+    ws.sheet_view.showGridLines = False
+
+    # Headers: base + bloque presupuesto propuesto + mercado.
+    headers = ["Partida", "Descripción", "Unidad", "Cantidad", "P.U.", "Importe", "% part", "% ajuste", "Mercado - P.U.", "Mercado - Importe"]
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    ws.cell(1, 1, "Servicios / Cotización")
+    _v033_style_group(ws.cell(1, 1), "E7E6E6", "1F2937")
+    ws.merge_cells(start_row=1, start_column=5, end_row=1, end_column=8)
+    ws.cell(1, 5, "Presupuesto Propuesto")
+    _v033_style_group(ws.cell(1, 5), "D9EAF7", "1F2937")
+    ws.merge_cells(start_row=1, start_column=9, end_row=1, end_column=10)
+    ws.cell(1, 9, "Mercado")
+    _v033_style_group(ws.cell(1, 9), "D9EAF7", "1F2937")
+
+    for c, h in enumerate(headers, 1):
+        ws.cell(2, c, h)
+        _v033_style_header(ws.cell(2, c), "666666" if c <= 4 else ("5B9BD5" if c >= 9 else "1F4E79"))
+
+    summary = {"services": 0, "with_matrix": 0, "requires_review": 0, "details": 0, "budget_total": 0.0}
+    service_excel_rows = []
+    importes = {}
+    r = 3
+    for item in visible_services:
+        selected, candidates, status, obs = choose_matrices(item, base)
+        detail_rows, totals = calculate_matrix_rows(base, item, selected)
+        direct = sum(totals.values())
+        indirect = direct * indirect_pct
+        pu = direct + indirect
+        total = pu * item.qty
+        mercado_pu = pu
+        mercado_total = total
+        summary["services"] += 1
+        if selected:
+            summary["with_matrix"] += 1
+        if "revision" in normalize_text(status) or not selected:
+            summary["requires_review"] += 1
+        summary["details"] += len(detail_rows)
+        summary["budget_total"] += total
+
+        values = [item.part, item.description, item.unit, item.qty, pu, total, None, None, mercado_pu, mercado_total]
+        for c, v in enumerate(values, 1):
+            cell = ws.cell(r, c, v)
+            cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+            cell.alignment = Alignment(vertical="top", wrap_text=(c == 2))
+            cell.font = Font(name="Calibri", size=9, color="1F2937")
+            if c in {5, 6, 9, 10}:
+                cell.number_format = '$#,##0.00'
+            if c in {7, 8}:
+                cell.number_format = '0.00%'
+            if c == 4:
+                cell.number_format = '#,##0.0000'
+        service_excel_rows.append(r)
+        importes[r] = float(total or 0.0)
+        r += 1
+
+    last_data = r - 1
+    if last_data >= 3:
+        total_budget = sum(importes.values())
+        blue_rows = _v033_blue80(service_excel_rows, importes)
+        blue_fill = PatternFill("solid", fgColor="9DC3E6")
+        for rr in service_excel_rows:
+            ws.cell(rr, 7, (importes[rr] / total_budget) if total_budget > 0 else None)
+            ws.cell(rr, 8, 0.0)  # Propuesto vs mercado: misma fuente base en etapa 1.
+            if rr in blue_rows:
+                for cc in range(5, 9):
+                    ws.cell(rr, cc).fill = blue_fill
+    else:
+        ws.cell(3, 1, "Sin partidas detectadas")
+        last_data = 3
+        r = 4
+
+    total_row = last_data + 1
+    ws.cell(total_row, 1, "TOTAL")
+    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=4)
+    ws.cell(total_row, 6, sum(importes.values()))
+    ws.cell(total_row, 10, sum(importes.values()))
+    for c in range(1, 11):
+        cell = ws.cell(total_row, c)
+        cell.fill = PatternFill("solid", fgColor="D9EAD3")
+        cell.font = Font(bold=True, color="1F2937", size=9)
+        cell.border = Border(top=Side(style="thin", color="666666"), bottom=Side(style="thin", color="666666"))
+        if c in {5, 6, 9, 10}:
+            cell.number_format = '$#,##0.00'
+        if c in {7, 8}:
+            cell.number_format = '0.00%'
+
+    widths = {"A": 16, "B": 86, "C": 12, "D": 13, "E": 15, "F": 16, "G": 12, "H": 12, "I": 15, "J": 16}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A3"
+    ws.auto_filter.ref = f"A2:J{total_row}"
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 30
+
+    # Defensa estricta: solo Comparativa.
+    for sh in list(wb.sheetnames):
+        if sh != "Comparativa":
+            del wb[sh]
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_path)
+    return summary
+
+
+# ============================================================================
+# V0.3.4 - Matriz propuesta alineada a Comparativa + Detalle
+# ============================================================================
+# Esta etapa conserva un solo modelo de Excel: Comparativa + Detalle. No genera
+# Resumen Profesional, Analisis experto IA, Trazabilidad ni Matriz Propuesta.
+
+V034_BLUE_80 = "9DC3E6"
+V034_GROUP_FILL = "17365D"
+V034_BASE_FILL = "E7E6E6"
+V034_PROVIDER_FILL = "D9EAF7"
+V034_HEADER_FILL = "1F4E79"
+V034_TOTAL_FILL = "D9EAD3"
+V034_DIFF_FILL = "FFF2CC"
+V034_TEXT = "1F2937"
+V034_WHITE = "FFFFFF"
+
+
+def _v034_header(cell, fill=V034_HEADER_FILL, font_color=V034_WHITE):
+    cell.fill = PatternFill("solid", fgColor=fill)
+    cell.font = Font(bold=True, color=font_color, size=9)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell.border = Border(bottom=Side(style="thin", color="B7B7B7"))
+
+
+def _v034_group(cell, fill=V034_GROUP_FILL, font_color=V034_WHITE):
+    cell.fill = PatternFill("solid", fgColor=fill)
+    cell.font = Font(bold=True, color=font_color, size=10)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell.border = Border(bottom=Side(style="thin", color="B7B7B7"))
+
+
+def _v034_blue80(service_rows, importes_by_row):
+    positives = [(r, float(importes_by_row.get(r) or 0.0)) for r in service_rows if (importes_by_row.get(r) or 0) > 0]
+    total = sum(v for _, v in positives)
+    if total <= 0:
+        return set()
+    selected = set()
+    running = 0.0
+    threshold = total * 0.80
+    for r, v in sorted(positives, key=lambda x: x[1], reverse=True):
+        if running < threshold:
+            selected.add(r)
+            running += v
+        else:
+            break
+    return selected
+
+
+def _v034_set_right_border(ws, col_idx, first_row, last_row):
+    thick = Side(style="medium", color="7F7F7F")
+    for rr in range(first_row, last_row + 1):
+        cell = ws.cell(rr, col_idx)
+        cell.border = Border(left=cell.border.left, right=thick, top=cell.border.top, bottom=cell.border.bottom)
+
+
+def _v034_style_detail(ws, last_row):
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+    widths = {"A":16, "B":72, "C":12, "D":15, "E":8, "F":12, "G":16, "H":11, "I":4, "J":17, "K":10, "L":13, "M":17}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    for c in range(1, 14):
+        if c == 9:
+            ws.cell(1, c).fill = PatternFill("solid", fgColor="FFFFFF")
+        elif c >= 10:
+            _v034_header(ws.cell(1, c), "5B9BD5")
+        else:
+            _v034_header(ws.cell(1, c), V034_HEADER_FILL)
+    for r in range(2, last_row + 1):
+        for c in range(1, 14):
+            cell = ws.cell(r, c)
+            cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+            cell.font = Font(name="Calibri", size=9, color=V034_TEXT)
+            cell.alignment = Alignment(vertical="center", wrap_text=(c == 2))
+        for c in (4, 7, 10, 13):
+            ws.cell(r, c).number_format = '$#,##0.00'
+        for c in (6, 12):
+            ws.cell(r, c).number_format = '#,##0.0000'
+        ws.cell(r, 8).number_format = '0.00%'
+    try:
+        ws.auto_filter.ref = f"A1:M{last_row}"
+    except Exception:
+        pass
+
+
+def write_matrix_proposal_excel(
+    output_path: str,
+    services: List[ServiceItem],
+    base: ConstrudataMatrixBase,
+    project_meta: Optional[Dict[str, str]] = None,
+    indirect_pct: float = 0.25,
+    max_services: Optional[int] = None,
+) -> Dict[str, Any]:
+    """V0.3.4: genera Comparativa + Detalle para presupuesto propuesto.
+
+    El presupuesto propuesto se trata como un proveedor/fuente comparable:
+    "Presupuesto Propuesto". Sus columnas de mercado viven dentro del mismo
+    bloque, no en un bloque global.
+    """
+    project_meta = project_meta or {}
+    visible_services = services[:max_services] if max_services else services
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Comparativa"
+    ws.sheet_view.showGridLines = False
+
+    provider_name = "Presupuesto Propuesto"
+    headers = ["Partida", "Descripción", "Unidad", "Cantidad", "P.U.", "Importe", "% Part.", "% ajuste", "Mercado P.U.", "Mercado Importe"]
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    ws.cell(1, 1, "Servicios / Cotización")
+    _v034_group(ws.cell(1, 1), V034_BASE_FILL, V034_TEXT)
+    ws.merge_cells(start_row=1, start_column=5, end_row=1, end_column=10)
+    ws.cell(1, 5, provider_name)
+    _v034_group(ws.cell(1, 5), V034_PROVIDER_FILL, V034_TEXT)
+    for c, h in enumerate(headers, 1):
+        ws.cell(2, c, h)
+        _v034_header(ws.cell(2, c), "666666" if c <= 4 else V034_HEADER_FILL)
+
+    detail_records = []
+    summary = {"services": 0, "with_matrix": 0, "requires_review": 0, "details": 0, "budget_total": 0.0}
+    service_rows = []
+    importes = {}
+    qty_total = 0.0
+    r = 3
+    for item in visible_services:
+        selected, candidates, status, obs = choose_matrices(item, base)
+        detail_rows, totals = calculate_matrix_rows(base, item, selected)
+        direct = sum(totals.values())
+        indirect = direct * indirect_pct
+        pu = direct + indirect
+        total = pu * item.qty
+        mercado_pu = pu
+        mercado_total = total
+        summary["services"] += 1
+        if selected:
+            summary["with_matrix"] += 1
+        if "revision" in normalize_text(status) or not selected:
+            summary["requires_review"] += 1
+        summary["details"] += len(detail_rows)
+        summary["budget_total"] += total
+        qty_total += float(item.qty or 0)
+
+        values = [item.part, item.description, item.unit, item.qty, pu, total, None, 0.0, mercado_pu, mercado_total]
+        for c, v in enumerate(values, 1):
+            ws.cell(r, c, v)
+        service_rows.append(r)
+        importes[r] = float(total or 0.0)
+        detail_records.append({"service": item, "detail_rows": detail_rows, "pu": pu, "total": total})
+        r += 1
+
+    last_data = r - 1
+    if last_data < 3:
+        ws.cell(3, 1, "Sin partidas detectadas")
+        ws.cell(3, 2, "No se recibieron conceptos estructurados para construir Comparativa.")
+        last_data = 3
+    total_row = last_data + 1
+    total_val = sum(importes.values())
+    blue_rows = _v034_blue80(service_rows, importes)
+    blue_fill = PatternFill("solid", fgColor=V034_BLUE_80)
+    for rr in service_rows:
+        ws.cell(rr, 7, (importes[rr] / total_val) if total_val > 0 else None)
+        if rr in blue_rows:
+            for cc in range(5, 11):
+                ws.cell(rr, cc).fill = blue_fill
+
+    ws.cell(total_row, 1, "TOTAL")
+    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=4)
+    ws.cell(total_row, 5, (total_val / qty_total) if qty_total > 0 else None)
+    ws.cell(total_row, 6, total_val)
+    ws.cell(total_row, 9, (total_val / qty_total) if qty_total > 0 else None)
+    ws.cell(total_row, 10, total_val)
+
+    # Estilos Comparativa
+    for row in ws.iter_rows(min_row=3, max_row=total_row, max_col=10):
+        for cell in row:
+            cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+            cell.alignment = Alignment(vertical="center", wrap_text=(cell.column == 2))
+            cell.font = Font(name="Calibri", size=9, color=V034_TEXT)
+    for rr in range(3, total_row + 1):
+        ws.cell(rr, 4).number_format = '#,##0.0000'
+        for cc in (5, 6, 9, 10):
+            ws.cell(rr, cc).number_format = '$#,##0.00'
+        for cc in (7, 8):
+            ws.cell(rr, cc).number_format = '0.00%'
+    for c in range(1, 11):
+        cell = ws.cell(total_row, c)
+        cell.fill = PatternFill("solid", fgColor=V034_TOTAL_FILL)
+        cell.font = Font(bold=True, color=V034_TEXT, size=9)
+        cell.border = Border(top=Side(style="thin", color="666666"), bottom=Side(style="thin", color="666666"))
+    _v034_set_right_border(ws, 10, 1, total_row)
+    widths = {"A":16, "B":86, "C":12, "D":13, "E":15, "F":16, "G":12, "H":12, "I":15, "J":16}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A3"
+    ws.auto_filter.ref = f"A2:J{total_row}"
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 32
+
+    # Detalle propuesto
+    det = wb.create_sheet("Detalle")
+    detail_headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%", "", "Mercado P. Unitario", "Mercado Op.", "Mercado Cantidad", "Mercado Importe"]
+    for c, h in enumerate(detail_headers, 1):
+        det.cell(1, c, h)
+    rr = 2
+    total_detail = sum((rec.get("total") or 0.0) for rec in detail_records)
+    for rec in detail_records:
+        svc = rec["service"]
+        det.cell(rr, 1, svc.part)
+        det.cell(rr, 2, svc.description)
+        det.cell(rr, 3, svc.unit)
+        det.cell(rr, 4, rec.get("pu"))
+        det.cell(rr, 6, svc.qty)
+        det.cell(rr, 7, rec.get("total"))
+        det.cell(rr, 8, (rec.get("total") or 0) / total_detail if total_detail else None)
+        for c in range(1, 14):
+            det.cell(rr, c).fill = PatternFill("solid", fgColor="E7E6E6")
+            det.cell(rr, c).font = Font(bold=True, color=V034_TEXT, size=9)
+        rr += 1
+        for d in rec["detail_rows"]:
+            imp = getattr(d, "raw_import", None)
+            vals = [getattr(d, "insumo_code", ""), getattr(d, "insumo_name", "") or getattr(d, "insumo_desc", ""), getattr(d, "insumo_unit", ""), getattr(d, "unit_cost", None), "*" if not getattr(d, "is_yield", False) else "/", getattr(d, "quantity", None), imp, (imp or 0) / total_detail if total_detail else None, "", getattr(d, "unit_cost", None), "*" if not getattr(d, "is_yield", False) else "/", getattr(d, "quantity", None), imp]
+            for c, v in enumerate(vals, 1):
+                det.cell(rr, c, v)
+            rr += 1
+    if rr == 2:
+        det.cell(2, 1, "Sin detalle detectado")
+        rr = 3
+    _v034_style_detail(det, rr - 1)
+
+    # Solo Comparativa + Detalle.
+    for sh in list(wb.sheetnames):
+        if sh not in {"Comparativa", "Detalle"}:
+            del wb[sh]
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_path)
+    return summary

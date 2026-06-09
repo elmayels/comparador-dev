@@ -168,6 +168,54 @@ def sim(a: Any, b: Any) -> float:
     return max(jac, seq)
 
 
+
+
+def _v035_processor_attr(name: str):
+    """Obtiene funciones internas del processor raíz sin romper deploys backend/main.py.
+
+    Se usa para reutilizar el matching real Construdata/granular del flujo
+    histórico en lugar de inventar mercado en el nuevo layout de Excel.
+    """
+    try:
+        try:
+            from . import processor as _processor
+        except Exception:
+            import processor as _processor
+        return getattr(_processor, name, None)
+    except Exception:
+        return None
+
+
+def _v035_apply_real_market_pricing(conceptos: Dict[str, Any], diag: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Enriquece conceptos con granular_market_items usando el matcher real.
+
+    No crea placeholders. Si el matcher no está disponible, deja el concepto sin
+    mercado y guarda diagnóstico, para que Detalle muestre Sin match/blanco.
+    """
+    fn = _v035_processor_attr("_step08_apply_market_catalog_pricing")
+    if callable(fn):
+        try:
+            return fn(conceptos)
+        except Exception as exc:
+            if isinstance(diag, dict):
+                diag.setdefault("errors", []).append(f"Mercado Construdata no aplicado: {type(exc).__name__}: {exc}")
+    else:
+        if isinstance(diag, dict):
+            diag.setdefault("errors", []).append("Mercado Construdata no aplicado: función _step08_apply_market_catalog_pricing no disponible")
+    return conceptos
+
+
+def _v035_financial_rows_for_concept(raw: Dict[str, Any]) -> List[Tuple[Any, Any, Any, Any, Any]]:
+    fn = _v035_processor_attr("_step36_financial_rows") or _v035_processor_attr("_step13_financial_rows")
+    if callable(fn):
+        try:
+            rows = fn(raw)
+            if isinstance(rows, list):
+                return rows
+        except Exception:
+            return []
+    return []
+
 def desc(raw: Dict[str, Any]) -> str:
     return str(raw.get("desc") or raw.get("descripcion") or raw.get("descripcion_resumen") or raw.get("concepto") or "").strip()
 
@@ -217,6 +265,9 @@ def read_provider(filepath: str, resumen_path: Optional[str], provider: str) -> 
             diag["resumen_rows"] = len(rows); diag["resumen_applied"] = True
         except Exception as exc:
             diag["errors"].append(f"Resumen PU no aplicado: {type(exc).__name__}: {exc}")
+    # V0.3.5: el Detalle necesita mercado real por insumo. Reutilizar el
+    # matcher Construdata del motor actual antes de construir las filas.
+    _v035_apply_real_market_pricing(conceptos, diag)
     out = []
     for i, (k, raw) in enumerate((conceptos or {}).items(), 1):
         if str(k).startswith("__") or not isinstance(raw, dict):
@@ -1331,3 +1382,1047 @@ def write_trace(wb, a: Dict[str, Any]):
 
 def professional_mvp_status() -> Dict[str, Any]:
     return {"version": "quantia-comparador-apu-v0.2.4-analistas", "mode": "local-sin-redis-sin-db", "settings": settings(), "principles": ["Base común tipo Neodata/Resumen PU antes de comparar proveedores.", "Faltantes y unidades incompatibles penalizan; no se imputan como precio real.", "Adicionales fuera de base se reportan separados.", "Excel sigue siendo entregable formal; la UI es apoyo operativo."]}
+
+
+# ============================================================================
+# V0.3.3 - Reestructura Excel desde cero: SOLO TAB Comparativa
+# ============================================================================
+# Esta etapa reinicia la salida Excel y deja un único tab visible llamado
+# "Comparativa" para los 3 casos: presupuesto/matriz propuesta, 1 contratista
+# y N contratistas. No se generan Detalle, Resumen Profesional, Analisis experto
+# IA, Trazabilidad ni tabs auxiliares.
+
+COMPARATIVA_BLUE_80 = "D9EAF7"
+COMPARATIVA_GROUP_FILL = "17365D"
+COMPARATIVA_SUBHEADER_FILL = "1F4E79"
+COMPARATIVA_TOTAL_FILL = "D9EAD3"
+COMPARATIVA_BASE_FILL = "E7E6E6"
+COMPARATIVA_MARKET_FILL = "D9EAF7"
+
+
+def _v033_provider_display_name(name: Any, idx: int) -> str:
+    raw = str(name or "").strip()
+    return raw or f"Contratista {idx + 1}"
+
+
+def _v033_money(v: Any) -> Optional[float]:
+    f = as_float(v)
+    return round(float(f), 2) if f is not None else None
+
+
+def _v033_num(v: Any) -> Optional[float]:
+    f = as_float(v)
+    return float(f) if f is not None else None
+
+
+def _v033_sheet_style_base(ws) -> None:
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A3"
+    ws.column_dimensions["A"].width = 16
+    ws.column_dimensions["B"].width = 82
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 13
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            cell.font = Font(name="Calibri", size=9, color=TEXT)
+
+
+def _v033_style_group_header(cell, fill: str = COMPARATIVA_GROUP_FILL) -> None:
+    cell.fill = PatternFill("solid", fgColor=fill)
+    cell.font = Font(bold=True, color=WHITE, size=10)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell.border = Border(bottom=Side(style="thin", color="B7B7B7"))
+
+
+def _v033_style_sub_header(cell, fill: str = COMPARATIVA_SUBHEADER_FILL) -> None:
+    cell.fill = PatternFill("solid", fgColor=fill)
+    cell.font = Font(bold=True, color=WHITE, size=9)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell.border = Border(bottom=Side(style="thin", color="B7B7B7"))
+
+
+def _v033_calc_blue_80_rows(row_indexes: List[int], importes_by_row: Dict[int, float]) -> set:
+    """Devuelve las filas que concentran aproximadamente el 80% del importe.
+
+    Se evalúa por contratista, de mayor a menor importe, incluyendo la partida
+    que cruza el umbral del 80%.
+    """
+    positives = [(r, float(importes_by_row.get(r) or 0.0)) for r in row_indexes if (importes_by_row.get(r) or 0) > 0]
+    total_val = sum(v for _, v in positives)
+    if total_val <= 0:
+        return set()
+    threshold = total_val * 0.80
+    selected = set()
+    running = 0.0
+    for r, v in sorted(positives, key=lambda x: x[1], reverse=True):
+        if running < threshold:
+            selected.add(r)
+            running += v
+        else:
+            break
+    return selected
+
+
+def write_comparativa_stage1_workbook(workbook_path: str, analysis: Dict[str, Any]) -> str:
+    """Crea desde cero un Excel con un único tab: Comparativa.
+
+    Estructura obligatoria:
+      Partida | Descripción | Unidad | Cantidad | [Contratista: P.U., Importe, % part, % ajuste]... | Mercado - P.U. | Mercado - Importe
+    """
+    providers = list(analysis.get("providers") or [])
+    if not providers:
+        providers = ["Contratista 1"]
+    providers = [_v033_provider_display_name(p, i) for i, p in enumerate(providers)]
+    rows = list(analysis.get("matrix_rows") or [])
+    detail_cache = _v036_prepare_detail_cache(analysis, providers)
+    detail_market_by_provider = {
+        provider: _v036_consolidate_market_from_detail(detail_cache.get(provider, []), rows)
+        for provider in providers
+    }
+    analysis["_v036_detail_cache"] = detail_cache
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Comparativa"
+
+    # Encabezado en dos niveles: fila 1 grupos, fila 2 columnas reales.
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    ws.cell(1, 1, "Servicios / Cotización")
+    _v033_style_group_header(ws.cell(1, 1), COMPARATIVA_BASE_FILL)
+    ws.cell(1, 1).font = Font(bold=True, color=TEXT, size=10)
+
+    headers = ["Partida", "Descripción", "Unidad", "Cantidad"]
+    col = 5
+    provider_blocks: Dict[str, Tuple[int, int]] = {}
+    for idx, provider in enumerate(providers):
+        start = col
+        end = col + 3
+        provider_blocks[provider] = (start, end)
+        ws.merge_cells(start_row=1, start_column=start, end_row=1, end_column=end)
+        ws.cell(1, start, provider)
+        _v033_style_group_header(ws.cell(1, start), _provider_pastel(idx))
+        ws.cell(1, start).font = Font(bold=True, color=TEXT, size=10)
+        headers.extend(["P.U.", "Importe", "% part", "% ajuste"])
+        col += 4
+
+    market_start = col
+    market_end = col + 1
+    ws.merge_cells(start_row=1, start_column=market_start, end_row=1, end_column=market_end)
+    ws.cell(1, market_start, "Mercado")
+    _v033_style_group_header(ws.cell(1, market_start), COMPARATIVA_MARKET_FILL)
+    ws.cell(1, market_start).font = Font(bold=True, color=TEXT, size=10)
+    headers.extend(["Mercado - P.U.", "Mercado - Importe"])
+
+    for c, h in enumerate(headers, 1):
+        ws.cell(2, c, h)
+        if c <= 4:
+            _v033_style_sub_header(ws.cell(2, c), "666666")
+        elif market_start <= c <= market_end:
+            _v033_style_sub_header(ws.cell(2, c), "5B9BD5")
+        else:
+            _v033_style_sub_header(ws.cell(2, c), COMPARATIVA_SUBHEADER_FILL)
+
+    first_data_row = 3
+    row_idx = first_data_row
+    provider_importes_by_excel_row: Dict[str, Dict[int, float]] = {p: {} for p in providers}
+
+    for item in rows:
+        partida = item.get("code") or item.get("partida") or item.get("part") or ""
+        descripcion = item.get("desc") or item.get("descripcion") or item.get("concepto") or ""
+        unidad = item.get("unit") or item.get("unidad") or ""
+        cantidad = _v033_num(item.get("qty") or item.get("cantidad"))
+        mercado_pu = _v033_money(item.get("ref_pu") or item.get("market_pu") or item.get("pu_mercado"))
+        mercado_importe = _v033_money(item.get("ref_total") or item.get("market_total") or ((cantidad or 0) * mercado_pu if mercado_pu is not None else None))
+
+        ws.cell(row_idx, 1, partida)
+        ws.cell(row_idx, 2, descripcion)
+        ws.cell(row_idx, 3, unidad)
+        ws.cell(row_idx, 4, cantidad)
+        ws.cell(row_idx, 4).number_format = '#,##0.0000'
+
+        for idx, provider in enumerate(providers):
+            start, _ = provider_blocks[provider]
+            pdata = (item.get("providers") or {}).get(provider, {}) or {}
+            # Fallback por si el nombre original estaba en otra grafía.
+            if not pdata and item.get("providers"):
+                for k, v in (item.get("providers") or {}).items():
+                    if norm_text(k) == norm_text(provider):
+                        pdata = v or {}
+                        break
+            prov_pu = _v033_money(pdata.get("pu") or pdata.get("precio_unitario"))
+            prov_importe = _v033_money(pdata.get("total") or pdata.get("importe") or ((cantidad or 0) * prov_pu if prov_pu is not None else None))
+            ajuste = None
+            if prov_pu is not None and mercado_pu not in (None, 0):
+                ajuste = (prov_pu - mercado_pu) / mercado_pu
+            ws.cell(row_idx, start, prov_pu)
+            ws.cell(row_idx, start + 1, prov_importe)
+            ws.cell(row_idx, start + 2, None)  # % part se llena después de conocer total proveedor.
+            ws.cell(row_idx, start + 3, ajuste)
+            provider_importes_by_excel_row[provider][row_idx] = float(prov_importe or 0.0)
+
+        ws.cell(row_idx, market_start, mercado_pu)
+        ws.cell(row_idx, market_start + 1, mercado_importe)
+        row_idx += 1
+
+    last_data_row = row_idx - 1
+
+    # Si no hay matrix_rows, dejar estructura vacía pero válida.
+    if last_data_row < first_data_row:
+        ws.cell(first_data_row, 1, "Sin partidas detectadas")
+        ws.cell(first_data_row, 2, "No se recibieron conceptos estructurados para construir Comparativa.")
+        last_data_row = first_data_row
+        row_idx = first_data_row + 1
+
+    # % part y azul 80/20 por contratista.
+    data_rows = list(range(first_data_row, last_data_row + 1))
+    blue_fill = PatternFill("solid", fgColor=COMPARATIVA_BLUE_80)
+    for provider in providers:
+        start, end = provider_blocks[provider]
+        total_provider = sum(provider_importes_by_excel_row.get(provider, {}).values())
+        blue_rows = _v033_calc_blue_80_rows(data_rows, provider_importes_by_excel_row.get(provider, {}))
+        for r in data_rows:
+            importe = provider_importes_by_excel_row.get(provider, {}).get(r, 0.0)
+            ws.cell(r, start + 2, (importe / total_provider) if total_provider > 0 else None)
+            if r in blue_rows:
+                for c in range(start, end + 1):
+                    ws.cell(r, c).fill = blue_fill
+
+    # Fila totalizadora.
+    total_row = last_data_row + 1
+    ws.cell(total_row, 1, "TOTAL")
+    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=4)
+    for provider in providers:
+        start, _ = provider_blocks[provider]
+        total_provider = sum(provider_importes_by_excel_row.get(provider, {}).values())
+        ws.cell(total_row, start + 1, total_provider)
+    market_total = sum((_v033_money(ws.cell(r, market_start + 1).value) or 0.0) for r in data_rows)
+    ws.cell(total_row, market_start + 1, market_total)
+
+    # Formatos y estilo final.
+    _v033_sheet_style_base(ws)
+    for c in range(1, len(headers) + 1):
+        # Reaplicar encabezados tras base style.
+        if c <= 4:
+            _v033_style_sub_header(ws.cell(2, c), "666666")
+        elif market_start <= c <= market_end:
+            _v033_style_sub_header(ws.cell(2, c), "5B9BD5")
+        else:
+            _v033_style_sub_header(ws.cell(2, c), COMPARATIVA_SUBHEADER_FILL)
+    for merged in list(ws.merged_cells.ranges):
+        min_col, min_row, max_col, max_row = merged.bounds
+        if min_row == 1:
+            # La celda superior izquierda conserva estilo; no tocar rangos merged.
+            pass
+
+    # Reaplicar encabezados de grupo.
+    _v033_style_group_header(ws.cell(1, 1), COMPARATIVA_BASE_FILL); ws.cell(1, 1).font = Font(bold=True, color=TEXT, size=10)
+    for idx, provider in enumerate(providers):
+        start, _ = provider_blocks[provider]
+        _v033_style_group_header(ws.cell(1, start), _provider_pastel(idx)); ws.cell(1, start).font = Font(bold=True, color=TEXT, size=10)
+    _v033_style_group_header(ws.cell(1, market_start), COMPARATIVA_MARKET_FILL); ws.cell(1, market_start).font = Font(bold=True, color=TEXT, size=10)
+
+    for r in range(first_data_row, total_row + 1):
+        ws.cell(r, 2).alignment = Alignment(vertical="top", wrap_text=True)
+        ws.cell(r, 4).number_format = '#,##0.0000'
+        for provider in providers:
+            start, _ = provider_blocks[provider]
+            ws.cell(r, start).number_format = '$#,##0.00'
+            ws.cell(r, start + 1).number_format = '$#,##0.00'
+            ws.cell(r, start + 2).number_format = '0.00%'
+            ws.cell(r, start + 3).number_format = '0.00%'
+        ws.cell(r, market_start).number_format = '$#,##0.00'
+        ws.cell(r, market_start + 1).number_format = '$#,##0.00'
+
+    for c in range(1, len(headers) + 1):
+        letter = get_column_letter(c)
+        if c == 2:
+            ws.column_dimensions[letter].width = 82
+        elif c in (1, 3, 4):
+            ws.column_dimensions[letter].width = {1: 16, 3: 12, 4: 13}.get(c, 14)
+        else:
+            ws.column_dimensions[letter].width = 15
+
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(total_row, c)
+        cell.fill = PatternFill("solid", fgColor=COMPARATIVA_TOTAL_FILL)
+        cell.font = Font(bold=True, color=TEXT, size=9)
+        cell.border = Border(top=Side(style="thin", color="666666"), bottom=Side(style="thin", color="666666"))
+
+    try:
+        ws.auto_filter.ref = f"A2:{get_column_letter(len(headers))}{total_row}"
+    except Exception:
+        pass
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 30
+
+    # Defensa estricta: solo debe existir Comparativa.
+    for sh in list(wb.sheetnames):
+        if sh != "Comparativa":
+            del wb[sh]
+
+    Path(workbook_path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(workbook_path)
+    return workbook_path
+
+
+def create_professional_mvp_workbook(workbook_path: str, filepaths: List[str], nombres: List[str], meta: Optional[Dict[str, Any]] = None, catalogo_path: Optional[str] = None, nacional_path: Optional[str] = None, resumen_paths: Optional[List[Optional[str]]] = None, resumen_oficial_path: Optional[str] = None) -> str:
+    """V0.3.3: salida desde cero, únicamente tab Comparativa."""
+    analysis = build_professional_mvp_analysis(
+        list(filepaths or []),
+        list(nombres or []),
+        meta,
+        catalogo_path,
+        nacional_path,
+        list(resumen_paths or []),
+        resumen_oficial_path,
+    )
+    return write_comparativa_stage1_workbook(workbook_path, analysis)
+
+
+def append_professional_mvp_workbook(workbook_path: str, filepaths: List[str], nombres: List[str], meta: Optional[Dict[str, Any]] = None, catalogo_path: Optional[str] = None, nacional_path: Optional[str] = None, resumen_paths: Optional[List[Optional[str]]] = None, resumen_oficial_path: Optional[str] = None) -> str:
+    """V0.3.3: compatibilidad; no agrega tabs, reconstruye solo Comparativa."""
+    return create_professional_mvp_workbook(
+        workbook_path,
+        filepaths,
+        nombres,
+        meta=meta,
+        catalogo_path=catalogo_path,
+        nacional_path=nacional_path,
+        resumen_paths=resumen_paths or [],
+        resumen_oficial_path=resumen_oficial_path,
+    )
+
+
+# ============================================================================
+# V0.3.4 - Comparativa con mercado por proveedor + Detalle por contratista
+# ============================================================================
+# Etapa 2 de reconstruccion del Excel ideal:
+#   1) Comparativa: bloque por contratista con P.U., Importe, % Part., % ajuste,
+#      Mercado P.U. y Mercado Importe. No hay mercado global.
+#   2) Detalle: una hoja por contratista, reutilizando la matriz parseada del
+#      proceso individual cuando esta disponible. No genera Resumen Profesional,
+#      Analisis experto IA, Trazabilidad ni Matriz MultiProveedor.
+
+V034_MARKET_DIFF_FILL = "FFFFFF"  # v0.3.6: no yellow fill; diferencias en Detalle van en negritas
+V034_SEPARATOR_FILL = "FFFFFF"
+
+
+def _v034_provider_market_pu(row: Dict[str, Any], pdata: Dict[str, Any]) -> Optional[float]:
+    """Precio de mercado por proveedor.
+
+    El modelo nuevo permite que cada proveedor tenga su propio PU de mercado
+    calculado desde su matriz. Si el analisis todavia no trae ese dato granular,
+    se usa la referencia de la partida como fallback controlado.
+    """
+    for key in ("market_pu", "mercado_pu", "ref_pu", "pu_mercado"):
+        val = _v033_money(pdata.get(key))
+        if val is not None:
+            return val
+    return _v033_money(row.get("ref_pu") or row.get("market_pu") or row.get("pu_mercado"))
+
+
+def _v034_provider_market_total(row: Dict[str, Any], pdata: Dict[str, Any], qty_val: Optional[float], market_pu: Optional[float]) -> Optional[float]:
+    for key in ("market_total", "mercado_importe", "ref_total", "importe_mercado"):
+        val = _v033_money(pdata.get(key))
+        if val is not None:
+            return val
+    val = _v033_money(row.get("ref_total") or row.get("market_total") or row.get("importe_mercado"))
+    if val is not None:
+        return val
+    return _v033_money((qty_val or 0) * market_pu) if market_pu is not None else None
+
+
+def _v034_set_block_right_border(ws, col_idx: int, first_row: int, last_row: int) -> None:
+    thick = Side(style="medium", color="7F7F7F")
+    for rr in range(first_row, last_row + 1):
+        cell = ws.cell(rr, col_idx)
+        left = cell.border.left
+        top = cell.border.top
+        bottom = cell.border.bottom
+        cell.border = Border(left=left, right=thick, top=top, bottom=bottom)
+
+
+def _v036_prepare_detail_cache(analysis: Dict[str, Any], providers: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Obtiene el detalle real por proveedor una sola vez.
+
+    V0.3.6: Comparativa debe tomar Mercado P.U./Importe desde el mismo
+    Detalle del proveedor. Esta cache evita recalcular y asegura que Detalle
+    y Comparativa usen la misma fuente.
+    """
+    injected = analysis.get("_v036_detail_cache")
+    if isinstance(injected, dict):
+        return injected
+    meta = analysis.get("meta") or {}
+    filepaths = list(meta.get("source_filepaths") or [])
+    nombres = list(meta.get("source_provider_names") or analysis.get("providers") or providers or [])
+    resumen_paths = list(meta.get("source_resumen_paths") or [])
+    cache: Dict[str, List[Dict[str, Any]]] = {}
+    if not filepaths:
+        return cache
+    for idx, fp in enumerate(filepaths):
+        provider_name = providers[idx] if idx < len(providers) else (nombres[idx] if idx < len(nombres) else f"P{idx+1}")
+        resumen_path = resumen_paths[idx] if idx < len(resumen_paths) else None
+        try:
+            detail_rows, _diag = _v034_extract_provider_detail_rows(fp, resumen_path, provider_name)
+        except Exception as exc:
+            detail_rows = [{
+                "kind": "concept",
+                "codigo": "ERROR",
+                "concepto": f"No se pudo generar detalle: {type(exc).__name__}: {exc}",
+                "unidad": "",
+                "pu": None,
+                "op": "",
+                "cantidad": None,
+                "importe": None,
+                "pct": None,
+                "market_pu": None,
+                "market_op": "Sin match",
+                "market_qty": None,
+                "market_importe": None,
+                "market_match_real": False,
+            }]
+        cache[provider_name] = detail_rows
+    return cache
+
+
+def _v036_norm_partida(value: Any) -> str:
+    return norm_text(str(value or "")).replace(" ", "")
+
+
+def _v036_consolidate_market_from_detail(detail_rows: List[Dict[str, Any]], base_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Consolida mercado por partida desde el tab Detalle.
+
+    Regla obligatoria: Detalle proveedor -> consolidacion por partida ->
+    Comparativa. Si no hay match real, no se inventa mercado.
+    """
+    qty_by_code: Dict[str, Optional[float]] = {}
+    desc_by_code: Dict[str, str] = {}
+    for row in base_rows or []:
+        code = _v036_norm_partida(row.get("code") or row.get("partida") or row.get("part") or row.get("codigo"))
+        if not code:
+            continue
+        qty_by_code[code] = _v033_num(row.get("qty") or row.get("cantidad"))
+        desc_by_code[code] = norm_text(row.get("desc") or row.get("descripcion") or row.get("concepto") or "")
+
+    out: Dict[str, Dict[str, Any]] = {}
+    current_code = ""
+    item_sums: Dict[str, float] = {}
+    item_has_market: Dict[str, bool] = {}
+
+    for row in detail_rows or []:
+        kind = row.get("kind")
+        code_raw = row.get("codigo")
+        code = _v036_norm_partida(code_raw)
+        if kind == "concept":
+            current_code = code
+            qty = _v033_num(row.get("cantidad")) or qty_by_code.get(code)
+            market_importe = _v033_money(row.get("market_importe"))
+            market_pu = _v033_money(row.get("market_pu"))
+            has_market = bool(row.get("market_match_real") and (market_importe is not None or market_pu is not None))
+            if has_market:
+                if market_importe is None and qty not in (None, 0) and market_pu is not None:
+                    market_importe = _v033_money(qty * market_pu)
+                if market_pu is None and qty not in (None, 0) and market_importe is not None:
+                    market_pu = _v033_money(market_importe / qty)
+                out[code] = {"market_pu": market_pu, "market_importe": market_importe, "has_market": True}
+            continue
+
+        if kind in {"item", "financial"} and current_code:
+            if not row.get("market_match_real"):
+                continue
+            imp = _v033_money(row.get("market_importe"))
+            if imp is None:
+                imp = _v034_calc_market_importe(row.get("market_pu"), row.get("market_op"), row.get("market_qty"))
+            if imp is not None:
+                item_sums[current_code] = item_sums.get(current_code, 0.0) + float(imp)
+                item_has_market[current_code] = True
+
+    for code, total in item_sums.items():
+        # No sobrescribir un total de concepto si ya estaba disponible; ese es el dato financiero final.
+        if code in out and out[code].get("has_market"):
+            continue
+        qty = qty_by_code.get(code)
+        market_pu = _v033_money(total / qty) if qty not in (None, 0) else None
+        out[code] = {"market_pu": market_pu, "market_importe": _v033_money(total), "has_market": bool(item_has_market.get(code))}
+    return out
+
+
+def _v036_market_for_comparativa(item: Dict[str, Any], provider: str, pdata: Dict[str, Any], detail_market: Dict[str, Dict[str, Any]], cantidad: Optional[float]) -> Tuple[Optional[float], Optional[float], bool]:
+    """Devuelve mercado para Comparativa desde Detalle consolidado.
+
+    Si Detalle no trae match real para la partida, devuelve vacio. Solo usa
+    campos del row/pdata si ya vienen marcados como mercado real/consolidado.
+    """
+    code = _v036_norm_partida(item.get("code") or item.get("partida") or item.get("part") or item.get("codigo"))
+    found = detail_market.get(code) or {}
+    if found.get("has_market"):
+        market_pu = _v033_money(found.get("market_pu"))
+        market_importe = _v033_money(found.get("market_importe"))
+        if market_importe is None and market_pu is not None and cantidad is not None:
+            market_importe = _v033_money(cantidad * market_pu)
+        if market_pu is None and market_importe is not None and cantidad not in (None, 0):
+            market_pu = _v033_money(market_importe / cantidad)
+        return market_pu, market_importe, True
+
+    # Fallback solo si el dato ya viene de una etapa consolidada de mercado real.
+    if pdata.get("market_match_real") or pdata.get("market_from_detail") or pdata.get("mercado_real"):
+        market_pu = _v033_money(pdata.get("market_pu") or pdata.get("mercado_pu") or pdata.get("pu_mercado"))
+        market_importe = _v033_money(pdata.get("market_total") or pdata.get("mercado_importe") or pdata.get("importe_mercado"))
+        if market_importe is None and market_pu is not None and cantidad is not None:
+            market_importe = _v033_money(cantidad * market_pu)
+        return market_pu, market_importe, market_pu is not None or market_importe is not None
+    return None, None, False
+
+
+def _v036_apply_market_diff_bold(ws, row_idx: int) -> None:
+    """Marca diferencias solo con negritas en columnas de mercado.
+
+    No usa fondo amarillo ni altera columnas de contratista.
+    """
+    def bold_market_cell(col_idx: int) -> None:
+        cell = ws.cell(row_idx, col_idx)
+        cell.font = copy(cell.font)
+        cell.font = Font(name=cell.font.name or "Calibri", size=cell.font.sz or 9, color=cell.font.color.rgb if getattr(cell.font.color, 'type', None) == 'rgb' else TEXT, bold=True)
+
+    left = _v033_num(ws.cell(row_idx, 4).value); market = _v033_num(ws.cell(row_idx, 10).value)
+    if left is not None and market not in (None, 0):
+        if abs(left - market) > 1.0 or abs((left - market) / market) > 0.005:
+            bold_market_cell(10)
+    left = _v033_num(ws.cell(row_idx, 6).value); market = _v033_num(ws.cell(row_idx, 12).value)
+    if left is not None and market is not None and abs(left - market) > 0.0001:
+        bold_market_cell(12)
+    left = _v033_num(ws.cell(row_idx, 7).value); market = _v033_num(ws.cell(row_idx, 13).value)
+    if left is not None and market not in (None, 0):
+        if abs(left - market) > 1.0 or abs((left - market) / market) > 0.005:
+            bold_market_cell(13)
+
+
+def write_comparativa_stage2_workbook(workbook_path: str, analysis: Dict[str, Any]) -> str:
+    """Crea Excel de etapa 2: Comparativa + Detalle por contratista.
+
+    Comparativa usa mercado por proveedor dentro de cada bloque:
+      P.U. | Importe | % Part. | % ajuste | Mercado P.U. | Mercado Importe
+    """
+    providers = list(analysis.get("providers") or [])
+    if not providers:
+        providers = ["Contratista 1"]
+    providers = [_v033_provider_display_name(p, i) for i, p in enumerate(providers)]
+    rows = list(analysis.get("matrix_rows") or [])
+    detail_cache = _v036_prepare_detail_cache(analysis, providers)
+    detail_market_by_provider = {
+        provider: _v036_consolidate_market_from_detail(detail_cache.get(provider, []), rows)
+        for provider in providers
+    }
+    analysis["_v036_detail_cache"] = detail_cache
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Comparativa"
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    ws.cell(1, 1, "Servicios / Cotización")
+    _v033_style_group_header(ws.cell(1, 1), COMPARATIVA_BASE_FILL)
+    ws.cell(1, 1).font = Font(bold=True, color=TEXT, size=10)
+
+    headers = ["Partida", "Descripción", "Unidad", "Cantidad"]
+    col = 5
+    provider_blocks: Dict[str, Tuple[int, int]] = {}
+    provider_totals: Dict[str, Dict[str, float]] = {p: {"importe": 0.0, "mercado": 0.0, "cantidad": 0.0} for p in providers}
+    provider_importes_by_excel_row: Dict[str, Dict[int, float]] = {p: {} for p in providers}
+
+    for idx, provider in enumerate(providers):
+        start = col
+        end = col + 5
+        provider_blocks[provider] = (start, end)
+        ws.merge_cells(start_row=1, start_column=start, end_row=1, end_column=end)
+        ws.cell(1, start, provider)
+        _v033_style_group_header(ws.cell(1, start), _provider_pastel(idx))
+        ws.cell(1, start).font = Font(bold=True, color=TEXT, size=10)
+        headers.extend(["P.U.", "Importe", "% Part.", "% ajuste", "Mercado P.U.", "Mercado Importe"])
+        col += 6
+
+    for c, h in enumerate(headers, 1):
+        ws.cell(2, c, h)
+        if c <= 4:
+            _v033_style_sub_header(ws.cell(2, c), "666666")
+        else:
+            _v033_style_sub_header(ws.cell(2, c), COMPARATIVA_SUBHEADER_FILL)
+
+    first_data_row = 3
+    row_idx = first_data_row
+    for item in rows:
+        partida = item.get("code") or item.get("partida") or item.get("part") or ""
+        descripcion = item.get("desc") or item.get("descripcion") or item.get("concepto") or ""
+        unidad = item.get("unit") or item.get("unidad") or ""
+        cantidad = _v033_num(item.get("qty") or item.get("cantidad"))
+
+        ws.cell(row_idx, 1, partida)
+        ws.cell(row_idx, 2, descripcion)
+        ws.cell(row_idx, 3, unidad)
+        ws.cell(row_idx, 4, cantidad)
+        ws.cell(row_idx, 4).number_format = '#,##0.0000'
+
+        for idx, provider in enumerate(providers):
+            start, _ = provider_blocks[provider]
+            pdata = (item.get("providers") or {}).get(provider, {}) or {}
+            if not pdata and item.get("providers"):
+                for k, v in (item.get("providers") or {}).items():
+                    if norm_text(k) == norm_text(provider):
+                        pdata = v or {}
+                        break
+            prov_pu = _v033_money(pdata.get("pu") or pdata.get("precio_unitario"))
+            prov_importe = _v033_money(pdata.get("total") or pdata.get("importe") or ((cantidad or 0) * prov_pu if prov_pu is not None else None))
+            mercado_pu, mercado_importe, mercado_ok = _v036_market_for_comparativa(
+                item,
+                provider,
+                pdata,
+                detail_market_by_provider.get(provider, {}),
+                cantidad,
+            )
+            ajuste = None
+            if mercado_ok and prov_pu is not None and mercado_pu not in (None, 0):
+                ajuste = (prov_pu - mercado_pu) / mercado_pu
+
+            ws.cell(row_idx, start, prov_pu)
+            ws.cell(row_idx, start + 1, prov_importe)
+            ws.cell(row_idx, start + 2, None)  # % Part. se calcula despues.
+            ws.cell(row_idx, start + 3, ajuste)
+            ws.cell(row_idx, start + 4, mercado_pu)
+            ws.cell(row_idx, start + 5, mercado_importe)
+
+            provider_importes_by_excel_row[provider][row_idx] = float(prov_importe or 0.0)
+            provider_totals[provider]["importe"] += float(prov_importe or 0.0)
+            provider_totals[provider]["mercado"] += float(mercado_importe or 0.0)
+            provider_totals[provider]["cantidad"] += float(cantidad or 0.0)
+        row_idx += 1
+
+    last_data_row = row_idx - 1
+    if last_data_row < first_data_row:
+        ws.cell(first_data_row, 1, "Sin partidas detectadas")
+        ws.cell(first_data_row, 2, "No se recibieron conceptos estructurados para construir Comparativa.")
+        last_data_row = first_data_row
+        row_idx = first_data_row + 1
+
+    data_rows = list(range(first_data_row, last_data_row + 1))
+    blue_fill = PatternFill("solid", fgColor=COMPARATIVA_BLUE_80)
+    for provider in providers:
+        start, end = provider_blocks[provider]
+        total_provider = provider_totals[provider]["importe"]
+        blue_rows = _v033_calc_blue_80_rows(data_rows, provider_importes_by_excel_row.get(provider, {}))
+        for rr in data_rows:
+            importe = provider_importes_by_excel_row.get(provider, {}).get(rr, 0.0)
+            ws.cell(rr, start + 2, (importe / total_provider) if total_provider > 0 else None)
+            if rr in blue_rows:
+                for cc in range(start, end + 1):
+                    ws.cell(rr, cc).fill = blue_fill
+
+    total_row = last_data_row + 1
+    ws.cell(total_row, 1, "TOTAL")
+    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=4)
+    for provider in providers:
+        start, _ = provider_blocks[provider]
+        qty_total = provider_totals[provider]["cantidad"] or 0.0
+        importe_total = provider_totals[provider]["importe"]
+        mercado_total = provider_totals[provider]["mercado"]
+        # P.U. total = PU ponderado por cantidad. Evita sumar PU simples.
+        ws.cell(total_row, start, (importe_total / qty_total) if qty_total > 0 else None)
+        ws.cell(total_row, start + 1, importe_total)
+        ws.cell(total_row, start + 2, None)
+        ws.cell(total_row, start + 3, None)
+        ws.cell(total_row, start + 4, (mercado_total / qty_total) if qty_total > 0 else None)
+        ws.cell(total_row, start + 5, mercado_total)
+
+    _v033_sheet_style_base(ws)
+    _v033_style_group_header(ws.cell(1, 1), COMPARATIVA_BASE_FILL)
+    ws.cell(1, 1).font = Font(bold=True, color=TEXT, size=10)
+    for idx, provider in enumerate(providers):
+        start, end = provider_blocks[provider]
+        _v033_style_group_header(ws.cell(1, start), _provider_pastel(idx))
+        ws.cell(1, start).font = Font(bold=True, color=TEXT, size=10)
+        _v034_set_block_right_border(ws, end, 1, total_row)
+
+    for c, h in enumerate(headers, 1):
+        if c <= 4:
+            _v033_style_sub_header(ws.cell(2, c), "666666")
+        else:
+            _v033_style_sub_header(ws.cell(2, c), COMPARATIVA_SUBHEADER_FILL)
+
+    for rr in range(first_data_row, total_row + 1):
+        ws.cell(rr, 2).alignment = Alignment(vertical="top", wrap_text=True)
+        ws.cell(rr, 4).number_format = '#,##0.0000'
+        for provider in providers:
+            start, _ = provider_blocks[provider]
+            for cc in (start, start + 1, start + 4, start + 5):
+                ws.cell(rr, cc).number_format = '$#,##0.00'
+            for cc in (start + 2, start + 3):
+                ws.cell(rr, cc).number_format = '0.00%'
+
+    for c in range(1, len(headers) + 1):
+        letter = get_column_letter(c)
+        if c == 2:
+            ws.column_dimensions[letter].width = 82
+        elif c in (1, 3, 4):
+            ws.column_dimensions[letter].width = {1: 16, 3: 12, 4: 13}.get(c, 14)
+        else:
+            ws.column_dimensions[letter].width = 15
+
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(total_row, c)
+        cell.fill = PatternFill("solid", fgColor=COMPARATIVA_TOTAL_FILL)
+        cell.font = Font(bold=True, color=TEXT, size=9)
+        cell.border = Border(top=Side(style="thin", color="666666"), bottom=Side(style="thin", color="666666"), right=cell.border.right)
+
+    try:
+        ws.auto_filter.ref = f"A2:{get_column_letter(len(headers))}{total_row}"
+    except Exception:
+        pass
+    ws.freeze_panes = "A3"
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 32
+
+    return _v034_append_detail_sheets(wb, workbook_path, analysis, detail_cache=detail_cache)
+
+
+def _v034_item_market_value(item: Dict[str, Any], *keys: str) -> Optional[float]:
+    for key in keys:
+        val = _v033_money(item.get(key))
+        if val is not None:
+            return val
+    return None
+
+
+def _v034_calc_market_importe(pu_val: Optional[float], op_val: Any, qty_val: Optional[float], base_val: Optional[float] = None) -> Optional[float]:
+    """Calcula importe mercado respetando operador, sin usar importe contratista."""
+    pu_num = _v033_num(pu_val)
+    qty_num = _v033_num(qty_val)
+    op = str(op_val or "*").strip()
+    if pu_num is None:
+        return None
+    if op == "/":
+        if qty_num in (None, 0):
+            return None
+        return _v033_money(pu_num / qty_num)
+    if op == "%":
+        base_num = _v033_num(base_val)
+        if base_num is None or qty_num is None:
+            return None
+        return _v033_money(base_num * qty_num)
+    if qty_num is None:
+        return None
+    return _v033_money(pu_num * qty_num)
+
+
+def _v034_is_real_market_match(item: Dict[str, Any]) -> bool:
+    """Determina si el mercado proviene de Construdata y no del fallback contratista."""
+    if item.get("fallback_contratista") is True:
+        return False
+    status = str(item.get("match_status") or "").strip().lower()
+    if "sin_match" in status or "fallback" in status:
+        return False
+    if item.get("codigo_mercado") or item.get("descripcion_mercado") or item.get("source_file"):
+        return True
+    conf = _v033_num(item.get("confidence"))
+    return bool(conf is not None and conf > 0)
+
+
+def _v035_real_market_fields(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Mapea columnas de mercado visibles desde granular_market_items.
+
+    Si el renglón no tiene match real contra Construdata, no copia valores del
+    contratista como mercado. Deja PU/Cantidad/Importe vacíos y marca el operador
+    como Sin match para que el analista lo vea sin contaminar cálculos.
+    """
+    if not _v034_is_real_market_match(item):
+        return {"market_pu": None, "market_op": "Sin match", "market_qty": None, "market_importe": None, "market_match_real": False}
+    market_pu = _v034_item_market_value(item, "precio_mercado", "market_pu", "mercado_pu", "precio_nacional")
+    market_qty = _v034_item_market_value(item, "cantidad_mercado", "market_qty", "mercado_cantidad", "cantidad", "factor")
+    market_op = item.get("market_op") or item.get("mercado_op") or item.get("op_mercado") or item.get("op") or item.get("operacion") or "*"
+    market_importe = _v034_item_market_value(item, "importe_mercado", "market_importe", "mercado_importe")
+    if market_importe is None:
+        market_importe = _v034_calc_market_importe(market_pu, market_op, market_qty, item.get("base_mercado"))
+    return {"market_pu": market_pu, "market_op": market_op, "market_qty": market_qty, "market_importe": market_importe, "market_match_real": True}
+
+
+def _v034_extract_provider_detail_rows(provider_file: str, resumen_file: Optional[str], provider_name: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Reutiliza el parser y matcher individual para obtener Detalle real.
+
+    La prioridad es granular_market_items, que ya trae match Construdata,
+    precio_mercado, importe_mercado, confianza y estado. Si no existe match real,
+    NO se copia el valor del contratista como mercado.
+    """
+    rows, diag = read_provider(provider_file, resumen_file, provider_name)
+    detail_rows: List[Dict[str, Any]] = []
+    provider_total = sum((r.get("total") or 0.0) for r in rows)
+    for concept in rows:
+        raw = concept.get("raw") or {}
+        service_code = concept.get("code") or raw.get("clave") or ""
+        service_desc = concept.get("desc") or raw.get("desc") or ""
+        concept_importe = _v033_money(concept.get("total"))
+        market_pu_concept = _v033_money(raw.get("granular_market_unit") or raw.get("pu_mercado") or raw.get("ref_pu"))
+        if market_pu_concept is None:
+            # Usar cálculo financiero completo si está disponible.
+            fin_rows = _v035_financial_rows_for_concept(raw)
+            if fin_rows:
+                last_market = fin_rows[-1][2] if len(fin_rows[-1]) > 2 else None
+                market_pu_concept = _v033_money(last_market)
+        market_importe_concept = _v033_money(((concept.get("qty") or 0) * market_pu_concept) if market_pu_concept is not None else None)
+        detail_rows.append({
+            "kind": "concept",
+            "codigo": service_code,
+            "concepto": service_desc,
+            "unidad": concept.get("unit"),
+            "pu": concept.get("pu"),
+            "op": "",
+            "cantidad": concept.get("qty"),
+            "importe": concept_importe,
+            "pct": (concept_importe or 0) / provider_total if provider_total else None,
+            "market_pu": market_pu_concept,
+            "market_op": "*" if market_pu_concept is not None else "",
+            "market_qty": concept.get("qty") if market_pu_concept is not None else None,
+            "market_importe": market_importe_concept,
+            "market_match_real": bool(market_pu_concept is not None),
+        })
+
+        granular_items = list(raw.get("granular_market_items") or [])
+        if granular_items:
+            for item in granular_items:
+                importe = _v033_money(item.get("importe_proveedor") or item.get("importe"))
+                market = _v035_real_market_fields(item)
+                match_label = f"{item.get('codigo_mercado') or ''} - {item.get('descripcion_mercado') or ''}".strip(" -")
+                status = item.get("match_status") or ("match" if market.get("market_match_real") else "sin_match_mercado")
+                diff_pu = None
+                diff_pu_pct = None
+                diff_imp = None
+                diff_imp_pct = None
+                prov_pu = _v033_money(item.get("precio_proveedor") or item.get("precio_base") or item.get("pu"))
+                prov_imp = importe
+                if prov_pu is not None and market.get("market_pu") not in (None, 0):
+                    diff_pu = prov_pu - float(market["market_pu"])
+                    diff_pu_pct = diff_pu / float(market["market_pu"])
+                if prov_imp is not None and market.get("market_importe") not in (None, 0):
+                    diff_imp = prov_imp - float(market["market_importe"])
+                    diff_imp_pct = diff_imp / float(market["market_importe"])
+                detail_rows.append({
+                    "kind": "item",
+                    "codigo": item.get("codigo") or item.get("code") or "",
+                    "concepto": item.get("descripcion") or item.get("desc") or "",
+                    "unidad": item.get("unidad") or item.get("unit") or "",
+                    "pu": prov_pu,
+                    "op": item.get("op") or item.get("operacion") or "*",
+                    "cantidad": _v033_num(item.get("cantidad") or item.get("factor") or item.get("qty")),
+                    "importe": importe,
+                    "pct": (importe or 0) / provider_total if provider_total else None,
+                    "market_pu": market.get("market_pu"),
+                    "market_op": market.get("market_op"),
+                    "market_qty": market.get("market_qty"),
+                    "market_importe": market.get("market_importe"),
+                    "market_match_real": market.get("market_match_real"),
+                    "match_construdata": match_label,
+                    "confidence": item.get("confidence"),
+                    "estado": status,
+                    "diff_pu": diff_pu,
+                    "diff_pu_pct": diff_pu_pct,
+                    "diff_importe": diff_imp,
+                    "diff_importe_pct": diff_imp_pct,
+                })
+        else:
+            # Fallback de presentación: pinta la matriz del contratista, pero deja
+            # mercado en blanco/Sin match. No se copian valores contratista.
+            for list_name in ("materiales_items", "mano_obra_items", "equipo_items", "basicos_items"):
+                for item in raw.get(list_name) or []:
+                    importe = _v033_money(item.get("importe"))
+                    detail_rows.append({
+                        "kind": "item",
+                        "codigo": item.get("codigo") or item.get("code") or "",
+                        "concepto": item.get("descripcion") or item.get("desc") or "",
+                        "unidad": item.get("unidad") or item.get("unit") or "",
+                        "pu": _v033_money(item.get("precio_base") or item.get("pu") or item.get("precio_unitario")),
+                        "op": item.get("op") or item.get("operacion") or "*",
+                        "cantidad": _v033_num(item.get("factor") or item.get("cantidad") or item.get("qty")),
+                        "importe": importe,
+                        "pct": (importe or 0) / provider_total if provider_total else None,
+                        "market_pu": None,
+                        "market_op": "Sin match",
+                        "market_qty": None,
+                        "market_importe": None,
+                        "market_match_real": False,
+                        "estado": "sin_match_mercado",
+                    })
+
+        # Filas financieras de mercado: se agregan si el motor las puede calcular.
+        fin_rows = _v035_financial_rows_for_concept(raw)
+        if fin_rows:
+            for label, prov_amt, market_amt, pct_val, note in fin_rows:
+                detail_rows.append({
+                    "kind": "financial",
+                    "codigo": "",
+                    "concepto": str(label or "").upper(),
+                    "unidad": "",
+                    "pu": _v033_money(prov_amt),
+                    "op": "",
+                    "cantidad": None,
+                    "importe": _v033_money(prov_amt),
+                    "pct": pct_val if isinstance(pct_val, (int, float)) else ((_v033_money(prov_amt) or 0) / provider_total if provider_total else None),
+                    "market_pu": _v033_money(market_amt),
+                    "market_op": "",
+                    "market_qty": None,
+                    "market_importe": _v033_money(market_amt),
+                    "market_match_real": True,
+                    "estado": "calculo_financiero_mercado",
+                    "nota": note,
+                })
+    return detail_rows, diag
+
+def _v034_style_detail_sheet(ws, last_row: int) -> None:
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+    widths = {
+        "A": 16, "B": 72, "C": 12, "D": 15, "E": 8, "F": 12, "G": 16, "H": 11,
+        "I": 4, "J": 17, "K": 10, "L": 13, "M": 17,
+    }
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    for c in range(1, 14):
+        cell = ws.cell(1, c)
+        if c == 9:
+            cell.fill = PatternFill("solid", fgColor=V034_SEPARATOR_FILL)
+        elif c >= 10:
+            _v033_style_sub_header(cell, "5B9BD5")
+        else:
+            _v033_style_sub_header(cell, COMPARATIVA_SUBHEADER_FILL)
+    for r in range(2, last_row + 1):
+        for c in range(1, 14):
+            cell = ws.cell(r, c)
+            cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+            cell.font = Font(name="Calibri", size=9, color=TEXT)
+            cell.alignment = Alignment(vertical="center", wrap_text=(c == 2))
+        ws.cell(r, 4).number_format = '$#,##0.00'
+        ws.cell(r, 6).number_format = '#,##0.0000'
+        ws.cell(r, 7).number_format = '$#,##0.00'
+        ws.cell(r, 8).number_format = '0.00%'
+        ws.cell(r, 10).number_format = '$#,##0.00'
+        ws.cell(r, 12).number_format = '#,##0.0000'
+        ws.cell(r, 13).number_format = '$#,##0.00'
+    try:
+        ws.auto_filter.ref = f"A1:M{last_row}"
+    except Exception:
+        pass
+
+
+def _v034_apply_market_diff_fill(ws, row_idx: int) -> None:
+    """Compatibilidad v0.3.6: ya no pinta amarillo; solo negritas en mercado."""
+    _v036_apply_market_diff_bold(ws, row_idx)
+
+
+def _v034_create_detail_sheet(wb, sheet_name: str, detail_rows: List[Dict[str, Any]]) -> None:
+    ws = wb.create_sheet(_safe_sheet_title(sheet_name, wb.sheetnames))
+    headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%", "", "Mercado P. Unitario", "Mercado Op.", "Mercado Cantidad", "Mercado Importe"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(1, c, h)
+    row_kinds: Dict[int, str] = {}
+    r = 2
+    for row in detail_rows:
+        vals = [
+            row.get("codigo"), row.get("concepto"), row.get("unidad"), row.get("pu"), row.get("op"),
+            row.get("cantidad"), row.get("importe"), row.get("pct"), "",
+            row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("market_importe"),
+        ]
+        for c, v in enumerate(vals, 1):
+            ws.cell(r, c, v)
+        row_kinds[r] = str(row.get("kind") or "item")
+        r += 1
+    if r == 2:
+        ws.cell(2, 1, "Sin detalle detectado")
+        ws.cell(2, 2, "No fue posible leer renglones de matriz para este contratista.")
+        row_kinds[2] = "concept"
+        r = 3
+
+    last_row = r - 1
+    _v034_style_detail_sheet(ws, last_row)
+
+    # Reaplicar estilos semánticos y diferencias despues del estilo base, porque
+    # _v034_style_detail_sheet normaliza fuentes/fondos.
+    for rr, kind in row_kinds.items():
+        if kind == "concept":
+            for c in range(1, 14):
+                ws.cell(rr, c).fill = PatternFill("solid", fgColor="E7E6E6")
+                ws.cell(rr, c).font = Font(bold=True, color=TEXT, size=9)
+        elif kind == "financial":
+            for c in range(1, 14):
+                ws.cell(rr, c).fill = PatternFill("solid", fgColor="D9EAF7")
+                ws.cell(rr, c).font = Font(bold=True, color=TEXT, size=9)
+        # Diferencias: solo negritas en J/L/M, nunca amarillo.
+        _v036_apply_market_diff_bold(ws, rr)
+
+
+def _v034_append_detail_sheets(wb, workbook_path: str, analysis: Dict[str, Any], detail_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> str:
+    meta = analysis.get("meta") or {}
+    filepaths = list(meta.get("source_filepaths") or [])
+    nombres = list(meta.get("source_provider_names") or analysis.get("providers") or [])
+    resumen_paths = list(meta.get("source_resumen_paths") or [])
+    providers = list(analysis.get("providers") or nombres or [])
+    if not filepaths:
+        # Mantener etapa legible aunque no haya archivos fuente en meta.
+        _v034_create_detail_sheet(wb, "Detalle", [])
+    else:
+        for idx, fp in enumerate(filepaths):
+            pname = nombres[idx] if idx < len(nombres) and nombres[idx] else (providers[idx] if idx < len(providers) else f"P{idx+1}")
+            rp = resumen_paths[idx] if idx < len(resumen_paths) else None
+            try:
+                cache_key = providers[idx] if idx < len(providers) else pname
+                if detail_cache and cache_key in detail_cache:
+                    detail_rows = detail_cache.get(cache_key) or []
+                elif detail_cache and pname in detail_cache:
+                    detail_rows = detail_cache.get(pname) or []
+                else:
+                    detail_rows, _diag = _v034_extract_provider_detail_rows(fp, rp, pname)
+            except Exception as exc:
+                detail_rows = [{"kind": "concept", "codigo": "ERROR", "concepto": f"No se pudo generar detalle: {type(exc).__name__}: {exc}", "unidad": "", "pu": None, "op": "", "cantidad": None, "importe": None, "pct": None, "market_pu": None, "market_op": "Sin match", "market_qty": None, "market_importe": None, "market_match_real": False}]
+            sheet_name = "Detalle" if len(filepaths) == 1 else f"Detalle - P{idx+1}"
+            _v034_create_detail_sheet(wb, sheet_name, detail_rows)
+
+    # Defensa: solo Comparativa + Detalle(s). No resumen, IA ni trazabilidad en esta etapa.
+    allowed = {"Comparativa"}
+    for sh in wb.sheetnames:
+        if sh == "Detalle" or sh.startswith("Detalle - P"):
+            allowed.add(sh)
+    for sh in list(wb.sheetnames):
+        if sh not in allowed:
+            del wb[sh]
+    Path(workbook_path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(workbook_path)
+    return workbook_path
+
+
+def create_professional_mvp_workbook(workbook_path: str, filepaths: List[str], nombres: List[str], meta: Optional[Dict[str, Any]] = None, catalogo_path: Optional[str] = None, nacional_path: Optional[str] = None, resumen_paths: Optional[List[Optional[str]]] = None, resumen_oficial_path: Optional[str] = None) -> str:
+    """V0.3.4: salida etapa 2, Comparativa + Detalle por contratista."""
+    meta = dict(meta or {})
+    meta["source_filepaths"] = list(filepaths or [])
+    meta["source_provider_names"] = list(nombres or [])
+    meta["source_resumen_paths"] = list(resumen_paths or [])
+    analysis = build_professional_mvp_analysis(
+        list(filepaths or []),
+        list(nombres or []),
+        meta,
+        catalogo_path,
+        nacional_path,
+        list(resumen_paths or []),
+        resumen_oficial_path,
+    )
+    return write_comparativa_stage2_workbook(workbook_path, analysis)
+
+
+def append_professional_mvp_workbook(workbook_path: str, filepaths: List[str], nombres: List[str], meta: Optional[Dict[str, Any]] = None, catalogo_path: Optional[str] = None, nacional_path: Optional[str] = None, resumen_paths: Optional[List[Optional[str]]] = None, resumen_oficial_path: Optional[str] = None) -> str:
+    """V0.3.4: compatibilidad; reconstruye Comparativa + Detalle(s)."""
+    return create_professional_mvp_workbook(
+        workbook_path,
+        filepaths,
+        nombres,
+        meta=meta,
+        catalogo_path=catalogo_path,
+        nacional_path=nacional_path,
+        resumen_paths=resumen_paths or [],
+        resumen_oficial_path=resumen_oficial_path,
+    )
