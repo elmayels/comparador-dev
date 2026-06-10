@@ -1711,8 +1711,11 @@ V034_SEPARATOR_FILL = "FFFFFF"
 
 
 # V0.3.7 - Resumen textual individual por contratista dentro de Comparativa
+# V0.3.8 - Reglas PU/APU ampliadas + tab Analisis IA con veredicto consolidado.
 V037_SUMMARY_TITLE_FILL = "1F4E78"
 V037_SUMMARY_PROVIDER_FILL = "D9EAF7"
+V038_AI_TITLE_FILL = "1F4E78"
+V038_AI_SECTION_FILL = "D9EAF7"
 
 
 def _v037_short_text(value: Any, max_len: int = 90) -> str:
@@ -1827,12 +1830,38 @@ def _v037_adjustment_notes(
     return notes
 
 
+
 def _v037_detail_business_rule_notes(detail_rows: List[Dict[str, Any]], provider: str) -> List[str]:
+    """Reglas PU/APU para resumen individual.
+
+    V0.3.8 amplía el set de señales sin inventar hallazgos: solo comenta cuando
+    hay evidencia textual o numérica en el detalle/matriz/match.
+    """
     notes: List[str] = []
     if not detail_rows:
         return notes
+
     rows = [r for r in detail_rows if str(r.get("kind") or "").lower() in {"item", "financial"}]
-    no_match = [r for r in rows if not r.get("market_match_real") and (str(r.get("market_op") or "").lower() == "sin match" or not r.get("market_pu"))]
+    item_rows = [r for r in rows if str(r.get("kind") or "").lower() == "item"] or rows
+
+    def row_txt(r: Dict[str, Any]) -> str:
+        return norm_text(f"{r.get('codigo') or ''} {r.get('concepto') or ''} {r.get('unidad') or ''}")
+
+    def relevant_rows(keywords: List[str]) -> List[Dict[str, Any]]:
+        keys = [norm_text(k) for k in keywords]
+        return [r for r in rows if any(k in row_txt(r) for k in keys)]
+
+    def high_market_diff(r: Dict[str, Any], threshold: float = 0.05) -> bool:
+        imp = _v033_money(r.get("importe")); mi = _v033_money(r.get("market_importe"))
+        if imp is not None and mi not in (None, 0):
+            return abs((imp - mi) / mi) >= threshold or abs(imp - mi) >= 1000
+        pu = _v033_money(r.get("pu")); mp = _v033_money(r.get("market_pu"))
+        if pu is not None and mp not in (None, 0):
+            return abs((pu - mp) / mp) >= threshold or abs(pu - mp) >= 1
+        return False
+
+    # Confiabilidad / match de mercado.
+    no_match = [r for r in item_rows if not r.get("market_match_real") and (str(r.get("market_op") or "").lower() == "sin match" or not r.get("market_pu"))]
     if no_match:
         examples = []
         for r in no_match[:3]:
@@ -1842,36 +1871,61 @@ def _v037_detail_business_rule_notes(detail_rows: List[Dict[str, Any]], provider
         suffix = f" Ejemplos: {', '.join(examples)}." if examples else ""
         notes.append(f"Existen {len(no_match)} renglones sin match de mercado Construdata; requieren soporte o validación manual.{suffix}")
 
-    def relevant_rows(keywords: List[str]) -> List[Dict[str, Any]]:
-        out = []
-        for r in rows:
-            txt = norm_text(f"{r.get('codigo') or ''} {r.get('concepto') or ''}")
-            if any(k in txt for k in keywords):
-                out.append(r)
-        return out
+    low_conf = []
+    for r in item_rows:
+        conf = _v033_num(r.get("confidence") or r.get("confianza") or r.get("conf"))
+        if conf is not None and conf < 0.65:
+            low_conf.append(r)
+    if low_conf:
+        notes.append(f"Se identifican {len(low_conf)} renglones con baja confianza de match; la conclusión debe tomarse con reserva en esos insumos.")
 
-    labor = relevant_rows(["mano de obra", "supervisor", "oficial", "ayudante", "cuadrilla", "soldador", "tubero", "electrico", "obra", "seguridad"])
+    # Matriz / apertura técnica.
+    lote_rows = relevant_rows(["lote", "global", "paquete"])
+    if len(lote_rows) >= 2:
+        notes.append("La matriz contiene varios conceptos tipo LOTE/global; se recomienda solicitar apertura adicional antes de tomar el importe como comparable.")
+    zero_rows = [r for r in item_rows if (_v033_money(r.get("importe")) or 0) == 0]
+    if zero_rows:
+        notes.append(f"Hay {len(zero_rows)} renglones con importe cero o no calculable; validar que no existan omisiones o errores de captura.")
+
+    # Mano de obra.
+    labor = relevant_rows(["mano de obra", "supervisor", "oficial", "ayudante", "cuadrilla", "soldador", "argonero", "tubero", "electrico", "eléctrico", "obra", "seguridad"])
     if labor:
         elevated = []
+        below = []
         for r in labor:
             pu = _v033_money(r.get("pu")); mp = _v033_money(r.get("market_pu"))
-            if pu is not None and mp not in (None, 0) and (pu - mp) / mp > 0.05:
-                elevated.append(_v037_short_text(r.get("concepto") or r.get("codigo"), 45))
+            label = _v037_short_text(r.get("concepto") or r.get("codigo"), 45)
+            if pu is not None and mp not in (None, 0):
+                diff = (pu - mp) / mp
+                if diff > 0.05:
+                    elevated.append(label)
+                elif diff < -0.10:
+                    below.append(label)
         if elevated:
             notes.append("Se observan posibles sobrecostos de mano de obra contra mercado en: " + "; ".join(elevated[:4]) + ".")
-        else:
-            notes.append("La mano de obra cuenta con referencias de mercado para revisión; no se detectó desviación relevante con los datos disponibles.")
+        if below:
+            notes.append("Hay mano de obra por debajo de mercado; validar alcance, cuadrilla y rendimientos en: " + "; ".join(below[:4]) + ".")
 
-    equipment = relevant_rows(["montacargas", "grua", "grúa", "andamio", "plataforma", "tijera", "maquinaria", "equipo"])
+    # EHS / seguridad industrial.
+    ehs = relevant_rows(["epp", "proteccion personal", "protección personal", "seguridad", "supervisor de seguridad", "trabajo en altura", "altura", "permiso", "maniobra", "izaje", "soldadura", "corte", "electrico", "eléctrico"])
+    if ehs:
+        notes.append("Se identifican señales EHS/seguridad en la matriz; validar EPP, supervisión, permisos y controles de trabajo en sitio según alcance.")
+
+    # Equipo móvil / flotillas / logística.
+    equipment = relevant_rows(["montacargas", "grua", "grúa", "manlift", "andamio", "plataforma", "tijera", "camion", "camión", "camioneta", "transporte", "acarreo", "flete", "traslado", "maniobra", "izaje", "combustible", "operador", "seguro", "renta", "maquinaria", "equipo"])
     if equipment:
         elevated_eq = []
+        total_imp = sum(float(_v033_money(r.get("importe")) or 0.0) for r in item_rows)
+        eq_imp = sum(float(_v033_money(r.get("importe")) or 0.0) for r in equipment)
         for r in equipment:
-            imp = _v033_money(r.get("importe")); mi = _v033_money(r.get("market_importe"))
-            if imp is not None and mi not in (None, 0) and (imp - mi) / mi > 0.05:
+            if high_market_diff(r):
                 elevated_eq.append(_v037_short_text(r.get("concepto") or r.get("codigo"), 45))
         if elevated_eq:
-            notes.append("Equipo crítico con diferencia contra mercado: " + "; ".join(elevated_eq[:4]) + ".")
+            notes.append("Equipo/logística con diferencia contra mercado: " + "; ".join(elevated_eq[:4]) + ".")
+        if total_imp > 0 and eq_imp / total_imp >= 0.20:
+            notes.append(f"El equipo móvil/logística representa {_v037_pct_label(eq_imp / total_imp)} del detalle disponible; validar operador, combustible, seguro, traslado y jornada mínima.")
 
+    # Herramienta menor, EPP, indirectos y financieros.
     herramienta = relevant_rows(["herramienta menor"])
     if herramienta:
         notes.append("Se identifican renglones de herramienta menor; validar porcentaje aplicado contra la referencia PMD usual del 5% cuando el dato esté disponible.")
@@ -1879,20 +1933,31 @@ def _v037_detail_business_rule_notes(detail_rows: List[Dict[str, Any]], provider
     if epp:
         notes.append("Se identifican cargos de EPP/seguridad; validar que el porcentaje sea consistente con alcance y política del proyecto.")
 
-    financieros = relevant_rows(["indirecto", "financiamiento", "utilidad", "costo indirecto"])
-    for r in financieros:
-        txt = norm_text(r.get("concepto") or "")
-        val = _v033_money(r.get("pu") or r.get("importe"))
-        market = _v033_money(r.get("market_pu") or r.get("market_importe"))
-        if "indirect" in txt and val is not None and market is not None:
-            # Estos importes pueden ser monto, no porcentaje. Se expresa sin afirmar porcentaje si no hay base.
-            if val > market:
-                notes.append("El costo indirecto calculado por el contratista supera la referencia de mercado disponible; revisar porcentaje y base aplicada.")
-            elif val < market:
-                notes.append("El costo indirecto está por debajo de la referencia de mercado disponible; validar que no existan exclusiones de alcance.")
-            break
-    return notes
+    financieros = relevant_rows(["indirecto", "financiamiento", "utilidad", "costo indirecto", "cargo adicional"])
+    if financieros:
+        for r in financieros:
+            txt = norm_text(r.get("concepto") or "")
+            val = _v033_money(r.get("pu") or r.get("importe"))
+            market = _v033_money(r.get("market_pu") or r.get("market_importe"))
+            if "indirect" in txt and val is not None and market is not None:
+                if val > market:
+                    notes.append("El costo indirecto calculado por el contratista supera la referencia de mercado disponible; revisar porcentaje y base aplicada.")
+                elif val < market:
+                    notes.append("El costo indirecto está por debajo de la referencia de mercado disponible; validar que no existan exclusiones de alcance.")
+                break
+        if any("financ" in norm_text(r.get("concepto") or "") for r in financieros):
+            notes.append("Se detecta financiamiento/cargo financiero; validar que la base y el porcentaje aplicado estén justificados contractual y comercialmente.")
 
+    # Calidad industrial / alimentaria.
+    quality = relevant_rows(["acero inoxidable", "inoxidable", "304", "316", "sanitario", "soldadura sanitaria", "pulido", "acabado", "limpieza", "alimentaria", "grado alimenticio", "prueba", "puesta en marcha", "cip", "tuberia sanitaria", "tubería sanitaria", "valvula", "válvula"])
+    if quality:
+        notes.append("Para componentes industriales/sanitarios, validar materiales, acabado, limpieza, pruebas y criterios de aceptación de planta.")
+
+    # Alcance / adjudicación.
+    if no_match or lote_rows or zero_rows:
+        notes.append("Antes de adjudicar, revisar alcance, exclusiones y soporte de matriz en partidas sin match, globales o con información insuficiente.")
+
+    return notes
 
 def _v037_build_provider_summary_notes(
     ws,
@@ -2651,6 +2716,240 @@ def _v034_create_detail_sheet(wb, sheet_name: str, detail_rows: List[Dict[str, A
         _v036_apply_market_diff_bold(ws, rr)
 
 
+
+# ==========================================================================
+# V0.3.8 - Analisis IA consolidado
+# ==========================================================================
+
+def _v038_detect_providers_from_comparativa(ws) -> List[Dict[str, Any]]:
+    providers: List[Dict[str, Any]] = []
+    max_col = ws.max_column or 0
+    col = 5
+    idx = 0
+    while col <= max_col:
+        name = str(ws.cell(1, col).value or f"Contratista {idx + 1}").strip()
+        if not name:
+            name = f"Contratista {idx + 1}"
+        providers.append({"name": name, "start_col": col, "end_col": min(col + 5, max_col), "idx": idx})
+        col += 6
+        idx += 1
+    return providers
+
+
+def _v038_find_total_row(ws) -> int:
+    for rr in range(1, (ws.max_row or 1) + 1):
+        if norm_text(ws.cell(rr, 1).value) == "total":
+            return rr
+    return max(3, ws.max_row or 3)
+
+
+def _v038_comparativa_metrics(ws, provider_info: Dict[str, Any], total_row: int) -> Dict[str, Any]:
+    start = int(provider_info["start_col"])
+    name = str(provider_info.get("name") or "Contratista")
+    data_rows = list(range(3, max(2, total_row)))
+    total = _v033_money(ws.cell(total_row, start + 1).value) or 0.0
+    mercado = _v033_money(ws.cell(total_row, start + 5).value) or 0.0
+    ajuste = ((total - mercado) / mercado) if mercado else None
+    rows = []
+    for rr in data_rows:
+        partida = ws.cell(rr, 1).value
+        if not partida:
+            continue
+        importe = _v033_money(ws.cell(rr, start + 1).value) or 0.0
+        mercado_imp = _v033_money(ws.cell(rr, start + 5).value)
+        diff_pct = None
+        if mercado_imp not in (None, 0):
+            diff_pct = (importe - mercado_imp) / mercado_imp
+        rows.append({
+            "row": rr,
+            "partida": str(partida),
+            "descripcion": str(ws.cell(rr, 2).value or ""),
+            "importe": float(importe or 0.0),
+            "mercado_importe": mercado_imp,
+            "diff_pct": diff_pct,
+        })
+    rows_sorted = sorted(rows, key=lambda r: r.get("importe") or 0.0, reverse=True)
+    top_rows = rows_sorted[:3]
+    return {"name": name, "total": total, "mercado": mercado, "ajuste": ajuste, "rows": rows, "top_rows": top_rows}
+
+
+def _v038_detail_sheet_name(wb, provider_info: Dict[str, Any], total_providers: int) -> Optional[str]:
+    idx = int(provider_info.get("idx") or 0)
+    if total_providers == 1 and "Detalle" in wb.sheetnames:
+        return "Detalle"
+    candidate = f"Detalle - P{idx + 1}"
+    if candidate in wb.sheetnames:
+        return candidate
+    # Tolerancia a nombres con contratista completo.
+    for sh in wb.sheetnames:
+        if sh.startswith("Detalle") and str(idx + 1) in sh:
+            return sh
+    return None
+
+
+def _v038_detail_signals(ws) -> Dict[str, Any]:
+    signals = {
+        "no_match": 0,
+        "elevated_market": [],
+        "labor": False,
+        "ehs": False,
+        "equipment": False,
+        "quality": False,
+        "financial": False,
+        "generic": 0,
+    }
+    if ws is None:
+        return signals
+    for rr in range(2, (ws.max_row or 1) + 1):
+        codigo = ws.cell(rr, 1).value
+        concepto = ws.cell(rr, 2).value
+        txt = norm_text(f"{codigo or ''} {concepto or ''} {ws.cell(rr, 3).value or ''}")
+        if not txt:
+            continue
+        market_op = str(ws.cell(rr, 11).value or "").strip().lower()
+        market_pu = _v033_money(ws.cell(rr, 10).value)
+        market_imp = _v033_money(ws.cell(rr, 13).value)
+        pu = _v033_money(ws.cell(rr, 4).value)
+        imp = _v033_money(ws.cell(rr, 7).value)
+        if market_op == "sin match" or (market_pu is None and market_imp is None):
+            signals["no_match"] += 1
+        if pu is not None and market_pu not in (None, 0):
+            diff = (pu - market_pu) / market_pu
+            if abs(diff) >= 0.05:
+                signals["elevated_market"].append((abs(diff), diff, _v037_short_text(concepto or codigo, 55)))
+        elif imp is not None and market_imp not in (None, 0):
+            diff = (imp - market_imp) / market_imp
+            if abs(diff) >= 0.05:
+                signals["elevated_market"].append((abs(diff), diff, _v037_short_text(concepto or codigo, 55)))
+        if any(k in txt for k in ["supervisor", "oficial", "ayudante", "cuadrilla", "soldador", "tubero", "electrico", "eléctrico", "mano de obra"]):
+            signals["labor"] = True
+        if any(k in txt for k in ["epp", "seguridad", "altura", "permiso", "maniobra", "izaje", "soldadura", "corte"]):
+            signals["ehs"] = True
+        if any(k in txt for k in ["montacargas", "grua", "grúa", "manlift", "plataforma", "camion", "camión", "camioneta", "transporte", "acarreo", "flete", "traslado", "combustible", "operador", "seguro", "renta"]):
+            signals["equipment"] = True
+        if any(k in txt for k in ["inoxidable", "304", "316", "sanitario", "limpieza", "alimentaria", "cip", "valvula", "válvula", "pulido", "prueba"]):
+            signals["quality"] = True
+        if any(k in txt for k in ["indirecto", "financiamiento", "utilidad", "cargo adicional", "herramienta menor"]):
+            signals["financial"] = True
+        if any(k in txt for k in ["lote", "global", "paquete"]):
+            signals["generic"] += 1
+    signals["elevated_market"] = sorted(signals["elevated_market"], reverse=True, key=lambda x: x[0])[:5]
+    return signals
+
+
+def _v038_build_ai_text(wb) -> List[Tuple[str, str]]:
+    if "Comparativa" not in wb.sheetnames:
+        return [("Veredicto general", "No se encontró la hoja Comparativa para construir el análisis.")]
+    comp = wb["Comparativa"]
+    total_row = _v038_find_total_row(comp)
+    providers_info = _v038_detect_providers_from_comparativa(comp)
+    metrics = []
+    for pinfo in providers_info:
+        metric = _v038_comparativa_metrics(comp, pinfo, total_row)
+        dname = _v038_detail_sheet_name(wb, pinfo, len(providers_info))
+        metric["detail_sheet"] = dname
+        metric["signals"] = _v038_detail_signals(wb[dname]) if dname else {}
+        metrics.append(metric)
+
+    if not metrics:
+        return [("Veredicto general", "No se detectaron contratistas/proveedores para análisis.")]
+
+    best = min(metrics, key=lambda m: (m.get("ajuste") if m.get("ajuste") is not None else 999, m.get("total") or 0))
+    lowest = min(metrics, key=lambda m: m.get("total") or 0)
+    highest_risk = max(metrics, key=lambda m: ((m.get("ajuste") or 0) + 0.03 * (m.get("signals") or {}).get("no_match", 0)))
+
+    if len(metrics) == 1:
+        m = metrics[0]
+        if m.get("ajuste") is None:
+            verdict = f"{m['name']} fue analizado contra mercado, pero la referencia disponible no permite calcular un ajuste global confiable. Conviene revisar cobertura de matches y soporte de matriz."
+        elif m["ajuste"] > 0.05:
+            verdict = f"{m['name']} se encuentra {_v037_pct_label(m['ajuste'])} por arriba del mercado calculado. La recomendación es revisar partidas críticas, soporte de precios y alcance antes de negociar."
+        elif m["ajuste"] < -0.05:
+            verdict = f"{m['name']} se encuentra {_v037_pct_label(abs(m['ajuste']))} por debajo del mercado calculado. Esto puede representar oportunidad, pero requiere validar alcance, exclusiones y suficiencia técnica."
+        else:
+            verdict = f"{m['name']} se mantiene razonablemente alineado contra mercado con la información disponible."
+    else:
+        verdict = f"{best['name']} presenta el mejor balance económico frente al mercado disponible. {highest_risk['name']} concentra el mayor riesgo relativo por desviación, cobertura o señales técnicas detectadas. {lowest['name']} tiene el menor total cotizado, sujeto a validar alcance y exclusiones."
+
+    comparison_lines = []
+    for m in metrics:
+        adj = _v037_pct_label(m.get("ajuste")) if m.get("ajuste") is not None else "N/D"
+        top = "; ".join([f"{r['partida']} ({_v037_money_label(r['importe'])})" for r in m.get("top_rows", [])[:3]]) or "sin partidas relevantes detectadas"
+        comparison_lines.append(f"• {m['name']}: total {_v037_money_label(m.get('total'))}, mercado {_v037_money_label(m.get('mercado'))}, ajuste global {adj}. Principales partidas: {top}.")
+
+    risk_lines: List[str] = []
+    rec_lines: List[str] = []
+    limitation_lines: List[str] = []
+    for m in metrics:
+        sig = m.get("signals") or {}
+        if sig.get("no_match"):
+            limitation_lines.append(f"• {m['name']}: {sig.get('no_match')} renglones sin match de mercado; revisar manualmente antes de tomar decisión final.")
+        if sig.get("elevated_market"):
+            labels = "; ".join([x[2] for x in sig.get("elevated_market", [])[:3]])
+            risk_lines.append(f"• {m['name']}: diferencias relevantes contra mercado en {labels}.")
+        if sig.get("equipment"):
+            risk_lines.append(f"• {m['name']}: validar equipo móvil/logística, incluyendo operador, combustible, seguro, traslado y jornada mínima cuando aplique.")
+        if sig.get("ehs"):
+            risk_lines.append(f"• {m['name']}: validar EPP, supervisión de seguridad, permisos y controles de trabajo en sitio.")
+        if sig.get("quality"):
+            risk_lines.append(f"• {m['name']}: validar calidad industrial/sanitaria, limpieza, pruebas y criterios de aceptación de planta.")
+        if sig.get("financial"):
+            risk_lines.append(f"• {m['name']}: revisar indirectos, herramienta menor, EPP, financiamiento o cargos adicionales para evitar duplicidades.")
+        if sig.get("generic"):
+            limitation_lines.append(f"• {m['name']}: existen conceptos globales/LOTE; solicitar apertura adicional si son partidas de alto impacto.")
+    if not risk_lines:
+        risk_lines.append("• No se detectaron riesgos técnicos concluyentes con la información disponible; revisar los detalles para confirmar cobertura y alcance.")
+    rec_lines.append(f"• Usar {best['name']} como referencia competitiva inicial, siempre que el alcance técnico esté completo.")
+    if highest_risk['name'] != best['name']:
+        rec_lines.append(f"• Solicitar a {highest_risk['name']} soporte de precios y apertura de matriz en partidas críticas antes de negociar/adjudicar.")
+    rec_lines.append("• Validar partidas bajo mercado para descartar omisiones de alcance y partidas sobre mercado para soportar negociación.")
+    rec_lines.append("• Revisar seguridad, logística, calidad industrial y condiciones de entrega cuando aparezcan señales en la matriz.")
+    if not limitation_lines:
+        limitation_lines.append("• El análisis depende de la calidad de las matrices recibidas y de la cobertura Construdata disponible; cualquier partida sin match confiable debe revisarse manualmente.")
+
+    return [
+        ("1. Veredicto general", verdict),
+        ("2. Comparación entre contratistas", "\n".join(comparison_lines)),
+        ("3. Principales riesgos detectados", "\n".join(risk_lines)),
+        ("4. Recomendaciones de negociación / validación", "\n".join(rec_lines)),
+        ("5. Limitaciones del análisis", "\n".join(limitation_lines)),
+    ]
+
+
+def _v038_create_analisis_ia_sheet(wb) -> None:
+    if "Analisis IA" in wb.sheetnames:
+        del wb["Analisis IA"]
+    ws = wb.create_sheet("Analisis IA")
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+    title = ws.cell(1, 1, "Analisis IA")
+    title.fill = PatternFill("solid", fgColor=V038_AI_TITLE_FILL)
+    title.font = Font(bold=True, color="FFFFFF", size=13)
+    title.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 26
+
+    row = 3
+    for section, text in _v038_build_ai_text(wb):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        cell = ws.cell(row, 1, section)
+        cell.fill = PatternFill("solid", fgColor=V038_AI_SECTION_FILL)
+        cell.font = Font(bold=True, color=TEXT, size=10)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        row += 1
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        body = ws.cell(row, 1, text)
+        body.font = Font(color=TEXT, size=10)
+        body.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+        # Altura proporcional simple para lectura.
+        lines = max(2, str(text or "").count("\n") + 2)
+        ws.row_dimensions[row].height = min(150, 18 * lines)
+        row += 2
+
+    for col in range(1, 7):
+        ws.column_dimensions[get_column_letter(col)].width = 18 if col > 1 else 26
+    ws.freeze_panes = "A3"
+
+
 def _v034_append_detail_sheets(wb, workbook_path: str, analysis: Dict[str, Any], detail_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> str:
     meta = analysis.get("meta") or {}
     filepaths = list(meta.get("source_filepaths") or [])
@@ -2677,8 +2976,19 @@ def _v034_append_detail_sheets(wb, workbook_path: str, analysis: Dict[str, Any],
             sheet_name = "Detalle" if len(filepaths) == 1 else f"Detalle - P{idx+1}"
             _v034_create_detail_sheet(wb, sheet_name, detail_rows)
 
-    # Defensa: solo Comparativa + Detalle(s). No resumen, IA ni trazabilidad en esta etapa.
-    allowed = {"Comparativa"}
+    # V0.3.8: nuevo tab Analisis IA con veredicto consolidado.
+    try:
+        _v038_create_analisis_ia_sheet(wb)
+    except Exception as exc:
+        # No romper el Excel si el texto IA falla; dejar diagnóstico controlado.
+        if "Analisis IA" in wb.sheetnames:
+            del wb["Analisis IA"]
+        ws_ai = wb.create_sheet("Analisis IA")
+        ws_ai.cell(1, 1, "Analisis IA")
+        ws_ai.cell(3, 1, f"No se pudo generar el análisis IA: {type(exc).__name__}: {exc}")
+
+    # Defensa: solo Comparativa + Detalle(s) + Analisis IA.
+    allowed = {"Comparativa", "Analisis IA"}
     for sh in wb.sheetnames:
         if sh == "Detalle" or sh.startswith("Detalle - P"):
             allowed.add(sh)
