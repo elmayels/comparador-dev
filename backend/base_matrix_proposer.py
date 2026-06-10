@@ -1301,3 +1301,222 @@ def write_matrix_proposal_excel(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
     return summary
+
+# ============================================================================
+# V0.3.9 - Fix Detalle matriz base Nestle sin columnas de mercado
+# ============================================================================
+# Bug: en matriz base/catalogo base Nestle, calculate_matrix_rows entrega rows
+# como dicts; el writer anterior los leia con getattr(), por eso se generaban
+# renglones visuales vacios. Ademas, en este caso la matriz base ES mercado,
+# por lo que Detalle no debe incluir columnas Mercado.*.
+
+_v039_previous_write_matrix_proposal_excel = write_matrix_proposal_excel
+
+
+def _v039_row_get(row: Any, *keys: str, default=None):
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        for key in keys:
+            if key in row and row.get(key) not in (None, ""):
+                return row.get(key)
+        return default
+    for key in keys:
+        val = getattr(row, key, None)
+        if val not in (None, ""):
+            return val
+    return default
+
+
+def _v039_calc_import(unit_cost: Any, qty: Any, fallback: Any = None):
+    val = _as_float(fallback)
+    if val is not None:
+        return val
+    pu = _as_float(unit_cost)
+    q = _as_float(qty)
+    if pu is None or q is None:
+        return None
+    return pu * q
+
+
+def _v039_style_base_detail(ws, last_row: int):
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+    widths = {"A": 16, "B": 78, "C": 12, "D": 15, "E": 8, "F": 12, "G": 16, "H": 11}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    for c in range(1, 9):
+        _v034_header(ws.cell(1, c), V034_HEADER_FILL)
+    for r in range(2, last_row + 1):
+        for c in range(1, 9):
+            cell = ws.cell(r, c)
+            cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+            cell.font = Font(name="Calibri", size=9, color=V034_TEXT)
+            cell.alignment = Alignment(vertical="center", wrap_text=(c == 2))
+        ws.cell(r, 4).number_format = '$#,##0.00'
+        ws.cell(r, 6).number_format = '#,##0.0000'
+        ws.cell(r, 7).number_format = '$#,##0.00'
+        ws.cell(r, 8).number_format = '0.00%'
+    try:
+        ws.auto_filter.ref = f"A1:H{last_row}"
+    except Exception:
+        pass
+
+
+def _v039_write_base_detail_sheet(wb: Workbook, detail_records: List[Dict[str, Any]]):
+    if "Detalle" in wb.sheetnames:
+        del wb["Detalle"]
+    det = wb.create_sheet("Detalle")
+    headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%"]
+    for c, h in enumerate(headers, 1):
+        det.cell(1, c, h)
+
+    total_detail = 0.0
+    for rec in detail_records:
+        total_detail += float(rec.get("total") or 0.0)
+
+    rr = 2
+    for rec in detail_records:
+        svc = rec.get("service")
+        detail_rows = rec.get("detail_rows") or []
+        # Fila cabecera de la partida/servicio calculado.
+        det.cell(rr, 1, getattr(svc, "part", ""))
+        det.cell(rr, 2, getattr(svc, "description", ""))
+        det.cell(rr, 3, getattr(svc, "unit", ""))
+        det.cell(rr, 4, rec.get("pu"))
+        det.cell(rr, 5, "*")
+        det.cell(rr, 6, getattr(svc, "qty", None))
+        det.cell(rr, 7, rec.get("total"))
+        det.cell(rr, 8, (float(rec.get("total") or 0.0) / total_detail) if total_detail else None)
+        for c in range(1, 9):
+            det.cell(rr, c).fill = PatternFill("solid", fgColor="E7E6E6")
+            det.cell(rr, c).font = Font(bold=True, color=V034_TEXT, size=9)
+        rr += 1
+
+        # Filas granulares. En matriz base no se generan columnas mercado: esta
+        # misma matriz ya es la referencia de mercado.
+        for d in detail_rows:
+            code = _v039_row_get(d, "insumo_code", "code", "codigo", default="")
+            concept = _v039_row_get(d, "insumo", "insumo_name", "insumo_desc", "concepto", "descripcion", default="")
+            unit = _v039_row_get(d, "unit", "insumo_unit", "unidad", default="")
+            unit_cost = _v039_row_get(d, "unit_cost", "precio_unitario", "pu", default=None)
+            qty = _v039_row_get(d, "qty", "quantity", "cantidad", default=None)
+            imp = _v039_calc_import(unit_cost, qty, _v039_row_get(d, "importe", "raw_import", default=None))
+            op = "/" if bool(_v039_row_get(d, "is_yield", default=False)) else "*"
+            vals = [code, concept, unit, unit_cost, op, qty, imp, (float(imp or 0.0) / total_detail) if total_detail else None]
+            for c, v in enumerate(vals, 1):
+                det.cell(rr, c, v)
+            rr += 1
+
+    if rr == 2:
+        det.cell(2, 1, "Sin detalle detectado")
+        det.cell(2, 2, "No se generaron renglones calculados para la matriz base.")
+        rr = 3
+    _v039_style_base_detail(det, rr - 1)
+    return det
+
+
+def _v039_add_analisis_ia_matrix_base(wb: Workbook, summary: Dict[str, Any], detail_records: List[Dict[str, Any]]):
+    if "Analisis IA" in wb.sheetnames:
+        del wb["Analisis IA"]
+    ws = wb.create_sheet("Analisis IA")
+    ws.sheet_view.showGridLines = False
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 110
+    title = ws.cell(1, 1, "Analisis IA")
+    title.fill = PatternFill("solid", fgColor="1F4E78")
+    title.font = Font(bold=True, color="FFFFFF", size=14)
+    title.alignment = Alignment(horizontal="left", vertical="center")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2)
+
+    total = float(summary.get("budget_total") or 0.0)
+    services = int(summary.get("services") or 0)
+    with_matrix = int(summary.get("with_matrix") or 0)
+    requires_review = int(summary.get("requires_review") or 0)
+    details = int(summary.get("details") or 0)
+    top = sorted(detail_records, key=lambda rec: float(rec.get("total") or 0.0), reverse=True)[:3]
+    top_names = []
+    for rec in top:
+        svc = rec.get("service")
+        part = getattr(svc, "part", "")
+        desc = getattr(svc, "description", "")
+        top_names.append((part + " - " + desc[:80]).strip(" -"))
+
+    sections = [
+        ("1. Veredicto general", f"La matriz base Nestle se interpreta como referencia de mercado. El presupuesto propuesto contiene {services} partida(s), con un total calculado de ${total:,.2f}. En este escenario no se comparan columnas de mercado dentro de Detalle porque la matriz base ya representa la referencia."),
+        ("2. Cobertura tecnica", f"Se encontro matriz Construdata para {with_matrix} de {services} partida(s). Hay {requires_review} partida(s) que requieren revision tecnica o validacion de alcance."),
+        ("3. Partidas principales", "\n".join([f"• {x}" for x in top_names]) if top_names else "No se detectaron partidas principales calculadas."),
+        ("4. Recomendaciones", "• Validar que las partidas seleccionadas correspondan al alcance real de Nestle.\n• Revisar manualmente las partidas sin matriz o con cobertura parcial.\n• Usar Detalle como desglose base de mercado, no como comparativo contra otro mercado."),
+        ("5. Limitaciones", f"El resultado depende de la calidad del catalogo base, de la disponibilidad de matrices Construdata y de la homologacion de unidades/descripciones. El Detalle contiene {details} renglon(es) granulares calculados."),
+    ]
+    r = 3
+    for head, text in sections:
+        ws.cell(r, 1, head)
+        ws.cell(r, 1).fill = PatternFill("solid", fgColor="D9EAF7")
+        ws.cell(r, 1).font = Font(bold=True, color=V034_TEXT)
+        ws.cell(r, 2, text)
+        ws.cell(r, 2).alignment = Alignment(wrap_text=True, vertical="top")
+        ws.cell(r, 2).font = Font(color=V034_TEXT, size=10)
+        ws.row_dimensions[r].height = 72
+        r += 2
+    for row in ws.iter_rows(min_row=1, max_row=r, min_col=1, max_col=2):
+        for cell in row:
+            cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+    return ws
+
+
+def write_matrix_proposal_excel(
+    output_path: str,
+    services: List[ServiceItem],
+    base: ConstrudataMatrixBase,
+    project_meta: Optional[Dict[str, str]] = None,
+    indirect_pct: float = 0.25,
+    max_services: Optional[int] = None,
+) -> Dict[str, Any]:
+    """V0.3.10: matriz base Nestle con Detalle poblado y sin Analisis IA.
+
+    Se conserva Comparativa del flujo aprobado. Se reemplaza exclusivamente el
+    tab Detalle del caso matriz base/catalogo Nestle para que use dict rows de
+    calculate_matrix_rows y omita columnas Mercado.*. Para matriz base no se
+    genera Analisis IA: la salida aprobada queda solo Comparativa + Detalle.
+    """
+    project_meta = project_meta or {}
+    visible_services = services[:max_services] if max_services else services
+
+    # Generar Comparativa aprobada con el writer anterior.
+    summary = _v039_previous_write_matrix_proposal_excel(
+        output_path,
+        services,
+        base,
+        project_meta=project_meta,
+        indirect_pct=indirect_pct,
+        max_services=max_services,
+    )
+
+    # Recalcular detalle con la estructura real de matriz base.
+    detail_records: List[Dict[str, Any]] = []
+    for item in visible_services:
+        selected, candidates, status, obs = choose_matrices(item, base)
+        detail_rows, totals = calculate_matrix_rows(base, item, selected)
+        direct = sum(float(v or 0.0) for v in totals.values())
+        indirect = direct * indirect_pct
+        pu = direct + indirect
+        total = pu * float(item.qty or 0.0)
+        detail_records.append({"service": item, "detail_rows": detail_rows, "pu": pu, "total": total, "status": status})
+
+    wb = load_workbook(output_path)
+    _v039_write_base_detail_sheet(wb, detail_records)
+
+    # V0.3.10: para matriz base/catalogo Nestle no aplica Analisis IA.
+    # La matriz base ya representa mercado y este flujo debe entregar solo
+    # Comparativa + Detalle. Si el writer anterior hubiera creado Analisis IA,
+    # se elimina explicitamente.
+    allowed = {"Comparativa", "Detalle"}
+    for sh in list(wb.sheetnames):
+        if sh not in allowed:
+            del wb[sh]
+    wb._sheets = [wb["Comparativa"], wb["Detalle"]]
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_path)
+    return summary
