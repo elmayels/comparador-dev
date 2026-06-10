@@ -1709,6 +1709,281 @@ V034_MARKET_DIFF_FILL = "FFFFFF"  # v0.3.6: no yellow fill; diferencias en Detal
 V034_SEPARATOR_FILL = "FFFFFF"
 
 
+
+# V0.3.7 - Resumen textual individual por contratista dentro de Comparativa
+V037_SUMMARY_TITLE_FILL = "1F4E78"
+V037_SUMMARY_PROVIDER_FILL = "D9EAF7"
+
+
+def _v037_short_text(value: Any, max_len: int = 90) -> str:
+    txt = str(value or "").strip()
+    txt = re.sub(r"\s+", " ", txt)
+    return txt if len(txt) <= max_len else txt[: max_len - 1].rstrip() + "…"
+
+
+def _v037_money_label(value: Optional[float]) -> str:
+    if value is None:
+        return "N/D"
+    try:
+        return f"${float(value):,.2f}"
+    except Exception:
+        return "N/D"
+
+
+def _v037_pct_label(value: Optional[float]) -> str:
+    if value is None:
+        return "N/D"
+    try:
+        return f"{float(value) * 100:.2f}%"
+    except Exception:
+        return "N/D"
+
+
+def _v037_detail_rows_for_provider(detail_cache: Dict[str, List[Dict[str, Any]]], provider: str, idx: int) -> List[Dict[str, Any]]:
+    if provider in detail_cache:
+        return detail_cache.get(provider) or []
+    key = f"P{idx + 1}"
+    if key in detail_cache:
+        return detail_cache.get(key) or []
+    # Tolerancia a nombres normalizados.
+    target = norm_text(provider)
+    for k, v in (detail_cache or {}).items():
+        if norm_text(k) == target:
+            return v or []
+    return []
+
+
+def _v037_top_concentration_notes(
+    ws,
+    provider: str,
+    block_start: int,
+    data_rows: List[int],
+    provider_total: float,
+    blue_rows: set,
+    max_items: int = 3,
+) -> List[str]:
+    if not data_rows or provider_total <= 0:
+        return []
+    selected = []
+    accum = 0.0
+    for rr in data_rows:
+        if rr not in blue_rows:
+            continue
+        importe = _v033_money(ws.cell(rr, block_start + 1).value) or 0.0
+        accum += float(importe)
+        selected.append((rr, importe))
+    if not selected:
+        return []
+    selected_sorted = sorted(selected, key=lambda x: float(x[1] or 0), reverse=True)
+    parts = []
+    for rr, importe in selected_sorted[:max_items]:
+        partida = ws.cell(rr, 1).value or ""
+        desc = _v037_short_text(ws.cell(rr, 2).value, 70)
+        pct = (float(importe or 0) / provider_total) if provider_total else 0
+        parts.append(f"{partida} ({_v037_pct_label(pct)}): {desc}")
+    coverage = accum / provider_total if provider_total else None
+    return [
+        f"Las partidas sombreadas en azul concentran {_v037_pct_label(coverage)} del importe cotizado de {provider}.",
+        "Principales partidas dentro del 80/20: " + "; ".join(parts) + ".",
+    ]
+
+
+def _v037_adjustment_notes(
+    ws,
+    provider: str,
+    block_start: int,
+    data_rows: List[int],
+    importe_total: float,
+    mercado_total: float,
+    max_items: int = 3,
+) -> List[str]:
+    notes: List[str] = []
+    if mercado_total and mercado_total > 0:
+        ajuste_global = (importe_total - mercado_total) / mercado_total
+        if ajuste_global > 0.01:
+            notes.append(f"El ajuste global contra mercado es {_v037_pct_label(ajuste_global)} arriba de la referencia calculada para su propia matriz.")
+        elif ajuste_global < -0.01:
+            notes.append(f"El total cotizado está {_v037_pct_label(abs(ajuste_global))} por debajo del mercado calculado; validar alcance, exclusiones y cantidades antes de considerarlo ahorro real.")
+        else:
+            notes.append("El total cotizado se mantiene prácticamente alineado contra el mercado calculado para su matriz.")
+    diffs = []
+    for rr in data_rows:
+        prov_imp = _v033_money(ws.cell(rr, block_start + 1).value)
+        market_imp = _v033_money(ws.cell(rr, block_start + 5).value)
+        if prov_imp is None or market_imp in (None, 0):
+            continue
+        diff_abs = float(prov_imp) - float(market_imp)
+        diff_pct = diff_abs / float(market_imp)
+        if abs(diff_pct) >= 0.05 or abs(diff_abs) >= 1000:
+            diffs.append((abs(diff_abs), diff_pct, rr, diff_abs))
+    if diffs:
+        diffs.sort(reverse=True, key=lambda x: x[0])
+        chunks = []
+        for _abs_val, diff_pct, rr, diff_abs in diffs[:max_items]:
+            partida = ws.cell(rr, 1).value or ""
+            direction = "sobre mercado" if diff_abs > 0 else "bajo mercado"
+            chunks.append(f"{partida} {_v037_pct_label(abs(diff_pct))} {direction}")
+        notes.append("Partidas con mayor desviación contra mercado: " + "; ".join(chunks) + ".")
+    return notes
+
+
+def _v037_detail_business_rule_notes(detail_rows: List[Dict[str, Any]], provider: str) -> List[str]:
+    notes: List[str] = []
+    if not detail_rows:
+        return notes
+    rows = [r for r in detail_rows if str(r.get("kind") or "").lower() in {"item", "financial"}]
+    no_match = [r for r in rows if not r.get("market_match_real") and (str(r.get("market_op") or "").lower() == "sin match" or not r.get("market_pu"))]
+    if no_match:
+        examples = []
+        for r in no_match[:3]:
+            label = _v037_short_text(r.get("codigo") or r.get("concepto"), 55)
+            if label:
+                examples.append(label)
+        suffix = f" Ejemplos: {', '.join(examples)}." if examples else ""
+        notes.append(f"Existen {len(no_match)} renglones sin match de mercado Construdata; requieren soporte o validación manual.{suffix}")
+
+    def relevant_rows(keywords: List[str]) -> List[Dict[str, Any]]:
+        out = []
+        for r in rows:
+            txt = norm_text(f"{r.get('codigo') or ''} {r.get('concepto') or ''}")
+            if any(k in txt for k in keywords):
+                out.append(r)
+        return out
+
+    labor = relevant_rows(["mano de obra", "supervisor", "oficial", "ayudante", "cuadrilla", "soldador", "tubero", "electrico", "obra", "seguridad"])
+    if labor:
+        elevated = []
+        for r in labor:
+            pu = _v033_money(r.get("pu")); mp = _v033_money(r.get("market_pu"))
+            if pu is not None and mp not in (None, 0) and (pu - mp) / mp > 0.05:
+                elevated.append(_v037_short_text(r.get("concepto") or r.get("codigo"), 45))
+        if elevated:
+            notes.append("Se observan posibles sobrecostos de mano de obra contra mercado en: " + "; ".join(elevated[:4]) + ".")
+        else:
+            notes.append("La mano de obra cuenta con referencias de mercado para revisión; no se detectó desviación relevante con los datos disponibles.")
+
+    equipment = relevant_rows(["montacargas", "grua", "grúa", "andamio", "plataforma", "tijera", "maquinaria", "equipo"])
+    if equipment:
+        elevated_eq = []
+        for r in equipment:
+            imp = _v033_money(r.get("importe")); mi = _v033_money(r.get("market_importe"))
+            if imp is not None and mi not in (None, 0) and (imp - mi) / mi > 0.05:
+                elevated_eq.append(_v037_short_text(r.get("concepto") or r.get("codigo"), 45))
+        if elevated_eq:
+            notes.append("Equipo crítico con diferencia contra mercado: " + "; ".join(elevated_eq[:4]) + ".")
+
+    herramienta = relevant_rows(["herramienta menor"])
+    if herramienta:
+        notes.append("Se identifican renglones de herramienta menor; validar porcentaje aplicado contra la referencia PMD usual del 5% cuando el dato esté disponible.")
+    epp = relevant_rows(["epp", "proteccion personal", "protección personal", "seguridad e higiene"])
+    if epp:
+        notes.append("Se identifican cargos de EPP/seguridad; validar que el porcentaje sea consistente con alcance y política del proyecto.")
+
+    financieros = relevant_rows(["indirecto", "financiamiento", "utilidad", "costo indirecto"])
+    for r in financieros:
+        txt = norm_text(r.get("concepto") or "")
+        val = _v033_money(r.get("pu") or r.get("importe"))
+        market = _v033_money(r.get("market_pu") or r.get("market_importe"))
+        if "indirect" in txt and val is not None and market is not None:
+            # Estos importes pueden ser monto, no porcentaje. Se expresa sin afirmar porcentaje si no hay base.
+            if val > market:
+                notes.append("El costo indirecto calculado por el contratista supera la referencia de mercado disponible; revisar porcentaje y base aplicada.")
+            elif val < market:
+                notes.append("El costo indirecto está por debajo de la referencia de mercado disponible; validar que no existan exclusiones de alcance.")
+            break
+    return notes
+
+
+def _v037_build_provider_summary_notes(
+    ws,
+    provider: str,
+    idx: int,
+    block_start: int,
+    data_rows: List[int],
+    provider_total: float,
+    market_total: float,
+    blue_rows: set,
+    detail_rows: List[Dict[str, Any]],
+) -> List[str]:
+    notes: List[str] = []
+    notes.extend(_v037_top_concentration_notes(ws, provider, block_start, data_rows, provider_total, blue_rows))
+    notes.extend(_v037_adjustment_notes(ws, provider, block_start, data_rows, provider_total, market_total))
+    notes.extend(_v037_detail_business_rule_notes(detail_rows, provider))
+    if not notes:
+        notes.append("No se identificaron hallazgos concluyentes con la información disponible; revisar detalle de matriz y soporte del contratista.")
+    # Compactar y limitar para lectura ejecutiva.
+    clean: List[str] = []
+    seen = set()
+    for note in notes:
+        txt = str(note or "").strip()
+        if not txt:
+            continue
+        key = norm_text(txt)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(txt)
+        if len(clean) >= 6:
+            break
+    return clean
+
+
+def _v037_append_provider_summaries_to_comparativa(
+    ws,
+    providers: List[str],
+    provider_blocks: Dict[str, Tuple[int, int]],
+    data_rows: List[int],
+    provider_totals: Dict[str, Dict[str, float]],
+    provider_importes_by_excel_row: Dict[str, Dict[int, float]],
+    detail_cache: Dict[str, List[Dict[str, Any]]],
+    start_row: int,
+    last_col: int,
+) -> int:
+    """Agrega resumen textual por contratista debajo de la fila totalizadora.
+
+    Mantiene Comparativa y Detalle como están; solo añade una sección simple,
+    textual, basada en datos calculados disponibles. No crea tablas nuevas.
+    """
+    if not providers:
+        return start_row - 1
+    # Separación visual: dejar una fila en blanco antes del título.
+    title_row = start_row + 1
+    ws.merge_cells(start_row=title_row, start_column=1, end_row=title_row, end_column=last_col)
+    title_cell = ws.cell(title_row, 1, "Resumen individual por contratista")
+    title_cell.fill = PatternFill("solid", fgColor=V037_SUMMARY_TITLE_FILL)
+    title_cell.font = Font(bold=True, color="FFFFFF", size=10)
+    title_cell.alignment = Alignment(horizontal="left", vertical="center")
+    for c in range(1, last_col + 1):
+        ws.cell(title_row, c).border = Border(top=Side(style="thin", color="666666"), bottom=Side(style="thin", color="666666"))
+    row_cursor = title_row + 1
+    for idx, provider in enumerate(providers):
+        block_start, _block_end = provider_blocks[provider]
+        provider_total = float((provider_totals.get(provider) or {}).get("importe") or 0.0)
+        market_total = float((provider_totals.get(provider) or {}).get("mercado") or 0.0)
+        blue_rows = _v033_calc_blue_80_rows(data_rows, provider_importes_by_excel_row.get(provider, {}))
+        detail_rows = _v037_detail_rows_for_provider(detail_cache, provider, idx)
+        notes = _v037_build_provider_summary_notes(ws, provider, idx, block_start, data_rows, provider_total, market_total, blue_rows, detail_rows)
+
+        ws.merge_cells(start_row=row_cursor, start_column=1, end_row=row_cursor, end_column=last_col)
+        cell = ws.cell(row_cursor, 1, provider)
+        cell.fill = PatternFill("solid", fgColor=V037_SUMMARY_PROVIDER_FILL)
+        cell.font = Font(bold=True, color=TEXT, size=10)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        for c in range(1, last_col + 1):
+            ws.cell(row_cursor, c).border = Border(bottom=Side(style="thin", color="D9E2F3"))
+        row_cursor += 1
+        for note in notes:
+            ws.merge_cells(start_row=row_cursor, start_column=1, end_row=row_cursor, end_column=last_col)
+            txt_cell = ws.cell(row_cursor, 1, f"• {note}")
+            txt_cell.font = Font(name="Calibri", size=9, color=TEXT)
+            txt_cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            for c in range(1, last_col + 1):
+                ws.cell(row_cursor, c).border = Border(bottom=Side(style="hair", color="E5E7EB"))
+            ws.row_dimensions[row_cursor].height = 36
+            row_cursor += 1
+        row_cursor += 1
+    return row_cursor - 1
+
 def _v034_provider_market_pu(row: Dict[str, Any], pdata: Dict[str, Any]) -> Optional[float]:
     """Precio de mercado por proveedor.
 
@@ -2074,13 +2349,32 @@ def write_comparativa_stage2_workbook(workbook_path: str, analysis: Dict[str, An
         cell.font = Font(bold=True, color=TEXT, size=9)
         cell.border = Border(top=Side(style="thin", color="666666"), bottom=Side(style="thin", color="666666"), right=cell.border.right)
 
+    # V0.3.7: debajo del total, agregar resumen textual individual por contratista.
+    # No modifica la estructura de Comparativa ni Detalle; solo añade lectura ejecutiva simple.
+    summary_last_row = _v037_append_provider_summaries_to_comparativa(
+        ws,
+        providers,
+        provider_blocks,
+        data_rows,
+        provider_totals,
+        provider_importes_by_excel_row,
+        detail_cache,
+        total_row + 1,
+        len(headers),
+    )
+
     try:
+        # El filtro se mantiene sobre la tabla de servicios, no sobre el bloque textual.
         ws.auto_filter.ref = f"A2:{get_column_letter(len(headers))}{total_row}"
     except Exception:
         pass
     ws.freeze_panes = "A3"
     ws.row_dimensions[1].height = 24
     ws.row_dimensions[2].height = 32
+    if summary_last_row:
+        for rr in range(total_row + 2, summary_last_row + 1):
+            if ws.row_dimensions[rr].height is None:
+                ws.row_dimensions[rr].height = 24
 
     return _v034_append_detail_sheets(wb, workbook_path, analysis, detail_cache=detail_cache)
 
