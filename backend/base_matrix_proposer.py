@@ -1520,3 +1520,221 @@ def write_matrix_proposal_excel(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
     return summary
+
+# ============================================================================
+# V0.3.11 - Homologacion Detalle matriz base vs contratistas
+# ============================================================================
+# El proceso de Detalle para matriz base es distinto al de contratistas:
+# - No existen columnas de mercado porque la matriz base ya es mercado.
+# - Se conserva solo Comparativa + Detalle para matriz base.
+# - El Detalle de matriz base se homologa visual y funcionalmente con el Detalle
+#   de contratistas: seccion por servicio, desglose granular y bloque financiero
+#   consistente por servicio/concepto.
+# - A diferencia de contratistas, no se crea bloque de comparacion contra mercado.
+
+_v0311_previous_write_matrix_proposal_excel = write_matrix_proposal_excel
+
+V0311_SECTION_FILL = "E7E6E6"
+V0311_FIN_FILL = "D9EAF7"
+V0311_TOTAL_FILL = "B4C6E7"
+V0311_CATEGORY_FILL = "F2F2F2"
+
+
+def _v0311_kind_label(value: Any) -> str:
+    txt = normalize_text(str(value or ""))
+    if "material" in txt:
+        return "MATERIALES"
+    if "mano" in txt or "obra" in txt:
+        return "MANO DE OBRA"
+    if "equipo" in txt or "herramienta" in txt or "maquinaria" in txt:
+        return "EQUIPO Y HERRAMIENTA"
+    if "basico" in txt or "básico" in txt:
+        return "BASICOS"
+    return str(value or "OTROS").upper() or "OTROS"
+
+
+def _v0311_row_style(ws, row_idx: int, fill: Optional[str] = None, bold: bool = False) -> None:
+    for c in range(1, 9):
+        cell = ws.cell(row_idx, c)
+        cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+        cell.font = Font(name="Calibri", size=9, color=V034_TEXT, bold=bold)
+        cell.alignment = Alignment(vertical="center", wrap_text=(c == 2))
+        if fill:
+            cell.fill = PatternFill("solid", fgColor=fill)
+    ws.cell(row_idx, 4).number_format = '$#,##0.00'
+    ws.cell(row_idx, 6).number_format = '#,##0.0000'
+    ws.cell(row_idx, 7).number_format = '$#,##0.00'
+    ws.cell(row_idx, 8).number_format = '0.00%'
+
+
+def _v0311_write_base_detail_sheet(wb: Workbook, detail_records: List[Dict[str, Any]], indirect_pct: float = 0.25):
+    """Detalle especifico para matriz base/catalogo Nestle.
+
+    Este writer NO debe reutilizar el writer de contratistas porque la funcion
+    del tab es distinta: la matriz generada ya es mercado y por tanto no debe
+    comparar contra columnas Mercado.*. Aun asi, se homologa el orden visual de
+    servicio -> insumos -> bloque financiero para facilitar lectura.
+    """
+    if "Detalle" in wb.sheetnames:
+        del wb["Detalle"]
+    det = wb.create_sheet("Detalle")
+    headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%"]
+    for c, h in enumerate(headers, 1):
+        det.cell(1, c, h)
+        _v034_header(det.cell(1, c), V034_HEADER_FILL)
+
+    workbook_total = sum(float(rec.get("total") or 0.0) for rec in detail_records)
+    rr = 2
+    for rec in detail_records:
+        svc = rec.get("service")
+        detail_rows = rec.get("detail_rows") or []
+        totals = rec.get("totals") or {}
+        direct = float(rec.get("direct") or sum(float(v or 0.0) for v in totals.values()))
+        indirect = float(rec.get("indirect") or (direct * indirect_pct))
+        financing = float(rec.get("financing") or 0.0)
+        utility = float(rec.get("utility") or 0.0)
+        charges = float(rec.get("charges") or 0.0)
+        pu = float(rec.get("pu") or (direct + indirect + financing + utility + charges))
+        qty_service = float(getattr(svc, "qty", 0.0) or 0.0)
+        total_service = float(rec.get("total") or (pu * qty_service))
+        service_pct = (total_service / workbook_total) if workbook_total else None
+
+        # Fila de servicio. A diferencia de v0.3.10, se trata como cabecera
+        # funcional de la partida y no como renglón granular de mercado.
+        det.cell(rr, 1, getattr(svc, "part", ""))
+        det.cell(rr, 2, getattr(svc, "description", ""))
+        det.cell(rr, 3, getattr(svc, "unit", ""))
+        det.cell(rr, 4, pu)
+        det.cell(rr, 5, "*")
+        det.cell(rr, 6, qty_service if qty_service else None)
+        det.cell(rr, 7, total_service)
+        det.cell(rr, 8, service_pct)
+        _v0311_row_style(det, rr, V0311_SECTION_FILL, True)
+        rr += 1
+
+        # Insumos granulares. No tienen columnas de mercado porque estos valores
+        # ya provienen de la matriz base de mercado.
+        for d in detail_rows:
+            code = _v039_row_get(d, "insumo_code", "code", "codigo", default="")
+            concept = _v039_row_get(d, "insumo", "insumo_name", "insumo_desc", "concepto", "descripcion", default="")
+            unit = _v039_row_get(d, "unit", "insumo_unit", "unidad", default="")
+            unit_cost = _v039_row_get(d, "unit_cost", "precio_unitario", "pu", default=None)
+            qty = _v039_row_get(d, "qty", "quantity", "cantidad", default=None)
+            imp = _v039_calc_import(unit_cost, qty, _v039_row_get(d, "importe", "raw_import", default=None))
+            op = "/" if bool(_v039_row_get(d, "is_yield", default=False)) else "*"
+            vals = [code, concept, unit, unit_cost, op, qty, imp, (float(imp or 0.0) / workbook_total) if workbook_total else None]
+            for c, v in enumerate(vals, 1):
+                det.cell(rr, c, v)
+            _v0311_row_style(det, rr)
+            rr += 1
+
+        # Bloque financiero homologado con contratistas, sin columnas mercado.
+        # Los subtotales por familia permiten leer Materiales/MO/Equipo de forma
+        # consistente entre archivos.
+        finance_rows = [
+            (None, "SUBTOTAL MATERIALES", None, totals.get("MATERIALES", 0.0), None, None, totals.get("MATERIALES", 0.0), (totals.get("MATERIALES", 0.0) / workbook_total) if workbook_total else None, V0311_CATEGORY_FILL),
+            (None, "SUBTOTAL MANO DE OBRA", None, totals.get("MANO DE OBRA", 0.0), None, None, totals.get("MANO DE OBRA", 0.0), (totals.get("MANO DE OBRA", 0.0) / workbook_total) if workbook_total else None, V0311_CATEGORY_FILL),
+            (None, "SUBTOTAL EQUIPO Y HERRAMIENTA", None, totals.get("EQUIPO Y HERRAMIENTA", 0.0), None, None, totals.get("EQUIPO Y HERRAMIENTA", 0.0), (totals.get("EQUIPO Y HERRAMIENTA", 0.0) / workbook_total) if workbook_total else None, V0311_CATEGORY_FILL),
+            (None, "SUBTOTAL BASICOS", None, totals.get("BASICOS", 0.0), None, None, totals.get("BASICOS", 0.0), (totals.get("BASICOS", 0.0) / workbook_total) if workbook_total else None, V0311_CATEGORY_FILL),
+            (None, "COSTO DIRECTO", None, direct, None, None, direct, (direct / workbook_total) if workbook_total else None, V0311_FIN_FILL),
+            (None, f"COSTO INDIRECTO ({indirect_pct:.0%})", None, indirect, None, None, indirect, (indirect / workbook_total) if workbook_total else None, V0311_FIN_FILL),
+            (None, "FINANCIAMIENTO", None, financing, None, None, financing, (financing / workbook_total) if workbook_total else None, V0311_FIN_FILL),
+            (None, "UTILIDAD / CARGOS ADICIONALES", None, utility + charges, None, None, utility + charges, ((utility + charges) / workbook_total) if workbook_total else None, V0311_FIN_FILL),
+            (None, "TOTAL COSTO UNITARIO", None, pu, None, None, pu, (pu / workbook_total) if workbook_total else None, V0311_TOTAL_FILL),
+        ]
+        for row_vals in finance_rows:
+            vals = row_vals[:8]
+            fill = row_vals[8]
+            for c, v in enumerate(vals, 1):
+                det.cell(rr, c, v)
+            _v0311_row_style(det, rr, fill, True)
+            rr += 1
+
+        # Separacion visual entre servicios.
+        for c in range(1, 9):
+            det.cell(rr, c, None)
+        rr += 1
+
+    if rr == 2:
+        det.cell(2, 1, "Sin detalle detectado")
+        det.cell(2, 2, "No se generaron renglones calculados para la matriz base.")
+        rr = 3
+
+    det.sheet_view.showGridLines = False
+    det.freeze_panes = "A2"
+    widths = {"A": 16, "B": 86, "C": 12, "D": 15, "E": 8, "F": 12, "G": 16, "H": 11}
+    for col, width in widths.items():
+        det.column_dimensions[col].width = width
+    try:
+        det.auto_filter.ref = f"A1:H{max(1, rr - 1)}"
+    except Exception:
+        pass
+    return det
+
+
+def write_matrix_proposal_excel(
+    output_path: str,
+    services: List[ServiceItem],
+    base: ConstrudataMatrixBase,
+    project_meta: Optional[Dict[str, str]] = None,
+    indirect_pct: float = 0.25,
+    max_services: Optional[int] = None,
+) -> Dict[str, Any]:
+    """V0.3.11: Detalle de matriz base homologado, sin mercado ni Analisis IA.
+
+    Este flujo queda separado del Detalle de contratistas porque difieren en
+    funcionalidad y diseño. En matriz base/catalogo Nestle la matriz generada ya
+    es mercado; por eso se omiten columnas Mercado.* y Analisis IA. Se agregan
+    bloques financieros consistentes por servicio para que Materiales, MO,
+    Equipo/Herramienta, Basicos, Directo e Indirectos se lean de forma similar a
+    los archivos con contratistas.
+    """
+    project_meta = project_meta or {}
+    visible_services = services[:max_services] if max_services else services
+
+    summary = _v0311_previous_write_matrix_proposal_excel(
+        output_path,
+        services,
+        base,
+        project_meta=project_meta,
+        indirect_pct=indirect_pct,
+        max_services=max_services,
+    )
+
+    detail_records: List[Dict[str, Any]] = []
+    for item in visible_services:
+        selected, candidates, status, obs = choose_matrices(item, base)
+        detail_rows, totals = calculate_matrix_rows(base, item, selected)
+        direct = sum(float(v or 0.0) for v in totals.values())
+        indirect = direct * indirect_pct
+        financing = 0.0
+        utility = 0.0
+        charges = 0.0
+        pu = direct + indirect + financing + utility + charges
+        total = pu * float(item.qty or 0.0)
+        detail_records.append({
+            "service": item,
+            "detail_rows": detail_rows,
+            "totals": totals,
+            "direct": direct,
+            "indirect": indirect,
+            "financing": financing,
+            "utility": utility,
+            "charges": charges,
+            "pu": pu,
+            "total": total,
+            "status": status,
+        })
+
+    wb = load_workbook(output_path)
+    _v0311_write_base_detail_sheet(wb, detail_records, indirect_pct=indirect_pct)
+
+    # Matriz base: solo Comparativa + Detalle. No Analisis IA.
+    allowed = {"Comparativa", "Detalle"}
+    for sh in list(wb.sheetnames):
+        if sh not in allowed:
+            del wb[sh]
+    wb._sheets = [wb["Comparativa"], wb["Detalle"]]
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_path)
+    return summary
