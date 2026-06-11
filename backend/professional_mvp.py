@@ -3289,3 +3289,202 @@ def _v034_create_detail_sheet(wb, sheet_name: str, detail_rows: List[Dict[str, A
         ws.auto_filter.ref = f"A1:M{last_row}"
     except Exception:
         pass
+
+
+# ===========================================================================
+# V0.3.14 - Detalle: sin match heredado en italica + operador real proveedor
+# ===========================================================================
+# Objetivo:
+# - En Detalle de contratistas, cuando no exista match real contra Construdata,
+#   las columnas de mercado se llenan con los valores del contratista y se
+#   pintan en italica para indicar que son valores heredados, no mercado real.
+# - La columna Op. debe respetar la operacion real declarada/deducida del
+#   renglon: *, / o %, sin forzar siempre *.
+# - Matriz base no cambia: no tiene columnas de mercado ni Analisis IA.
+
+
+def _v0314_operator_from_row(row: Dict[str, Any], default: str = "*") -> str:
+    """Devuelve operador normalizado desde la evidencia real del renglon.
+
+    Prioridad:
+    1) flags/metadata de formula: porcentaje_mo => %, rendimiento/dividir => /
+    2) columnas explicitas de operacion: op/operacion/operator/etc.
+    3) fallback controlado: * solo si no hay evidencia contraria.
+    """
+    formula_kind = norm_text(row.get("formula_kind") or row.get("tipo_formula") or row.get("calculation_type") or "")
+    if any(k in formula_kind for k in ["porcentaje", "percent", "pct", "porcentaje_mo"]):
+        return "%"
+    if any(k in formula_kind for k in ["rendimiento", "inverso", "division", "dividir"]):
+        return "/"
+    dividir = row.get("dividir") or row.get("is_yield") or row.get("rendimiento_inverso")
+    if isinstance(dividir, str):
+        if norm_text(dividir) in {"si", "sí", "true", "1", "x", "dividir"}:
+            return "/"
+    elif bool(dividir):
+        return "/"
+    for key in ("op", "operacion", "operator", "operador", "signo", "simbolo", "calculo", "expresion"):
+        val = row.get(key)
+        if val not in (None, ""):
+            return _v0312_norm_operator(val, default=default)
+    return default
+
+
+def _v0314_apply_no_match_fallback(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Si no hay match real, completa mercado visible con valores proveedor.
+
+    No cambia market_match_real: sigue False para que Comparativa y calculos no
+    lo traten como referencia Construdata real. Solo mejora lectura visual.
+    """
+    kind = str(row.get("kind") or "item")
+    if kind not in {"item"}:
+        return row
+    row["op"] = _v0314_operator_from_row(row, default="*")
+    if row.get("importe") is None:
+        row["importe"] = _v0312_calc_amount(row.get("pu"), row.get("op"), row.get("cantidad"), row.get("base"))
+    if not row.get("market_match_real"):
+        row["market_pu"] = row.get("pu")
+        row["market_op"] = row.get("op")
+        row["market_qty"] = row.get("cantidad")
+        row["market_importe"] = row.get("importe")
+        row["market_fallback_from_contractor"] = True
+        row["sin_match_mercado"] = True
+        row["estado"] = row.get("estado") or "sin_match_mercado"
+    else:
+        row["market_fallback_from_contractor"] = False
+        row["market_op"] = _v0314_operator_from_row({**row, "op": row.get("market_op") or row.get("op")}, default=row.get("op") or "*")
+        row["market_importe"] = _v0312_calc_amount(row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("base_mercado") or row.get("base"))
+        if row.get("market_importe") is None:
+            row["market_importe"] = _v034_item_market_value(row, "importe_mercado", "market_importe", "mercado_importe")
+    return row
+
+
+def _v0312_enrich_detail_rows(detail_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """V0.3.14 override: familia + operador real + fallback visible sin match."""
+    current_concept = ""
+    for row in detail_rows:
+        kind = str(row.get("kind") or "item")
+        if kind == "concept":
+            current_concept = str(row.get("concepto") or "")
+            row["family"] = "SERVICIO"
+            # Si el servicio no trae operador explicito, no forzar nada en el
+            # encabezado de servicio; el detalle de insumos lleva el operador.
+            row["op"] = _v0312_norm_operator(row.get("op"), default="") if row.get("op") else ""
+            continue
+        if kind == "financial":
+            row["family"] = "FINANCIERO"
+            row["op"] = _v0314_operator_from_row(row, default="") if row.get("op") or row.get("formula_kind") or row.get("dividir") else ""
+            row["market_op"] = _v0312_norm_operator(row.get("market_op"), default="") if row.get("market_op") else ""
+            continue
+        fam = row.get("family") or row.get("familia") or row.get("tipo") or row.get("categoria")
+        row["family"] = _v0312_family_label(fam, f"{row.get('codigo') or ''} {row.get('concepto') or ''} {row.get('unidad') or ''}")
+        _v0314_apply_no_match_fallback(row)
+    return detail_rows
+
+
+# Wrap extractor to preserve formula metadata where present in raw items.
+_v0314_previous_extract_provider_detail_rows = _v034_extract_provider_detail_rows
+
+
+def _v034_extract_provider_detail_rows(provider_file: str, resumen_file: Optional[str], provider_name: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    rows, diag = _v0314_previous_extract_provider_detail_rows(provider_file, resumen_file, provider_name)
+    return _v0312_enrich_detail_rows(rows), diag
+
+
+def _v0314_apply_market_fallback_italic(ws, rr: int) -> None:
+    """Aplica italica solo a columnas mercado J:M para valores heredados."""
+    for col in (10, 11, 12, 13):
+        cell = ws.cell(rr, col)
+        base = cell.font or Font(name="Calibri", size=9, color=TEXT)
+        cell.font = Font(
+            name=base.name or "Calibri",
+            size=base.sz or 9,
+            bold=False,
+            italic=True,
+            color=TEXT,
+        )
+
+
+def _v034_create_detail_sheet(wb, sheet_name: str, detail_rows: List[Dict[str, Any]]) -> None:
+    """V0.3.14: Detalle contratista con fallback visible e italica.
+
+    Mantiene columnas aprobadas. Los valores heredados por sin match se muestran
+    en mercado con italica y no se consideran mercado real.
+    """
+    detail_rows = _v0312_enrich_detail_rows(detail_rows or [])
+    ws = wb.create_sheet(_safe_sheet_title(sheet_name, wb.sheetnames))
+    headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%", "", "Mercado P. Unitario", "Mercado Op.", "Mercado Cantidad", "Mercado Importe"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(1, c, h)
+    r = 2
+    row_kinds: Dict[int, str] = {}
+    row_fallbacks: Dict[int, bool] = {}
+    provider_total = sum(float(_v033_money(x.get("importe")) or 0.0) for x in detail_rows if str(x.get("kind")) == "concept")
+    if not provider_total:
+        provider_total = sum(float(_v033_money(x.get("importe")) or 0.0) for x in detail_rows if str(x.get("kind")) == "item")
+
+    current_concept: Optional[Dict[str, Any]] = None
+    current_items: List[Dict[str, Any]] = []
+    current_financial: List[Dict[str, Any]] = []
+
+    def write_row(row: Dict[str, Any], kind: str) -> None:
+        nonlocal r
+        vals = [
+            row.get("codigo"), row.get("concepto"), row.get("unidad"), row.get("pu"), row.get("op"), row.get("cantidad"), row.get("importe"), row.get("pct"), "",
+            row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("market_importe"),
+        ]
+        _v0312_write_values(ws, r, vals)
+        row_kinds[r] = kind
+        row_fallbacks[r] = bool(row.get("market_fallback_from_contractor"))
+        r += 1
+
+    def flush_current() -> None:
+        nonlocal r, current_concept, current_items, current_financial
+        if current_concept is None:
+            return
+        write_row(current_concept, "service")
+        for fam in V0312_FAMILY_ORDER:
+            fam_rows = [x for x in current_items if x.get("family") == fam]
+            if not fam_rows:
+                continue
+            _v0312_write_values(ws, r, ["", fam, "", "", "", "", "", "", "", "", "", "", ""]); row_kinds[r] = "family"; r += 1
+            for row in fam_rows:
+                _v0314_apply_no_match_fallback(row)
+                write_row(row, "item")
+            st = _v0312_subtotal_row(fam, fam_rows, provider_total)
+            write_row(st, "subtotal")
+        if current_financial:
+            _v0312_write_values(ws, r, ["", "SECCION FINANCIERA", "", "", "", "", "", "", "", "", "", "", ""]); row_kinds[r] = "financial"; r += 1
+            for row in current_financial:
+                write_row(row, "financial")
+        _v0312_write_values(ws, r, ["", "TOTAL POR SERVICIO", "", current_concept.get("pu"), "", current_concept.get("cantidad"), current_concept.get("importe"), current_concept.get("pct"), "", current_concept.get("market_pu"), "", current_concept.get("market_qty"), current_concept.get("market_importe")])
+        row_kinds[r] = "total"; r += 2
+        current_concept = None; current_items = []; current_financial = []
+
+    for row in detail_rows:
+        kind = str(row.get("kind") or "item")
+        if kind == "concept":
+            flush_current()
+            current_concept = row
+        elif kind == "financial":
+            current_financial.append(row)
+        else:
+            current_items.append(row)
+    flush_current()
+
+    if r == 2:
+        _v0312_write_values(ws, 2, ["Sin detalle detectado", "No fue posible leer renglones de matriz para este contratista."])
+        row_kinds[2] = "service"; r = 3
+    last_row = r - 1
+    _v034_style_detail_sheet(ws, last_row)
+    for rr, kind in row_kinds.items():
+        _v0312_style_detail_row(ws, rr, kind, 13)
+        if kind == "item":
+            if row_fallbacks.get(rr):
+                _v0314_apply_market_fallback_italic(ws, rr)
+            else:
+                _v036_apply_market_diff_bold(ws, rr)
+    try:
+        ws.auto_filter.ref = f"A1:M{last_row}"
+    except Exception:
+        pass
+

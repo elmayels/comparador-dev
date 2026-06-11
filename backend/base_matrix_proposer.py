@@ -1995,3 +1995,37 @@ def write_matrix_proposal_excel(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
     return summary
+
+
+# ===========================================================================
+# V0.3.14 - Matriz base: operador real en Detalle sin columnas mercado
+# ===========================================================================
+# La matriz base sigue sin columnas de mercado y sin Analisis IA. Este refuerzo
+# solo asegura que la columna Op. respete porcentaje/rendimiento cuando la
+# matriz base lo trae como formula_kind/dividir.
+
+
+def _v0314_base_operator(row: Any, default: str = "*") -> str:
+    formula_kind = normalize_text(_v0312_row_get(row, "formula_kind", "tipo_formula", default=""))
+    if any(k in formula_kind for k in ["porcentaje", "percent", "pct", "porcentaje_mo"]):
+        return "%"
+    if any(k in formula_kind for k in ["rendimiento", "inverso", "division", "dividir"]):
+        return "/"
+    dividir = _v0312_row_get(row, "dividir", "is_yield", default=False)
+    if isinstance(dividir, str):
+        if normalize_text(dividir) in {"si", "true", "1", "x", "dividir"}:
+            return "/"
+    elif bool(dividir):
+        return "/"
+    return _v0312_norm_operator(_v0312_row_get(row, "op", "operacion", "operator", default=default), default=default)
+
+
+# Reemplazar solo el calculo de importe de base para respetar el operador real.
+def _v0312_item_import(row: Any) -> Optional[float]:
+    unit_cost = _v0312_row_get(row, "unit_cost", "precio_unitario", "pu", "precio", "precio_base", default=None)
+    qty = _v0312_row_get(row, "qty", "quantity", "cantidad", "factor", default=None)
+    fallback = _v0312_row_get(row, "importe", "raw_import", default=None)
+    op = _v0314_base_operator(row, default="*")
+    base = _v0312_row_get(row, "base_calculo", "base", "costo_directo", default=None)
+    calc = _v0312_calc_amount(unit_cost, op, qty, base)
+    return calc if calc is not None else _as_float(fallback)
