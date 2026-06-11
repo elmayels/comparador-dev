@@ -3488,3 +3488,562 @@ def _v034_create_detail_sheet(wb, sheet_name: str, detail_rows: List[Dict[str, A
     except Exception:
         pass
 
+
+# ===========================================================================
+# V0.3.16 - Detalle contratista: orden estable + porcentajes por familia
+# ===========================================================================
+# Regla de producto:
+# - No reordenar renglones dentro de cada familia; conservar orden relativo del
+#   parser/matriz.
+# - Los renglones porcentuales de familia (%HERR, %EPP, consumibles, andamios,
+#   seguridad, etc.) se calculan contra la base correcta de la familia, tanto
+#   para contratista como para mercado.
+# - Cuando exista base mercado de la familia, el mercado del porcentaje se
+#   deriva de esa base y se marca como derivado, no como match directo.
+# - Cuando no exista base mercado, se conserva la regla anterior: valores
+#   heredados del contratista en italica.
+
+V0316_DERIVED_MARKET_FLAG = "market_derived_from_family_pct"
+
+
+def _v0316_text(row: Dict[str, Any]) -> str:
+    return norm_text(f"{row.get('codigo') or ''} {row.get('concepto') or ''} {row.get('unidad') or ''}")
+
+
+def _v0316_is_percent_family_row(row: Dict[str, Any]) -> bool:
+    if str(row.get("kind") or "item") != "item":
+        return False
+    txt = _v0316_text(row)
+    code = str(row.get("codigo") or "").strip()
+    unit = str(row.get("unidad") or "").strip()
+    op = _v0314_operator_from_row(row, default="*")
+    qty = _v033_num(row.get("cantidad"))
+    if op == "%":
+        return True
+    if code.startswith("%") or unit == "%" or "%" in unit:
+        return True
+    # Variantes frecuentes declaradas como factor decimal, aunque el operador
+    # venga mal leido como '*'. Solo se activa si el factor parece porcentaje.
+    pct_like = qty is not None and 0 <= abs(qty) <= 1.0
+    if pct_like and any(k in txt for k in [
+        "herramienta menor", "herramienta", "epp", "equipo de proteccion",
+        "proteccion personal", "andamio", "seguridad", "consumible", "consumibles",
+        "corte y soldadura", "soldadura", "desperdicio", "accesorio",
+    ]):
+        return True
+    return False
+
+
+def _v0316_pct_value(row: Dict[str, Any]) -> Optional[float]:
+    qty = _v033_num(row.get("cantidad"))
+    if qty is None:
+        qty = _v033_num(row.get("factor"))
+    if qty is None:
+        return None
+    return qty / 100.0 if abs(qty) > 1 else qty
+
+
+def _v0316_default_base_family(row: Dict[str, Any]) -> str:
+    txt = _v0316_text(row)
+    # Conceptos porcentuales muy comunes en matrices PU: normalmente se calculan
+    # sobre Mano de Obra si no hay metadata explicita de base.
+    if any(k in txt for k in [
+        "herramienta menor", "epp", "equipo de proteccion", "proteccion personal",
+        "andamio", "seguridad", "consumibles para corte", "corte y soldadura",
+    ]):
+        return "MANO DE OBRA"
+    if any(k in txt for k in ["desperdicio", "material", "acarre", "flete material"]):
+        return "MATERIALES"
+    if any(k in txt for k in ["combustible", "mantenimiento", "maquinaria", "equipo", "herramienta"]):
+        return "EQUIPO Y HERRAMIENTA"
+    fam = row.get("family") or row.get("familia") or "OTROS"
+    return fam if fam in V0312_FAMILY_ORDER else "OTROS"
+
+
+def _v0316_close(a: Optional[float], b: Optional[float]) -> bool:
+    if a is None or b is None:
+        return False
+    tol = max(1.0, abs(float(b)) * 0.02)
+    return abs(float(a) - float(b)) <= tol
+
+
+def _v0316_infer_base_scope(row: Dict[str, Any], provider_direct_by_family: Dict[str, float], provider_direct_total: float) -> Tuple[str, Optional[str]]:
+    """Determina si el porcentaje aplica a familia o a costo directo.
+
+    Usa primero la base que ya trae el renglon en P. Unitario. Si esa base se
+    parece al subtotal de una familia o al costo directo, se respeta. Si no,
+    aplica reglas semanticas documentadas.
+    """
+    pu_base = _v033_num(row.get("pu"))
+    if _v0316_close(pu_base, provider_direct_total):
+        return "DIRECT", None
+    best_fam = None
+    best_delta = None
+    for fam, total in provider_direct_by_family.items():
+        if _v0316_close(pu_base, total):
+            delta = abs(float(pu_base or 0) - float(total or 0))
+            if best_delta is None or delta < best_delta:
+                best_delta = delta; best_fam = fam
+    if best_fam:
+        return "FAMILY", best_fam
+    return "FAMILY", _v0316_default_base_family(row)
+
+
+def _v0316_recalculate_percent_rows_for_concept(items: List[Dict[str, Any]]) -> None:
+    """Recalcula porcentajes de familia usando subtotales proveedor/mercado.
+
+    Es idempotente y actua solo sobre renglones kind=item. Primero calcula las
+    bases directas excluyendo porcentajes; despues aplica porcentajes para evitar
+    circularidad. Mantiene el orden de la lista original.
+    """
+    if not items:
+        return
+    for idx, row in enumerate(items):
+        row.setdefault("original_order", idx)
+        row["op"] = _v0314_operator_from_row(row, default="*")
+        if not row.get("family") or row.get("family") not in V0312_FAMILY_ORDER:
+            row["family"] = _v0312_family_label(row.get("family") or row.get("familia") or row.get("tipo"), f"{row.get('codigo') or ''} {row.get('concepto') or ''} {row.get('unidad') or ''}")
+
+    percent_rows = [r for r in items if _v0316_is_percent_family_row(r)]
+    non_percent_rows = [r for r in items if r not in percent_rows]
+
+    provider_direct_by_family = {fam: 0.0 for fam in V0312_FAMILY_ORDER}
+    market_direct_by_family = {fam: 0.0 for fam in V0312_FAMILY_ORDER}
+    for row in non_percent_rows:
+        fam = row.get("family") if row.get("family") in V0312_FAMILY_ORDER else "OTROS"
+        if row.get("importe") is None:
+            row["importe"] = _v0312_calc_amount(row.get("pu"), row.get("op"), row.get("cantidad"), row.get("base"))
+        provider_direct_by_family[fam] += float(_v033_money(row.get("importe")) or 0.0)
+        if row.get("market_match_real") or row.get(V0316_DERIVED_MARKET_FLAG):
+            mimp = _v033_money(row.get("market_importe"))
+            if mimp is None:
+                mimp = _v0312_calc_amount(row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("base_mercado") or row.get("base"))
+                row["market_importe"] = mimp
+            market_direct_by_family[fam] += float(mimp or 0.0)
+
+    provider_direct_total = sum(provider_direct_by_family.values())
+    market_direct_total = sum(market_direct_by_family.values())
+
+    for row in percent_rows:
+        pct = _v0316_pct_value(row)
+        if pct is None:
+            continue
+        scope, base_fam = _v0316_infer_base_scope(row, provider_direct_by_family, provider_direct_total)
+        if scope == "DIRECT":
+            provider_base = provider_direct_total
+            market_base = market_direct_total
+            row["base_scope"] = "COSTO DIRECTO"
+        else:
+            base_fam = base_fam or _v0316_default_base_family(row)
+            provider_base = provider_direct_by_family.get(base_fam, 0.0)
+            market_base = market_direct_by_family.get(base_fam, 0.0)
+            row["base_family"] = base_fam
+            row["base_scope"] = base_fam
+            # Mostrar el porcentaje dentro de la familia base cuando la relacion
+            # es clara. Si aplica a costo directo, conservar la familia original.
+            row["family"] = base_fam
+
+        # Contratista: porcentaje sobre la base contratista detectada.
+        if provider_base:
+            row["pu"] = _v033_money(provider_base)
+            row["op"] = "%"
+            row["cantidad"] = pct
+            row["importe"] = _v033_money(provider_base * pct)
+            row["family_percent_row"] = True
+
+        # Mercado: porcentaje sobre base mercado, no sobre base contratista.
+        if market_base:
+            row["market_pu"] = _v033_money(market_base)
+            row["market_op"] = "%"
+            row["market_qty"] = pct
+            row["market_importe"] = _v033_money(market_base * pct)
+            row[V0316_DERIVED_MARKET_FLAG] = True
+            row["market_fallback_from_contractor"] = False
+            row["sin_match_mercado"] = False
+            row["estado"] = "mercado_derivado_porcentaje_familia"
+            # Mantener distincion: no es match directo de Construdata, pero si
+            # es mercado calculado desde subtotal mercado de la familia.
+            row["market_match_real"] = False
+        else:
+            # No hay base mercado; aplicar regla de herencia en italica.
+            row["market_pu"] = row.get("pu")
+            row["market_op"] = row.get("op")
+            row["market_qty"] = row.get("cantidad")
+            row["market_importe"] = row.get("importe")
+            row["market_fallback_from_contractor"] = True
+            row["sin_match_mercado"] = True
+            row["estado"] = row.get("estado") or "sin_match_mercado"
+
+
+def _v0316_enrich_percent_rows_by_concept(detail_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    current_items: List[Dict[str, Any]] = []
+    for row in detail_rows or []:
+        kind = str(row.get("kind") or "item")
+        if kind == "concept":
+            _v0316_recalculate_percent_rows_for_concept(current_items)
+            current_items = []
+        elif kind == "item":
+            current_items.append(row)
+    _v0316_recalculate_percent_rows_for_concept(current_items)
+    return detail_rows
+
+
+_v0316_previous_enrich_detail_rows = _v0312_enrich_detail_rows
+
+
+def _v0312_enrich_detail_rows(detail_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows = _v0316_previous_enrich_detail_rows(detail_rows or [])
+    return _v0316_enrich_percent_rows_by_concept(rows)
+
+
+# Subtotales: incluir mercado derivado por porcentaje de familia, pero no valores
+# heredados del contratista en italica.
+def _v0312_subtotal_row(label: str, rows: List[Dict[str, Any]], provider_total: float) -> Dict[str, Any]:
+    imp = sum(float(_v033_money(r.get("importe")) or 0.0) for r in rows)
+    def is_market_usable(r: Dict[str, Any]) -> bool:
+        return bool((r.get("market_match_real") or r.get(V0316_DERIVED_MARKET_FLAG)) and not r.get("market_fallback_from_contractor"))
+    mimp = sum(float(_v033_money(r.get("market_importe")) or 0.0) for r in rows if is_market_usable(r))
+    has_mkt = any(is_market_usable(r) and _v033_money(r.get("market_importe")) is not None for r in rows)
+    return {
+        "kind": "subtotal", "codigo": "", "concepto": f"SUBTOTAL {label}", "unidad": "",
+        "pu": imp, "op": "", "cantidad": None, "importe": imp,
+        "pct": (imp / provider_total) if provider_total else None,
+        "market_pu": mimp if has_mkt else None, "market_op": "", "market_qty": None,
+        "market_importe": mimp if has_mkt else None, "market_match_real": has_mkt,
+        V0316_DERIVED_MARKET_FLAG: any(r.get(V0316_DERIVED_MARKET_FLAG) for r in rows),
+    }
+
+
+# Consolidacion para Comparativa/Web: usar matches reales y mercados derivados por
+# porcentaje de familia; excluir valores heredados por sin match.
+def _v036_consolidate_market_from_detail(detail_rows: List[Dict[str, Any]], base_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    qty_by_code: Dict[str, Optional[float]] = {}
+    for row in base_rows or []:
+        code = _v036_norm_partida(row.get("code") or row.get("partida") or row.get("part") or row.get("codigo"))
+        if code:
+            qty_by_code[code] = _v033_num(row.get("qty") or row.get("cantidad"))
+
+    current_code = ""
+    # Preferir TOTAL COSTO UNITARIO financiero si existe; si no, sumar item/financial.
+    totals_by_code: Dict[str, float] = {}
+    has_market_by_code: Dict[str, bool] = {}
+    item_sums: Dict[str, float] = {}
+    item_has: Dict[str, bool] = {}
+
+    for row in detail_rows or []:
+        kind = row.get("kind")
+        if kind == "concept":
+            current_code = _v036_norm_partida(row.get("codigo"))
+            continue
+        if not current_code:
+            continue
+        usable = bool((row.get("market_match_real") or row.get(V0316_DERIVED_MARKET_FLAG)) and not row.get("market_fallback_from_contractor"))
+        if not usable:
+            continue
+        imp = _v033_money(row.get("market_importe"))
+        if imp is None:
+            imp = _v0312_calc_amount(row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("base_mercado") or row.get("base"))
+        if imp is None:
+            continue
+        label = norm_text(row.get("concepto") or "")
+        if kind == "financial" and "total costo unitario" in label:
+            totals_by_code[current_code] = float(imp)
+            has_market_by_code[current_code] = True
+        elif kind in {"item", "financial"}:
+            item_sums[current_code] = item_sums.get(current_code, 0.0) + float(imp)
+            item_has[current_code] = True
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for code in set(list(item_sums.keys()) + list(totals_by_code.keys())):
+        total = totals_by_code.get(code, item_sums.get(code, 0.0))
+        qty = qty_by_code.get(code)
+        market_pu = _v033_money(total / qty) if qty not in (None, 0) else None
+        out[code] = {"market_pu": market_pu, "market_importe": _v033_money(total), "has_market": bool(has_market_by_code.get(code) or item_has.get(code))}
+    return out
+
+# V0.3.16a - precision: no convertir roles de seguridad (Supervisor de Seguridad)
+# en porcentajes. Solo conceptos de seguridad/EPP porcentuales explicitos.
+def _v0316_is_percent_family_row(row: Dict[str, Any]) -> bool:
+    if str(row.get("kind") or "item") != "item":
+        return False
+    txt = _v0316_text(row)
+    code = str(row.get("codigo") or "").strip()
+    unit = str(row.get("unidad") or "").strip()
+    op = _v0314_operator_from_row(row, default="*")
+    qty = _v033_num(row.get("cantidad"))
+    if op == "%":
+        return True
+    if code.startswith("%") or unit == "%" or "%" in unit:
+        return True
+    pct_like = qty is not None and 0 <= abs(qty) <= 1.0
+    if not pct_like:
+        return False
+    # No activar por "seguridad" sola, porque existe Supervisor de Seguridad
+    # como mano de obra directa. Debe haber evidencia de cargo porcentual.
+    percent_keywords = [
+        "herramienta menor", "epp", "equipo de proteccion", "proteccion personal",
+        "andamio", "andamios", "consumible", "consumibles", "corte y soldadura",
+        "desperdicio", "accesorio", "cargo porcentual", "porcentaje",
+    ]
+    return any(k in txt for k in percent_keywords)
+
+# V0.3.16b - no degradar mercados derivados por porcentaje a fallback italico.
+def _v0314_apply_no_match_fallback(row: Dict[str, Any]) -> Dict[str, Any]:
+    kind = str(row.get("kind") or "item")
+    if kind not in {"item"}:
+        return row
+    row["op"] = _v0314_operator_from_row(row, default="*")
+    if row.get("importe") is None:
+        row["importe"] = _v0312_calc_amount(row.get("pu"), row.get("op"), row.get("cantidad"), row.get("base"))
+    # Si v0.3.16 calculo mercado derivado por subtotal de familia, conservarlo.
+    if row.get(V0316_DERIVED_MARKET_FLAG):
+        row["market_fallback_from_contractor"] = False
+        row["sin_match_mercado"] = False
+        row["market_op"] = _v0312_norm_operator(row.get("market_op") or "%")
+        row["market_importe"] = _v0312_calc_amount(row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("base_mercado")) or row.get("market_importe")
+        row["estado"] = row.get("estado") or "mercado_derivado_porcentaje_familia"
+        return row
+    if not row.get("market_match_real"):
+        row["market_pu"] = row.get("pu")
+        row["market_op"] = row.get("op")
+        row["market_qty"] = row.get("cantidad")
+        row["market_importe"] = row.get("importe")
+        row["market_fallback_from_contractor"] = True
+        row["sin_match_mercado"] = True
+        row["estado"] = row.get("estado") or "sin_match_mercado"
+    else:
+        row["market_fallback_from_contractor"] = False
+        row["market_op"] = _v0314_operator_from_row({**row, "op": row.get("market_op") or row.get("op")}, default=row.get("op") or "*")
+        row["market_importe"] = _v0312_calc_amount(row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("base_mercado") or row.get("base"))
+        if row.get("market_importe") is None:
+            row["market_importe"] = _v034_item_market_value(row, "importe_mercado", "market_importe", "mercado_importe")
+    return row
+
+# V0.3.16c - reconciliacion financiera de mercado desde los renglones del Detalle.
+def _v0316_market_usable(row: Dict[str, Any]) -> bool:
+    return bool((row.get("market_match_real") or row.get(V0316_DERIVED_MARKET_FLAG) or row.get("market_financial_from_detail")) and not row.get("market_fallback_from_contractor"))
+
+
+def _v0316_recalculate_financial_rows_for_concept(concept: Optional[Dict[str, Any]], items: List[Dict[str, Any]], financials: List[Dict[str, Any]]) -> None:
+    if concept is None:
+        return
+    provider_direct = sum(float(_v033_money(r.get("importe")) or 0.0) for r in items)
+    market_direct = sum(float(_v033_money(r.get("market_importe")) or 0.0) for r in items if _v0316_market_usable(r))
+    provider_running = provider_direct
+    market_running = market_direct
+    last_market_total = market_direct
+
+    for row in financials:
+        label = norm_text(row.get("concepto") or "")
+        if "costo directo" in label:
+            row["pu"] = _v033_money(provider_direct)
+            row["op"] = ""
+            row["cantidad"] = None
+            row["importe"] = _v033_money(provider_direct)
+            row["market_pu"] = _v033_money(market_direct) if market_direct else None
+            row["market_op"] = ""
+            row["market_qty"] = None
+            row["market_importe"] = _v033_money(market_direct) if market_direct else None
+            row["market_match_real"] = bool(market_direct)
+            row["market_financial_from_detail"] = bool(market_direct)
+            last_market_total = market_direct
+            continue
+        if "total costo unitario" in label:
+            row["market_pu"] = _v033_money(market_running) if market_running else None
+            row["market_op"] = ""
+            row["market_qty"] = None
+            row["market_importe"] = _v033_money(market_running) if market_running else None
+            row["market_match_real"] = bool(market_running)
+            row["market_financial_from_detail"] = bool(market_running)
+            last_market_total = market_running
+            continue
+        # Indirecto/financiamiento/utilidad: porcentaje sobre acumulado mercado.
+        pct = _v033_num(row.get("pct"))
+        if pct is None:
+            provider_amt = _v033_money(row.get("importe") or row.get("pu"))
+            pct = (provider_amt / provider_running) if provider_running else 0.0
+        pct = pct / 100.0 if abs(pct or 0.0) > 1 else (pct or 0.0)
+        market_amt = market_running * pct if market_running else None
+        row["op"] = "%"
+        row["cantidad"] = pct
+        row["market_pu"] = _v033_money(market_running) if market_running else None
+        row["market_op"] = "%" if market_running else ""
+        row["market_qty"] = pct if market_running else None
+        row["market_importe"] = _v033_money(market_amt) if market_amt is not None else None
+        row["market_match_real"] = bool(market_running)
+        row["market_financial_from_detail"] = bool(market_running)
+        provider_running += float(_v033_money(row.get("importe")) or 0.0)
+        market_running += float(market_amt or 0.0)
+        last_market_total = market_running
+
+    qty = _v033_num(concept.get("cantidad"))
+    if last_market_total and qty not in (None, 0):
+        concept["market_importe"] = _v033_money(last_market_total * qty)
+        concept["market_pu"] = _v033_money(last_market_total)
+        concept["market_qty"] = qty
+        concept["market_op"] = "*"
+        concept["market_match_real"] = True
+    elif last_market_total:
+        concept["market_importe"] = _v033_money(last_market_total)
+        concept["market_pu"] = _v033_money(last_market_total)
+        concept["market_match_real"] = True
+
+
+def _v0316_enrich_percent_rows_by_concept(detail_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    current_concept: Optional[Dict[str, Any]] = None
+    current_items: List[Dict[str, Any]] = []
+    current_financial: List[Dict[str, Any]] = []
+
+    def flush() -> None:
+        _v0316_recalculate_percent_rows_for_concept(current_items)
+        _v0316_recalculate_financial_rows_for_concept(current_concept, current_items, current_financial)
+
+    for row in detail_rows or []:
+        kind = str(row.get("kind") or "item")
+        if kind == "concept":
+            flush()
+            current_concept = row
+            current_items = []
+            current_financial = []
+        elif kind == "financial":
+            current_financial.append(row)
+        elif kind == "item":
+            current_items.append(row)
+    flush()
+    return detail_rows
+
+
+# V0.3.16c - consolidacion: preferir TOTAL COSTO UNITARIO recalculado desde Detalle.
+def _v036_consolidate_market_from_detail(detail_rows: List[Dict[str, Any]], base_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    qty_by_code: Dict[str, Optional[float]] = {}
+    for row in base_rows or []:
+        code = _v036_norm_partida(row.get("code") or row.get("partida") or row.get("part") or row.get("codigo"))
+        if code:
+            qty_by_code[code] = _v033_num(row.get("qty") or row.get("cantidad"))
+
+    out: Dict[str, Dict[str, Any]] = {}
+    current_code = ""
+    item_sums: Dict[str, float] = {}
+    item_has: Dict[str, bool] = {}
+
+    for row in detail_rows or []:
+        kind = row.get("kind")
+        if kind == "concept":
+            current_code = _v036_norm_partida(row.get("codigo"))
+            continue
+        if not current_code:
+            continue
+        usable = _v0316_market_usable(row)
+        if not usable:
+            continue
+        imp = _v033_money(row.get("market_importe"))
+        if imp is None:
+            imp = _v0312_calc_amount(row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("base_mercado") or row.get("base"))
+        if imp is None:
+            continue
+        label = norm_text(row.get("concepto") or "")
+        if kind == "financial" and "total costo unitario" in label:
+            qty = qty_by_code.get(current_code)
+            # El renglon financiero es PU mercado; multiplicar por cantidad del servicio.
+            service_market_total = float(imp) * float(qty or 1.0)
+            market_pu = float(imp)
+            out[current_code] = {"market_pu": _v033_money(market_pu), "market_importe": _v033_money(service_market_total), "has_market": True}
+        elif current_code not in out and kind in {"item", "financial"}:
+            item_sums[current_code] = item_sums.get(current_code, 0.0) + float(imp)
+            item_has[current_code] = True
+
+    for code, total in item_sums.items():
+        if code in out:
+            continue
+        qty = qty_by_code.get(code)
+        market_pu = _v033_money(total / qty) if qty not in (None, 0) else _v033_money(total)
+        out[code] = {"market_pu": market_pu, "market_importe": _v033_money(total), "has_market": bool(item_has.get(code))}
+    return out
+
+# V0.3.16d - total costo puede normalizarse como "total costo".
+def _v0316_recalculate_financial_rows_for_concept(concept: Optional[Dict[str, Any]], items: List[Dict[str, Any]], financials: List[Dict[str, Any]]) -> None:
+    if concept is None:
+        return
+    provider_direct = sum(float(_v033_money(r.get("importe")) or 0.0) for r in items)
+    market_direct = sum(float(_v033_money(r.get("market_importe")) or 0.0) for r in items if _v0316_market_usable(r))
+    provider_running = provider_direct
+    market_running = market_direct
+    last_market_total = market_direct
+
+    for row in financials:
+        label = norm_text(row.get("concepto") or "")
+        if "costo directo" in label:
+            row["pu"] = _v033_money(provider_direct); row["op"] = ""; row["cantidad"] = None; row["importe"] = _v033_money(provider_direct)
+            row["market_pu"] = _v033_money(market_direct) if market_direct else None; row["market_op"] = ""; row["market_qty"] = None; row["market_importe"] = _v033_money(market_direct) if market_direct else None
+            row["market_match_real"] = bool(market_direct); row["market_financial_from_detail"] = bool(market_direct)
+            last_market_total = market_direct
+            continue
+        if "total costo" in label:
+            row["op"] = ""; row["cantidad"] = None
+            row["market_pu"] = _v033_money(market_running) if market_running else None
+            row["market_op"] = ""; row["market_qty"] = None
+            row["market_importe"] = _v033_money(market_running) if market_running else None
+            row["market_match_real"] = bool(market_running); row["market_financial_from_detail"] = bool(market_running)
+            last_market_total = market_running
+            continue
+        pct = _v033_num(row.get("pct"))
+        if pct is None:
+            provider_amt = _v033_money(row.get("importe") or row.get("pu"))
+            pct = (provider_amt / provider_running) if provider_running else 0.0
+        pct = pct / 100.0 if abs(pct or 0.0) > 1 else (pct or 0.0)
+        market_amt = market_running * pct if market_running else None
+        row["op"] = "%"; row["cantidad"] = pct
+        row["market_pu"] = _v033_money(market_running) if market_running else None
+        row["market_op"] = "%" if market_running else ""; row["market_qty"] = pct if market_running else None
+        row["market_importe"] = _v033_money(market_amt) if market_amt is not None else None
+        row["market_match_real"] = bool(market_running); row["market_financial_from_detail"] = bool(market_running)
+        provider_running += float(_v033_money(row.get("importe")) or 0.0)
+        market_running += float(market_amt or 0.0)
+        last_market_total = market_running
+
+    qty = _v033_num(concept.get("cantidad"))
+    if last_market_total and qty not in (None, 0):
+        concept["market_importe"] = _v033_money(last_market_total * qty)
+        concept["market_pu"] = _v033_money(last_market_total)
+        concept["market_qty"] = qty; concept["market_op"] = "*"; concept["market_match_real"] = True
+    elif last_market_total:
+        concept["market_importe"] = _v033_money(last_market_total); concept["market_pu"] = _v033_money(last_market_total); concept["market_match_real"] = True
+
+# V0.3.16e - consolidacion reconoce "TOTAL COSTO" normalizado.
+def _v036_consolidate_market_from_detail(detail_rows: List[Dict[str, Any]], base_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    qty_by_code: Dict[str, Optional[float]] = {}
+    for row in base_rows or []:
+        code = _v036_norm_partida(row.get("code") or row.get("partida") or row.get("part") or row.get("codigo"))
+        if code:
+            qty_by_code[code] = _v033_num(row.get("qty") or row.get("cantidad"))
+    out: Dict[str, Dict[str, Any]] = {}
+    current_code = ""
+    item_sums: Dict[str, float] = {}
+    item_has: Dict[str, bool] = {}
+    for row in detail_rows or []:
+        kind = row.get("kind")
+        if kind == "concept":
+            current_code = _v036_norm_partida(row.get("codigo"))
+            continue
+        if not current_code or not _v0316_market_usable(row):
+            continue
+        imp = _v033_money(row.get("market_importe"))
+        if imp is None:
+            imp = _v0312_calc_amount(row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("base_mercado") or row.get("base"))
+        if imp is None:
+            continue
+        label = norm_text(row.get("concepto") or "")
+        if kind == "financial" and "total costo" in label:
+            qty = qty_by_code.get(current_code)
+            service_market_total = float(imp) * float(qty or 1.0)
+            out[current_code] = {"market_pu": _v033_money(float(imp)), "market_importe": _v033_money(service_market_total), "has_market": True}
+        elif current_code not in out and kind in {"item", "financial"}:
+            item_sums[current_code] = item_sums.get(current_code, 0.0) + float(imp)
+            item_has[current_code] = True
+    for code, total in item_sums.items():
+        if code in out:
+            continue
+        qty = qty_by_code.get(code)
+        market_pu = _v033_money(total / qty) if qty not in (None, 0) else _v033_money(total)
+        out[code] = {"market_pu": market_pu, "market_importe": _v033_money(total), "has_market": bool(item_has.get(code))}
+    return out
