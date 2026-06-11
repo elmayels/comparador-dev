@@ -1738,3 +1738,260 @@ def write_matrix_proposal_excel(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
     return summary
+
+
+# ===========================================================================
+# V0.3.12 - Detalle matriz base agrupado por familias + financieros porcentuales
+# ===========================================================================
+# El flujo de matriz base/catalogo Nestle sigue separado del flujo contratistas:
+# - No tiene columnas de mercado.
+# - No genera Analisis IA.
+# - La matriz generada es la referencia de mercado.
+# - Ahora el Detalle se agrupa por familias con subtotales y seccion financiera
+#   por servicio, homologada visualmente con el detalle de contratistas.
+
+V0312_FAMILY_ORDER = ["MATERIALES", "MANO DE OBRA", "EQUIPO Y HERRAMIENTA", "BASICOS", "OTROS"]
+V0312_FAMILY_FILL = "F2F2F2"
+V0312_SECTION_FILL = "E7E6E6"
+V0312_FIN_FILL = "D9EAF7"
+V0312_TOTAL_FILL = "B4C6E7"
+
+
+def _v0312_norm_operator(value: Any, default: str = "*") -> str:
+    raw = str(value or "").strip()
+    txt = normalize_text(raw)
+    if raw in {"*", "x", "X"} or txt in {"x", "multiplicacion", "multiplicar", "producto"}:
+        return "*"
+    if raw == "/" or txt in {"division", "dividir", "rendimiento"}:
+        return "/"
+    if raw == "%" or "%" in raw or txt in {"porcentaje", "porcentual"}:
+        return "%"
+    return default
+
+
+def _v0312_calc_amount(pu_val: Any, op_val: Any, qty_val: Any, base_val: Any = None) -> Optional[float]:
+    pu = _as_float(pu_val)
+    qty = _as_float(qty_val)
+    base = _as_float(base_val)
+    op = _v0312_norm_operator(op_val)
+    if op == "%":
+        if base is None or qty is None:
+            return None
+        pct = qty / 100.0 if abs(qty) > 1 else qty
+        return base * pct
+    if pu is None:
+        return None
+    if op == "/":
+        if qty in (None, 0):
+            return None
+        return pu / qty
+    if qty is None:
+        return None
+    return pu * qty
+
+
+def _v0312_family_label(value: Any, text: Any = "") -> str:
+    txt = normalize_text(f"{value or ''} {text or ''}")
+    if "material" in txt:
+        return "MATERIALES"
+    if "mano" in txt or "obra" in txt or any(k in txt for k in ["oficial", "ayudante", "soldador", "tubero", "supervisor", "jornal", "jor", "cuadrilla", "seguridad"]):
+        return "MANO DE OBRA"
+    if any(k in txt for k in ["equipo", "herramient", "maquinaria", "montacargas", "grua", "manlift", "plataforma", "camion", "flete", "transporte", "acarreo"]):
+        return "EQUIPO Y HERRAMIENTA"
+    if "basico" in txt or "basica" in txt:
+        return "BASICOS"
+    if any(k in txt for k in ["acero", "valvula", "tuber", "brida", "tornill", "soldadura", "consumible", "cople", "conduit"]):
+        return "MATERIALES"
+    return "OTROS"
+
+
+def _v0312_style_base_detail_row(ws, rr: int, kind: str = "item") -> None:
+    fill = None
+    bold = False
+    if kind == "service":
+        fill = V0312_SECTION_FILL; bold = True
+    elif kind in {"family", "subtotal"}:
+        fill = V0312_FAMILY_FILL; bold = True
+    elif kind == "financial":
+        fill = V0312_FIN_FILL; bold = True
+    elif kind == "total":
+        fill = V0312_TOTAL_FILL; bold = True
+    for c in range(1, 9):
+        cell = ws.cell(rr, c)
+        cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+        cell.font = Font(name="Calibri", size=9, color=V034_TEXT, bold=bold)
+        cell.alignment = Alignment(vertical="center", wrap_text=(c == 2))
+        if fill:
+            cell.fill = PatternFill("solid", fgColor=fill)
+    ws.cell(rr, 4).number_format = '$#,##0.00'
+    ws.cell(rr, 6).number_format = '#,##0.0000'
+    ws.cell(rr, 7).number_format = '$#,##0.00'
+    ws.cell(rr, 8).number_format = '0.00%'
+
+
+def _v0312_row_get(row: Any, *keys: str, default=None):
+    return _v039_row_get(row, *keys, default=default)
+
+
+def _v0312_item_import(row: Any) -> Optional[float]:
+    unit_cost = _v0312_row_get(row, "unit_cost", "precio_unitario", "pu", default=None)
+    qty = _v0312_row_get(row, "qty", "quantity", "cantidad", default=None)
+    fallback = _v0312_row_get(row, "importe", "raw_import", default=None)
+    op = "/" if bool(_v0312_row_get(row, "is_yield", default=False)) else _v0312_norm_operator(_v0312_row_get(row, "op", "operacion", default="*"))
+    calc = _v0312_calc_amount(unit_cost, op, qty)
+    return calc if calc is not None else _as_float(fallback)
+
+
+def _v0312_write_base_detail_sheet(wb: Workbook, detail_records: List[Dict[str, Any]], indirect_pct: float = 0.25):
+    if "Detalle" in wb.sheetnames:
+        del wb["Detalle"]
+    det = wb.create_sheet("Detalle")
+    headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%"]
+    for c, h in enumerate(headers, 1):
+        det.cell(1, c, h)
+        _v034_header(det.cell(1, c), V034_HEADER_FILL)
+
+    workbook_total = sum(float(rec.get("total") or 0.0) for rec in detail_records)
+    rr = 2
+    row_kinds: Dict[int, str] = {}
+    for rec in detail_records:
+        svc = rec.get("service")
+        detail_rows = rec.get("detail_rows") or []
+        # Recalcular familias desde filas reales para asegurar subtotales.
+        families: Dict[str, List[Any]] = {fam: [] for fam in V0312_FAMILY_ORDER}
+        for d in detail_rows:
+            fam = _v0312_family_label(_v0312_row_get(d, "tipo", "family", "familia", default=""), _v0312_row_get(d, "insumo", "insumo_desc", "concepto", "descripcion", default=""))
+            families.setdefault(fam, []).append(d)
+        family_totals = {fam: sum(float(_v0312_item_import(x) or 0.0) for x in rows) for fam, rows in families.items()}
+        direct = sum(family_totals.values())
+        indirect = direct * indirect_pct
+        financing_pct = _as_float(rec.get("financing_pct")) or 0.0
+        utility_pct = _as_float(rec.get("utility_pct")) or 0.0
+        charges_pct = _as_float(rec.get("charges_pct")) or 0.0
+        financing = direct * financing_pct
+        utility = direct * utility_pct
+        charges = direct * charges_pct
+        pu = direct + indirect + financing + utility + charges
+        qty_service = float(getattr(svc, "qty", 0.0) or 0.0)
+        total_service = pu * qty_service
+        service_pct = (total_service / workbook_total) if workbook_total else None
+
+        vals = [getattr(svc, "part", ""), getattr(svc, "description", ""), getattr(svc, "unit", ""), pu, "*", qty_service if qty_service else None, total_service, service_pct]
+        for c, v in enumerate(vals, 1):
+            det.cell(rr, c, v)
+        row_kinds[rr] = "service"; rr += 1
+
+        for fam in V0312_FAMILY_ORDER:
+            rows = families.get(fam) or []
+            if not rows:
+                continue
+            for c, v in enumerate(["", fam, "", "", "", "", "", ""], 1):
+                det.cell(rr, c, v)
+            row_kinds[rr] = "family"; rr += 1
+            for d in rows:
+                code = _v0312_row_get(d, "insumo_code", "code", "codigo", default="")
+                concept = _v0312_row_get(d, "insumo", "insumo_name", "insumo_desc", "concepto", "descripcion", default="")
+                unit = _v0312_row_get(d, "unit", "insumo_unit", "unidad", default="")
+                unit_cost = _v0312_row_get(d, "unit_cost", "precio_unitario", "pu", default=None)
+                qty = _v0312_row_get(d, "qty", "quantity", "cantidad", default=None)
+                op = "/" if bool(_v0312_row_get(d, "is_yield", default=False)) else _v0312_norm_operator(_v0312_row_get(d, "op", "operacion", default="*"))
+                imp = _v0312_item_import(d)
+                pct = (float(imp or 0.0) / workbook_total) if workbook_total else None
+                vals = [code, concept, unit, unit_cost, op, qty, imp, pct]
+                for c, v in enumerate(vals, 1):
+                    det.cell(rr, c, v)
+                row_kinds[rr] = "item"; rr += 1
+            subtotal = family_totals.get(fam, 0.0)
+            vals = ["", f"SUBTOTAL {fam}", "", subtotal, "", None, subtotal, (subtotal / workbook_total) if workbook_total else None]
+            for c, v in enumerate(vals, 1):
+                det.cell(rr, c, v)
+            row_kinds[rr] = "subtotal"; rr += 1
+
+        finance_rows = [
+            ("COSTO DIRECTO", direct, "", None, direct),
+            (f"COSTO INDIRECTO ({indirect_pct:.0%})", indirect, "%", indirect_pct, indirect),
+            (f"FINANCIAMIENTO ({financing_pct:.0%})" if financing_pct else "FINANCIAMIENTO", financing, "%" if financing_pct else "", financing_pct if financing_pct else None, financing),
+            (f"UTILIDAD / CARGOS ADICIONALES ({(utility_pct + charges_pct):.0%})" if (utility_pct or charges_pct) else "UTILIDAD / CARGOS ADICIONALES", utility + charges, "%" if (utility_pct or charges_pct) else "", (utility_pct + charges_pct) if (utility_pct or charges_pct) else None, utility + charges),
+            ("TOTAL COSTO UNITARIO", pu, "", None, pu),
+        ]
+        for label, amount, op, pct, imp in finance_rows:
+            vals = ["", label, "", amount, op, pct, imp, (float(imp or 0.0) / workbook_total) if workbook_total else None]
+            for c, v in enumerate(vals, 1):
+                det.cell(rr, c, v)
+            row_kinds[rr] = "total" if label == "TOTAL COSTO UNITARIO" else "financial"
+            rr += 1
+        rr += 1
+
+    if rr == 2:
+        det.cell(2, 1, "Sin detalle detectado")
+        det.cell(2, 2, "No se generaron renglones calculados para la matriz base.")
+        row_kinds[2] = "service"; rr = 3
+    last = rr - 1
+    det.sheet_view.showGridLines = False
+    det.freeze_panes = "A2"
+    widths = {"A": 16, "B": 86, "C": 12, "D": 15, "E": 8, "F": 12, "G": 16, "H": 11}
+    for col, width in widths.items():
+        det.column_dimensions[col].width = width
+    for r_idx in range(2, max(last, 2) + 1):
+        _v0312_style_base_detail_row(det, r_idx, row_kinds.get(r_idx, "item"))
+    try:
+        det.auto_filter.ref = f"A1:H{max(1, last)}"
+    except Exception:
+        pass
+    return det
+
+
+def write_matrix_proposal_excel(
+    output_path: str,
+    services: List[ServiceItem],
+    base: ConstrudataMatrixBase,
+    project_meta: Optional[Dict[str, str]] = None,
+    indirect_pct: float = 0.25,
+    max_services: Optional[int] = None,
+) -> Dict[str, Any]:
+    """V0.3.12: matriz base con Detalle por familias, sin mercado ni IA."""
+    project_meta = project_meta or {}
+    visible_services = services[:max_services] if max_services else services
+    summary = _v0311_previous_write_matrix_proposal_excel(
+        output_path,
+        services,
+        base,
+        project_meta=project_meta,
+        indirect_pct=indirect_pct,
+        max_services=max_services,
+    )
+    detail_records: List[Dict[str, Any]] = []
+    for item in visible_services:
+        selected, candidates, status, obs = choose_matrices(item, base)
+        detail_rows, totals = calculate_matrix_rows(base, item, selected)
+        family_totals = {fam: 0.0 for fam in V0312_FAMILY_ORDER}
+        for d in detail_rows:
+            fam = _v0312_family_label(_v0312_row_get(d, "tipo", "family", "familia", default=""), _v0312_row_get(d, "insumo", "insumo_desc", default=""))
+            family_totals[fam] = family_totals.get(fam, 0.0) + float(_v0312_item_import(d) or 0.0)
+        direct = sum(family_totals.values())
+        indirect = direct * indirect_pct
+        pu = direct + indirect
+        total = pu * float(item.qty or 0.0)
+        detail_records.append({
+            "service": item,
+            "detail_rows": detail_rows,
+            "totals": family_totals,
+            "direct": direct,
+            "indirect": indirect,
+            "financing": 0.0,
+            "utility": 0.0,
+            "charges": 0.0,
+            "pu": pu,
+            "total": total,
+            "status": status,
+        })
+    wb = load_workbook(output_path)
+    _v0312_write_base_detail_sheet(wb, detail_records, indirect_pct=indirect_pct)
+    allowed = {"Comparativa", "Detalle"}
+    for sh in list(wb.sheetnames):
+        if sh not in allowed:
+            del wb[sh]
+    wb._sheets = [wb["Comparativa"], wb["Detalle"]]
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_path)
+    return summary

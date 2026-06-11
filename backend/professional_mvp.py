@@ -3030,3 +3030,262 @@ def append_professional_mvp_workbook(workbook_path: str, filepaths: List[str], n
         resumen_paths=resumen_paths or [],
         resumen_oficial_path=resumen_oficial_path,
     )
+
+
+# ===========================================================================
+# V0.3.12 - Detalle agrupado por familias + operador real de mercado
+# ===========================================================================
+# Objetivo:
+# - El Detalle de contratistas debe mostrar cada servicio como matriz APU:
+#   Materiales, Mano de Obra, Equipo y Herramienta, Basicos, Otros, subtotales
+#   por familia y seccion financiera.
+# - Mercado Importe se recalcula respetando el operador real (*, /, %), en vez
+#   de confiar en importes preexistentes que pueden venir mal calculados.
+
+V0312_FAMILY_ORDER = ["MATERIALES", "MANO DE OBRA", "EQUIPO Y HERRAMIENTA", "BASICOS", "OTROS"]
+V0312_FAMILY_FILL = "F2F2F2"
+V0312_SERVICE_FILL = "E7E6E6"
+V0312_FIN_FILL = "D9EAF7"
+V0312_TOTAL_FILL = "B4C6E7"
+
+
+def _v0312_norm_operator(value: Any, default: str = "*") -> str:
+    raw = str(value or "").strip()
+    txt = norm_text(raw)
+    if raw in {"*", "x", "X"} or txt in {"x", "multiplicacion", "multiplicar", "producto"}:
+        return "*"
+    if raw == "/" or txt in {"division", "dividir", "rendimiento"}:
+        return "/"
+    if raw == "%" or "%" in raw or txt in {"porcentaje", "porcentual"}:
+        return "%"
+    return default
+
+
+def _v0312_family_label(value: Any = None, text: Any = None) -> str:
+    raw = f"{value or ''} {text or ''}"
+    txt = norm_text(raw)
+    text_only = norm_text(text)
+    # Si la descripcion del renglon dice material/consumible, priorizar Materiales
+    # aunque la matriz origen venga etiquetada de forma imprecisa.
+    if any(k in text_only for k in ["material", "acero", "valvula", "válvula", "tuberia", "tubería", "tubo", "brida", "tornill", "soldadura", "consumible", "lamina", "lámina", "cople", "conduit"]):
+        return "MATERIALES"
+    # Luego roles laborales explícitos para evitar clasificar "tubero" como tuberia.
+    if any(k in txt for k in ["mano de obra", "mo", "jornal", "jor", "oficial", "ayudante", "soldador", "tubero", "electric", "supervisor", "cuadrilla", "seguridad"]):
+        return "MANO DE OBRA"
+    if any(k in txt for k in ["material", "acero", "valvula", "válvula", "tuberia", "tubería", "tubo", "brida", "tornill", "soldadura", "consumible", "lamina", "lámina", "cople", "conduit"]):
+        return "MATERIALES"
+    if any(k in txt for k in ["equipo", "herramient", "maquinaria", "montacargas", "grua", "grúa", "manlift", "plataforma", "camion", "camión", "camioneta", "flete", "transporte", "acarreo", "renta"]):
+        return "EQUIPO Y HERRAMIENTA"
+    if any(k in txt for k in ["basico", "basica", "básico", "básica", "matriz auxiliar", "auxiliar"]):
+        return "BASICOS"
+    if norm_text(value) in {"materiales", "material"}:
+        return "MATERIALES"
+    return "OTROS"
+
+
+def _v0312_calc_amount(pu_val: Any, op_val: Any, qty_val: Any, base_val: Any = None) -> Optional[float]:
+    pu = _v033_num(pu_val)
+    qty = _v033_num(qty_val)
+    base = _v033_num(base_val)
+    op = _v0312_norm_operator(op_val)
+    if op == "%":
+        if base is None or qty is None:
+            return None
+        pct = qty / 100.0 if abs(qty) > 1 else qty
+        return _v033_money(base * pct)
+    if pu is None:
+        return None
+    if op == "/":
+        if qty in (None, 0):
+            return None
+        return _v033_money(pu / qty)
+    if qty is None:
+        return None
+    return _v033_money(pu * qty)
+
+
+# Reemplaza calculo base de mercado: ya no confia primero en importe_mercado
+# recibido; recalcula si tiene PU, cantidad y operador.
+def _v034_calc_market_importe(pu_val: Optional[float], op_val: Any, qty_val: Optional[float], base_val: Optional[float] = None) -> Optional[float]:
+    return _v0312_calc_amount(pu_val, op_val, qty_val, base_val)
+
+
+def _v035_real_market_fields(item: Dict[str, Any]) -> Dict[str, Any]:
+    if not _v034_is_real_market_match(item):
+        return {"market_pu": None, "market_op": "Sin match", "market_qty": None, "market_importe": None, "market_match_real": False}
+    market_pu = _v034_item_market_value(item, "precio_mercado", "market_pu", "mercado_pu", "precio_nacional")
+    market_qty = _v034_item_market_value(item, "cantidad_mercado", "market_qty", "mercado_cantidad", "cantidad", "factor", "qty")
+    market_op = _v0312_norm_operator(item.get("market_op") or item.get("mercado_op") or item.get("op_mercado") or item.get("op") or item.get("operacion") or "*")
+    base_val = item.get("base_mercado") or item.get("base") or item.get("costo_directo")
+    market_importe = _v0312_calc_amount(market_pu, market_op, market_qty, base_val)
+    # Fallback solo si no se puede calcular con operador; nunca usa importe del proveedor.
+    if market_importe is None:
+        market_importe = _v034_item_market_value(item, "importe_mercado", "market_importe", "mercado_importe")
+    return {"market_pu": market_pu, "market_op": market_op, "market_qty": market_qty, "market_importe": market_importe, "market_match_real": True}
+
+
+def _v0312_enrich_detail_rows(detail_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Agrega familia y normaliza operadores/importes de mercado sin alterar columnas."""
+    current_concept = ""
+    for row in detail_rows:
+        kind = str(row.get("kind") or "item")
+        if kind == "concept":
+            current_concept = str(row.get("concepto") or "")
+            row["family"] = "SERVICIO"
+            continue
+        if kind == "financial":
+            row["family"] = "FINANCIERO"
+            row["op"] = _v0312_norm_operator(row.get("op"), default="") if row.get("op") else ""
+            row["market_op"] = _v0312_norm_operator(row.get("market_op"), default="") if row.get("market_op") else ""
+            continue
+        fam = row.get("family") or row.get("familia") or row.get("tipo") or row.get("categoria")
+        row["family"] = _v0312_family_label(fam, f"{row.get('codigo') or ''} {row.get('concepto') or ''} {row.get('unidad') or ''}")
+        row["op"] = _v0312_norm_operator(row.get("op") or row.get("operacion") or "*")
+        if row.get("importe") is None:
+            row["importe"] = _v0312_calc_amount(row.get("pu"), row.get("op"), row.get("cantidad"), row.get("base"))
+        if row.get("market_match_real"):
+            row["market_op"] = _v0312_norm_operator(row.get("market_op") or row.get("op") or "*")
+            row["market_importe"] = _v0312_calc_amount(row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("base_mercado") or row.get("base"))
+        elif row.get("market_op") not in (None, "", "Sin match"):
+            row["market_op"] = _v0312_norm_operator(row.get("market_op"))
+    return detail_rows
+
+
+_v0312_previous_extract_provider_detail_rows = _v034_extract_provider_detail_rows
+
+
+def _v034_extract_provider_detail_rows(provider_file: str, resumen_file: Optional[str], provider_name: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    rows, diag = _v0312_previous_extract_provider_detail_rows(provider_file, resumen_file, provider_name)
+    return _v0312_enrich_detail_rows(rows), diag
+
+
+def _v0312_write_values(ws, rr: int, vals: List[Any], cols: int = 13) -> None:
+    for c in range(1, cols + 1):
+        ws.cell(rr, c, vals[c - 1] if c <= len(vals) else None)
+
+
+def _v0312_style_detail_row(ws, rr: int, kind: str = "item", cols: int = 13) -> None:
+    fill = None
+    bold = False
+    if kind == "service":
+        fill = V0312_SERVICE_FILL; bold = True
+    elif kind == "family":
+        fill = V0312_FAMILY_FILL; bold = True
+    elif kind == "subtotal":
+        fill = V0312_FAMILY_FILL; bold = True
+    elif kind == "financial":
+        fill = V0312_FIN_FILL; bold = True
+    elif kind == "total":
+        fill = V0312_TOTAL_FILL; bold = True
+    for c in range(1, cols + 1):
+        cell = ws.cell(rr, c)
+        cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+        cell.font = Font(name="Calibri", size=9, color=TEXT, bold=bold)
+        cell.alignment = Alignment(vertical="center", wrap_text=(c == 2))
+        if fill:
+            cell.fill = PatternFill("solid", fgColor=fill)
+    # number formats for contractor detail columns
+    if cols >= 13:
+        for col in (4, 7, 10, 13):
+            ws.cell(rr, col).number_format = '$#,##0.00'
+        for col in (6, 12):
+            ws.cell(rr, col).number_format = '#,##0.0000'
+        ws.cell(rr, 8).number_format = '0.00%'
+
+
+def _v0312_subtotal_row(label: str, rows: List[Dict[str, Any]], provider_total: float) -> Dict[str, Any]:
+    imp = sum(float(_v033_money(r.get("importe")) or 0.0) for r in rows)
+    mimp = sum(float(_v033_money(r.get("market_importe")) or 0.0) for r in rows if r.get("market_match_real"))
+    has_mkt = any(r.get("market_match_real") and _v033_money(r.get("market_importe")) is not None for r in rows)
+    return {
+        "kind": "subtotal", "codigo": "", "concepto": f"SUBTOTAL {label}", "unidad": "",
+        "pu": imp, "op": "", "cantidad": None, "importe": imp,
+        "pct": (imp / provider_total) if provider_total else None,
+        "market_pu": mimp if has_mkt else None, "market_op": "", "market_qty": None,
+        "market_importe": mimp if has_mkt else None, "market_match_real": has_mkt,
+    }
+
+
+def _v034_create_detail_sheet(wb, sheet_name: str, detail_rows: List[Dict[str, Any]]) -> None:
+    """V0.3.12: Detalle de contratista agrupado por servicio/familia.
+
+    Mantiene las 13 columnas aprobadas para contratistas, pero organiza cada
+    matriz como PU/APU: servicio, familias, renglones, subtotal por familia y
+    bloque financiero. La matriz base usa otro writer en base_matrix_proposer.
+    """
+    detail_rows = _v0312_enrich_detail_rows(detail_rows or [])
+    ws = wb.create_sheet(_safe_sheet_title(sheet_name, wb.sheetnames))
+    headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%", "", "Mercado P. Unitario", "Mercado Op.", "Mercado Cantidad", "Mercado Importe"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(1, c, h)
+    r = 2
+    row_kinds: Dict[int, str] = {}
+    provider_total = sum(float(_v033_money(x.get("importe")) or 0.0) for x in detail_rows if str(x.get("kind")) == "concept")
+    if not provider_total:
+        provider_total = sum(float(_v033_money(x.get("importe")) or 0.0) for x in detail_rows if str(x.get("kind")) == "item")
+
+    current_concept: Optional[Dict[str, Any]] = None
+    current_items: List[Dict[str, Any]] = []
+    current_financial: List[Dict[str, Any]] = []
+
+    def flush_current() -> None:
+        nonlocal r, current_concept, current_items, current_financial
+        if current_concept is None:
+            return
+        # Servicio / matriz principal
+        vals = [
+            current_concept.get("codigo"), current_concept.get("concepto"), current_concept.get("unidad"), current_concept.get("pu"), current_concept.get("op"),
+            current_concept.get("cantidad"), current_concept.get("importe"), current_concept.get("pct"), "",
+            current_concept.get("market_pu"), current_concept.get("market_op"), current_concept.get("market_qty"), current_concept.get("market_importe"),
+        ]
+        _v0312_write_values(ws, r, vals); row_kinds[r] = "service"; r += 1
+        # Familias + subtotales
+        for fam in V0312_FAMILY_ORDER:
+            fam_rows = [x for x in current_items if x.get("family") == fam]
+            if not fam_rows:
+                continue
+            _v0312_write_values(ws, r, ["", fam, "", "", "", "", "", "", "", "", "", "", ""]); row_kinds[r] = "family"; r += 1
+            for row in fam_rows:
+                # Recalculo defensivo de Mercado Importe con operador real.
+                if row.get("market_match_real"):
+                    row["market_importe"] = _v0312_calc_amount(row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("base_mercado") or row.get("base"))
+                vals = [row.get("codigo"), row.get("concepto"), row.get("unidad"), row.get("pu"), row.get("op"), row.get("cantidad"), row.get("importe"), row.get("pct"), "", row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("market_importe")]
+                _v0312_write_values(ws, r, vals); row_kinds[r] = "item"; r += 1
+            st = _v0312_subtotal_row(fam, fam_rows, provider_total)
+            vals = [st.get("codigo"), st.get("concepto"), st.get("unidad"), st.get("pu"), st.get("op"), st.get("cantidad"), st.get("importe"), st.get("pct"), "", st.get("market_pu"), st.get("market_op"), st.get("market_qty"), st.get("market_importe")]
+            _v0312_write_values(ws, r, vals); row_kinds[r] = "subtotal"; r += 1
+        # Seccion financiera
+        if current_financial:
+            _v0312_write_values(ws, r, ["", "SECCION FINANCIERA", "", "", "", "", "", "", "", "", "", "", ""]); row_kinds[r] = "financial"; r += 1
+            for row in current_financial:
+                vals = [row.get("codigo"), row.get("concepto"), row.get("unidad"), row.get("pu"), row.get("op"), row.get("cantidad"), row.get("importe"), row.get("pct"), "", row.get("market_pu"), row.get("market_op"), row.get("market_qty"), row.get("market_importe")]
+                _v0312_write_values(ws, r, vals); row_kinds[r] = "financial"; r += 1
+        # Total costo unitario por servicio: visible aunque no haya financieros.
+        _v0312_write_values(ws, r, ["", "TOTAL POR SERVICIO", "", current_concept.get("pu"), "", current_concept.get("cantidad"), current_concept.get("importe"), current_concept.get("pct"), "", current_concept.get("market_pu"), "", current_concept.get("market_qty"), current_concept.get("market_importe")])
+        row_kinds[r] = "total"; r += 2
+        current_concept = None; current_items = []; current_financial = []
+
+    for row in detail_rows:
+        kind = str(row.get("kind") or "item")
+        if kind == "concept":
+            flush_current()
+            current_concept = row
+        elif kind == "financial":
+            current_financial.append(row)
+        else:
+            current_items.append(row)
+    flush_current()
+
+    if r == 2:
+        _v0312_write_values(ws, 2, ["Sin detalle detectado", "No fue posible leer renglones de matriz para este contratista."])
+        row_kinds[2] = "service"; r = 3
+    last_row = r - 1
+    _v034_style_detail_sheet(ws, last_row)
+    for rr, kind in row_kinds.items():
+        _v0312_style_detail_row(ws, rr, kind, 13)
+        if kind == "item":
+            _v036_apply_market_diff_bold(ws, rr)
+    try:
+        ws.auto_filter.ref = f"A1:M{last_row}"
+    except Exception:
+        pass
