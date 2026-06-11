@@ -50,6 +50,9 @@ a{color:inherit}
 
 @media (max-width:1100px){.grid{grid-template-columns:1fr}.sidebar{border-right:none;border-bottom:1px solid rgba(255,255,255,.08)}.stat-grid,.benchmark-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:700px){.wrap{padding:16px}.hero h2{font-size:30px}.stat-grid,.benchmark-grid{grid-template-columns:1fr}.table-tools{align-items:stretch}.table-tools > *{width:100%}}
+
+/* v0.3.13 dashboard tabs */
+.dash-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 0}.dash-tab{border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:10px 13px;cursor:pointer;font-size:12px;font-weight:700}.dash-tab.active{background:linear-gradient(135deg,#42c7ff,#66f5cf);color:#07111d}.ai-text{white-space:pre-wrap;line-height:1.65;color:#dbe7ff;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:16px;max-height:560px;overflow:auto}.family-table td:first-child{font-weight:700}.hide-chat{display:none!important}
 </style>
 </head>
 <body>
@@ -88,6 +91,7 @@ const app = createApp({
       pagination: { services: 1, materials: 1, labor: 1, equipment: 1, pageSize: 20 },
       analysis: { mode: null, jobId: null, completed: false, downloadReady: false },
       chat: { question: '', loading: false, messages: [] },
+      activeResultTab: 'resumen',
     })
 
     const benchmarkLoaded = computed(() => !!state.benchmark.cargado)
@@ -134,7 +138,7 @@ const app = createApp({
     })
 
     const providerRanking = computed(() => {
-      const rows = state.preview?.provider_scores || []
+      const rows = (dashboardSources?.value?.length ? dashboardSources.value : (state.preview?.provider_scores || []))
       return rows.map((row, index) => ({
         ...row,
         rank: index + 1,
@@ -168,12 +172,13 @@ const app = createApp({
     const dashboardKpis = computed(() => {
       const rows = state.preview?.rows || []
       const providers = providerRanking.value || []
-      if (analysisMode.value === 'proposed_matrix') {
+      if (analysisMode.value === 'proposed_matrix' || state.preview?.run_type === 'base_matrix') {
+        const base = dashboardSources.value[0] || {}
         return [
-          { label: 'Modo', value: 'Matriz IA', text: 'Presupuesto base desde catálogo.' },
+          { label: 'Modo', value: 'Matriz base', text: 'Catálogo base usado como mercado.' },
+          { label: 'Total', value: formatMoney(base.total), text: base.name || 'Matriz base / Mercado' },
+          { label: 'Conceptos', value: base.conceptos || (base.top_items || []).length || '—', text: 'Renglones usados para dashboard.' },
           { label: 'Archivo listo', value: state.excelBlob ? 'Sí' : '—', text: 'Descarga el Excel técnico.' },
-          { label: 'Catálogo', value: state.catalogFile ? '1' : '—', text: state.catalogFile?.name || 'Sin catálogo.' },
-          { label: 'Referencia', value: 'CD', text: 'Matrices Construdata.' },
         ]
       }
       const best = providers[0]
@@ -189,7 +194,7 @@ const app = createApp({
     })
 
     const providerBars = computed(() => {
-      const rows = providerRanking.value || []
+      const rows = dashboardSources.value.length ? dashboardSources.value : (providerRanking.value || [])
       const values = rows.map((p, idx) => ({
         name: p.nombre || `Proveedor ${idx + 1}`,
         total: Number(p.total_oferta ?? p.total_estimado ?? p.total_comparable ?? 0) || 0,
@@ -200,6 +205,13 @@ const app = createApp({
     })
 
     const costMixRows = computed(() => {
+      if (familyDashboardRows.value.length) {
+        return familyDashboardRows.value.map(group => {
+          const get = key => (group.rows.find(r => r.key === key) || {}).amount || 0
+          const total = get('total_costo_unitario') || group.rows.reduce((a, r) => a + (r.amount || 0), 0)
+          return { name: group.source, material: get('materiales'), labor: get('mano_obra'), equipment: get('equipo_herramienta'), basicos: get('basicos'), indirecto: get('costo_indirecto'), financiamiento: get('financiamiento'), utilidad: get('utilidad'), total }
+        })
+      }
       const breakdown = state.preview?.cost_breakdown || {}
       const keys = Object.keys(breakdown)
       if (keys.length) {
@@ -275,6 +287,45 @@ const app = createApp({
       if (analysisMode.value === 'single_provider') return 'Análisis de cotización'
       return 'Sin análisis'
     })
+    const dashboardSources = computed(() => {
+      const direct = state.preview?.contractors || state.preview?.providers || state.preview?.provider_scores || []
+      return direct.map((row, idx) => ({
+        ...row,
+        id: row.id || `SRC${idx + 1}`,
+        name: row.name || row.nombre || row.provider || `Fuente ${idx + 1}`,
+        total: row.total ?? row.total_oferta ?? row.total_estimado ?? null,
+        market_total: row.market_total ?? row.total_mercado ?? null,
+        difference_amount: row.difference_amount ?? row.diferencia_total ?? null,
+        difference_percent: row.difference_percent ?? row.desviacion_total_pct ?? null,
+        families: row.families || {},
+        business_rules: row.business_rules || [],
+      }))
+    })
+
+    const aiAnalysisText = computed(() => state.preview?.ai_analysis?.text || (state.preview?.ai_findings || [])[0]?.text || '')
+    const availableDashboardTabs = computed(() => {
+      const tabs = [
+        { id: 'resumen', label: 'Resumen general' },
+        { id: 'familias', label: 'Desglose por familia' },
+        { id: 'grafica', label: 'Gráfica de totales' },
+      ]
+      if (aiAnalysisText.value) tabs.push({ id: 'analisis_ia', label: 'Analisis IA' })
+      if (criticalRows.value.length) tabs.push({ id: 'criticos', label: 'Partidas críticas' })
+      return tabs
+    })
+
+    const familyDashboardRows = computed(() => {
+      const labels = [
+        ['materiales', 'Materiales'], ['mano_obra', 'Mano de Obra'], ['equipo_herramienta', 'Equipo y Herramienta'],
+        ['basicos', 'Básicos'], ['otros', 'Otros'], ['costo_indirecto', 'Costo Indirecto'],
+        ['financiamiento', 'Financiamiento'], ['utilidad', 'Utilidad / Cargos'], ['total_costo_unitario', 'Total Costo Unitario'],
+      ]
+      return dashboardSources.value.map(src => ({
+        source: src.name,
+        rows: labels.map(([key, label]) => ({ key, label, amount: Number(src.families?.[key] || 0) })).filter(x => x.amount || x.key === 'total_costo_unitario'),
+      }))
+    })
+
     const marketRows = computed(() => {
       const rows = state.preview?.rows || []
       return rows
@@ -531,16 +582,18 @@ const app = createApp({
           fd.append('cliente', state.project.cliente)
           fd.append('ubicacion', state.project.ubicacion)
           const res = await fetch(`${API_URL}/api/v2/base-budget/propose-matrix`, { method: 'POST', body: fd })
-          const contentType = res.headers.get('content-type') || ''
-          if (!res.ok) {
-            const data = contentType.includes('application/json') ? await res.json().catch(() => ({})) : { detail: await res.text().catch(() => '') }
-            throw new Error(data.detail || `HTTP ${res.status}`)
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+          const downloadUrl = data.download_url ? `${API_URL}${data.download_url}` : null
+          if (downloadUrl) {
+            const dlRes = await fetch(downloadUrl, { cache: 'no-store' })
+            if (!dlRes.ok) throw new Error('No se pudo descargar el Excel de matriz base.')
+            state.excelBlob = await dlRes.blob()
           }
-          state.excelBlob = await res.blob()
-          state.preview = null
-          state.analysis = { mode: 'proposed_matrix', jobId: null, completed: true, downloadReady: true }
-          state.chat.messages = [{ role: 'assistant', text: 'Matriz Propuesta IA generada. Puedes descargar el Excel o preguntarme sobre el enfoque del análisis.' }]
-          state.status = { type: 'success', message: 'Matriz Propuesta IA generada. Ya puedes descargar el Excel.' }
+          state.preview = data.analysis_summary || null
+          state.analysis = { mode: 'proposed_matrix', jobId: data.job_id || null, completed: true, downloadReady: true }
+          state.activeResultTab = 'resumen'
+          state.status = { type: 'success', message: 'Matriz base generada. Dashboard y Excel listos.' }
         } catch (err) {
           state.status = { type: 'error', message: err.message || 'Error generando Matriz Propuesta IA.' }
         } finally {
@@ -592,7 +645,7 @@ const app = createApp({
         }
         state.excelBlob = await dlRes.blob()
         state.analysis = { mode: state.files.length > 1 ? 'multi_provider' : 'single_provider', jobId, analysisId: job.analysis_id || jobId, completed: true, downloadReady: true }
-        if (job.analysis_summary && (job.analysis_summary.rows?.length || job.analysis_summary.provider_scores?.length || job.analysis_summary.critical_concepts?.length)) {
+        if (job.analysis_summary && (job.analysis_summary.contractors?.length || job.analysis_summary.rows?.length || job.analysis_summary.provider_scores?.length || job.analysis_summary.critical_concepts?.length)) {
           state.preview = job.analysis_summary
           state.pagination.services = 1
           state.pagination.materials = 1
@@ -600,7 +653,7 @@ const app = createApp({
         } else {
           loadPreview().catch(err => console.warn('Preview opcional fallo:', err))
         }
-        state.chat.messages = [{ role: 'assistant', text: 'Análisis generado. Ya puedes descargar el Excel técnico o preguntarme sobre hallazgos, proveedores, conceptos críticos y recomendaciones.' }]
+        state.activeResultTab = 'resumen'
         state.status = { type: 'success', message: 'Comparativo generado. Ya puedes descargar el Excel técnico.' }
       } catch (err) {
         state.status = { type: 'error', message: err.message || 'Error inesperado.' }
@@ -650,6 +703,7 @@ const app = createApp({
       state.excelBlob = null
       state.analysis = { mode: null, jobId: null, analysisId: null, completed: false, downloadReady: false }
       state.chat = { question: '', loading: false, messages: [] }
+      state.activeResultTab = 'resumen'
       state.status = { type: 'info', message: 'Nueva partida iniciada. Carga un catálogo base o cotizaciones para comenzar.' }
     }
 
@@ -688,7 +742,7 @@ const app = createApp({
 
     refreshBenchmark()
 
-    return { state, benchmarkLoaded, canGenerate, modeLabel, buttonLabel, providerNames, areaOptions, filteredRows, executive, topInsights, providerRanking, pmdRows, hasResults, resultReady, analysisMode, analysisModeLabel, dashboardKpis, providerBars, costMixRows, criticalRows, suggestedQuestions, marketRows, laborRows, equipmentRows, executiveCards, pagedServices, pagedMaterials, pagedLabor, pagedEquipment, servicePages, materialPages, laborPages, equipmentPages, refreshBenchmark, login, logout, addFiles, removeFile, setCatalog, setOfficialSummary, removeOfficialSummary, setResumenFile, removeResumenFile, formatMoney, formatPct, formatDate, scrollToId, statusTag, generate, downloadExcel, setPage, resetAnalysis, askAnalysis }
+    return { state, benchmarkLoaded, canGenerate, modeLabel, buttonLabel, providerNames, areaOptions, filteredRows, executive, topInsights, providerRanking, pmdRows, hasResults, resultReady, analysisMode, analysisModeLabel, dashboardKpis, providerBars, costMixRows, criticalRows, suggestedQuestions, dashboardSources, aiAnalysisText, availableDashboardTabs, familyDashboardRows, marketRows, laborRows, equipmentRows, executiveCards, pagedServices, pagedMaterials, pagedLabor, pagedEquipment, servicePages, materialPages, laborPages, equipmentPages, refreshBenchmark, login, logout, addFiles, removeFile, setCatalog, setOfficialSummary, removeOfficialSummary, setResumenFile, removeResumenFile, formatMoney, formatPct, formatDate, scrollToId, statusTag, generate, downloadExcel, setPage, resetAnalysis, askAnalysis }
   },
   template: `
   <div v-if="!state.authed" class="landing-shell">
@@ -911,102 +965,67 @@ const app = createApp({
           </div>
         </div>
 
-        <div class="chart-grid" v-if="providerBars.length || costMixRows.length">
-          <div class="chart-card" v-if="providerBars.length">
-            <h3>Total comparable por proveedor</h3>
-            <p class="sub">Barras simples para comparar magnitud económica.</p>
+        <div class="panel">
+          <div class="dash-tabs">
+            <button class="dash-tab" v-for="tab in availableDashboardTabs" :key="tab.id" :class="{ active: state.activeResultTab === tab.id }" @click="state.activeResultTab = tab.id">{{ tab.label }}</button>
+          </div>
+        </div>
+
+        <div class="panel" v-if="state.activeResultTab === 'resumen'">
+          <div class="section-title"><div><h3>Resumen general</h3><p>Total por contratista o fuente. En matriz base se muestra la fuente de mercado.</p></div></div>
+          <div class="dashboard-focus" style="margin-top:14px" v-if="dashboardSources.length">
+            <div class="provider-score-card" v-for="src in dashboardSources" :key="src.id || src.name">
+              <div><label>Fuente</label><strong>{{ src.name }}</strong><div class="mini" style="margin-top:6px">{{ src.conceptos || 0 }} renglones / servicios</div></div>
+              <div><label>Total</label><div class="metric-value">{{ formatMoney(src.total) }}</div></div>
+              <div v-if="src.market_total != null"><label>Mercado</label><div class="metric-value">{{ formatMoney(src.market_total) }}</div></div>
+              <div v-if="src.difference_percent != null"><label>Diferencia</label><div class="metric-value">{{ formatPct(src.difference_percent) }}</div></div>
+              <div v-if="src.business_rules?.length"><label>Lectura</label><div class="mini">{{ src.business_rules[0] }}</div></div>
+            </div>
+          </div>
+          <div class="empty" v-else>No hay datos estructurados suficientes para resumen.</div>
+        </div>
+
+        <div class="panel" v-if="state.activeResultTab === 'familias'">
+          <div class="section-title"><div><h3>Desglose por familia</h3><p>Materiales, mano de obra, equipo, básicos, indirectos, financiamiento y utilidad.</p></div></div>
+          <div class="table-shell" style="margin-top:12px" v-if="familyDashboardRows.length">
+            <div class="table-scroll">
+              <table class="mini-table family-table">
+                <thead><tr><th>Fuente</th><th>Familia</th><th class="num">Importe</th></tr></thead>
+                <tbody>
+                  <template v-for="group in familyDashboardRows" :key="group.source">
+                    <tr v-for="row in group.rows" :key="group.source + row.key"><td>{{ group.source }}</td><td>{{ row.label }}</td><td class="num">{{ formatMoney(row.amount) }}</td></tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="empty" v-else>No hay desglose por familia disponible.</div>
+        </div>
+
+        <div class="panel" v-if="state.activeResultTab === 'grafica'">
+          <div class="section-title"><div><h3>Gráfica de totales</h3><p>Barras comparativas para la magnitud económica de cada fuente.</p></div></div>
+          <div style="margin-top:14px" v-if="providerBars.length">
             <div class="bar-row" v-for="row in providerBars" :key="row.name">
               <div class="bar-label">{{ row.name }}</div>
               <div class="bar-track"><div class="bar-fill" :style="{ width: row.pct + '%', background: row.color }"></div></div>
               <div class="bar-value">{{ formatMoney(row.total) }}</div>
             </div>
           </div>
-          <div class="chart-card" v-if="costMixRows.length">
-            <h3>Composición estimada</h3>
-            <p class="sub">Lectura web de materiales, mano de obra y equipo. El Excel mantiene el detalle por insumo.</p>
-            <table class="mini-table">
-              <thead><tr><th>Proveedor</th><th>Materiales</th><th>MO</th><th>Equipo</th></tr></thead>
-              <tbody><tr v-for="row in costMixRows" :key="row.name"><td>{{ row.name }}</td><td>{{ formatMoney(row.material) }}</td><td>{{ formatMoney(row.labor) }}</td><td>{{ formatMoney(row.equipment) }}</td></tr></tbody>
-            </table>
-          </div>
+          <div class="empty" v-else>No hay totales disponibles para graficar.</div>
         </div>
 
-        <div class="panel" v-if="criticalRows.length">
-          <div class="section-title"><div><h3>Conceptos críticos para revisión</h3><p>Priorización web basada en impacto, riesgo y diferencias detectadas.</p></div></div>
+        <div class="panel" v-if="state.activeResultTab === 'analisis_ia'">
+          <div class="section-title"><div><h3>Analisis IA</h3><p>Veredicto final generado en el Excel, mostrado sin chat.</p></div></div>
+          <div class="ai-text" style="margin-top:12px" v-if="aiAnalysisText">{{ aiAnalysisText }}</div>
+          <div class="empty" v-else>El análisis IA no está disponible para esta corrida.</div>
+        </div>
+
+        <div class="panel" v-if="state.activeResultTab === 'criticos' && criticalRows.length">
+          <div class="section-title"><div><h3>Partidas críticas</h3><p>Partidas con mayor impacto o desviación detectada.</p></div></div>
           <table class="mini-table" style="margin-top:12px">
             <thead><tr><th>Código</th><th>Concepto</th><th>Proveedor</th><th>Impacto</th><th>Riesgo</th><th>Acción sugerida</th></tr></thead>
             <tbody><tr v-for="row in criticalRows" :key="row.code + row.provider"><td>{{ row.code }}</td><td>{{ row.desc }}</td><td>{{ row.provider }}</td><td>{{ formatMoney(row.impact) }}</td><td>{{ row.risk }}</td><td>{{ row.action }}</td></tr></tbody>
           </table>
-        </div>
-
-        <div class="panel" v-if="providerRanking.length">
-          <div class="section-title">
-            <div>
-              <h3>Ranking explicable por proveedor</h3>
-              <p>No adjudica automáticamente: pondera precio, cobertura, desviación contra mercado y riesgo técnico.</p>
-            </div>
-          </div>
-          <div class="dashboard-focus" style="margin-top:14px">
-            <div class="provider-score-card" v-for="row in providerRanking" :key="row.nombre">
-              <div>
-                <label>Proveedor #{{ row.rank }}</label>
-                <strong>{{ row.nombre }}</strong>
-                <div class="mini" style="margin-top:6px">{{ row.conceptos || 0 }} servicios · {{ row.comparables || 0 }} comparables</div>
-              </div>
-              <div><label>Score</label><div class="metric-value">{{ row.score ?? '—' }}/100</div></div>
-              <div><label>Total oferta</label><div class="metric-value">{{ formatMoney(row.total_oferta) }}</div></div>
-              <div><label>Total mercado</label><div class="metric-value">{{ formatMoney(row.total_mercado) }}</div></div>
-              <div><label>Desviación</label><div class="metric-value">{{ formatPct(row.desviacion) }}</div></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="panel" v-if="pmdRows.length">
-          <div class="section-title">
-            <div>
-              <h3>Hallazgos PMD / APU</h3>
-              <p>Drivers reales de diferencia, indirectos/AIU, insumos atípicos y señales de revisión.</p>
-            </div>
-          </div>
-          <div class="dashboard-focus" style="margin-top:14px">
-            <div class="pmd-card" v-for="card in pmdRows" :key="'pmd'+card.proveedor">
-              <div class="pmd-title">
-                <div>
-                  <label>Proveedor</label>
-                  <strong>{{ card.proveedor }}</strong>
-                </div>
-                <div class="num">
-                  <label>Ajuste global</label>
-                  <strong>{{ formatPct(card.ajuste) }}</strong>
-                </div>
-              </div>
-              <div class="mini" v-if="card.texto">{{ card.texto }}</div>
-              <ul class="pmd-list" v-if="card.drivers?.length">
-                <li v-for="driver in card.drivers.slice(0,4)" :key="driver.concepto + driver.tipo">
-                  <strong>{{ driver.concepto || 'Driver detectado' }}</strong>
-                  <span v-if="driver.tipo"> · {{ driver.tipo }}</span>
-                  <span v-if="driver.impacto != null"> · impacto {{ typeof driver.impacto === 'number' && Math.abs(driver.impacto) <= 1 ? formatPct(driver.impacto) : formatMoney(driver.impacto) }}</span>
-                </li>
-              </ul>
-              <div class="banner info" v-if="card.indirectos?.length">
-                {{ card.indirectos.length }} alerta(s) de indirectos o renglones financieros fuera de referencia.
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="section-title"><div><h3>Preguntar a la IA sobre este análisis</h3><p>Consulta hallazgos, proveedores, conceptos críticos o recomendaciones. La respuesta usa el resumen calculado disponible en la web.</p></div></div>
-          <div class="chatbox" style="margin-top:12px">
-            <div class="chat-suggestions"><button v-for="q in suggestedQuestions" :key="q" @click="askAnalysis(q)">{{ q }}</button></div>
-            <div class="chat-log" v-if="state.chat.messages.length">
-              <div class="chat-msg" :class="msg.role === 'user' ? 'user' : 'assistant'" v-for="(msg, idx) in state.chat.messages" :key="idx">{{ msg.text }}</div>
-            </div>
-            <div class="chat-input">
-              <textarea v-model="state.chat.question" placeholder="Ej. ¿Qué conceptos debo negociar primero?"></textarea>
-              <button class="btn btn-primary" :disabled="state.chat.loading || !state.chat.question.trim()" @click="askAnalysis()">Preguntar</button>
-            </div>
-          </div>
         </div>
 
         <div class="panel">

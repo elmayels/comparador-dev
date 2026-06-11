@@ -2584,4 +2584,343 @@ async def propose_base_matrix(
         raise HTTPException(500, f"No se pudo generar la matriz propuesta: {exc}")
 
     filename = f"matriz_propuesta_ia_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-    return FileResponse(output_path, filename=filename, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    summary = _build_analysis_summary_from_excel(output_path, mode="base_matrix", provider_names=["Matriz base / Mercado"])
+    summary.setdefault("files", {})["excel_url"] = f"/api/v2/base-budget/{job_id}/download"
+    summary.setdefault("files", {})["filename"] = filename
+    return JSONResponse({
+        "status": "done",
+        "run_type": "base_matrix",
+        "job_id": job_id,
+        "download_url": f"/api/v2/base-budget/{job_id}/download",
+        "filename": filename,
+        "analysis_summary": summary,
+    })
+
+
+# ── v0.3.13: dashboard web estructurado post-análisis ─────────────────────
+def _v0313_norm_text(value):
+    import unicodedata, re
+    txt = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", txt.strip().lower())
+
+
+def _v0313_sheet_text(ws, max_rows=120, max_cols=12):
+    texts = []
+    try:
+        for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, max_rows), min_col=1, max_col=min(ws.max_column, max_cols), values_only=True):
+            parts = [str(v).strip() for v in row if isinstance(v, str) and str(v).strip()]
+            if parts:
+                texts.append(" ".join(parts))
+    except Exception:
+        pass
+    return "\n".join(texts).strip()
+
+
+def _v0313_detail_provider_name(sheet_name, idx, provider_names=None):
+    import re
+    provider_names = provider_names or []
+    txt = str(sheet_name or "").strip()
+    m = re.search(r"Detalle\s*-\s*P(\d+)", txt, flags=re.I)
+    if m:
+        pos = int(m.group(1)) - 1
+        if 0 <= pos < len(provider_names) and provider_names[pos]:
+            return str(provider_names[pos])
+        return f"Proveedor {pos + 1}"
+    if provider_names:
+        return str(provider_names[0])
+    return "Matriz base / Mercado" if txt.lower() == "detalle" else txt
+
+
+def _v0313_empty_family_dict():
+    return {
+        "materiales": 0.0,
+        "mano_obra": 0.0,
+        "equipo_herramienta": 0.0,
+        "basicos": 0.0,
+        "otros": 0.0,
+        "costo_indirecto": 0.0,
+        "financiamiento": 0.0,
+        "utilidad": 0.0,
+        "total_costo_unitario": 0.0,
+    }
+
+
+def _v0313_family_key(label):
+    txt = _v0313_norm_text(label)
+    if "material" in txt:
+        return "materiales"
+    if "mano" in txt or txt in {"mo", "m_o"}:
+        return "mano_obra"
+    if "equipo" in txt or "herramient" in txt or "maquinaria" in txt:
+        return "equipo_herramienta"
+    if "basic" in txt or "basico" in txt:
+        return "basicos"
+    return "otros"
+
+
+def _v0313_financial_key(label):
+    txt = _v0313_norm_text(label)
+    if "costo indirect" in txt or txt == "ci":
+        return "costo_indirecto"
+    if "financ" in txt:
+        return "financiamiento"
+    if "util" in txt or "cargo" in txt:
+        return "utilidad"
+    if "total costo unitario" in txt or "total por servicio" in txt:
+        return "total_costo_unitario"
+    return None
+
+
+def _v0313_parse_dashboard_from_excel(output_path: str, mode: str = None, provider_names=None):
+    """Lee el Excel final y produce JSON pensado para el dashboard web.
+
+    Fuente de verdad: hojas Comparativa, Detalle/Detalle - Pn y Analisis IA.
+    No depende de datos hardcodeados ni obliga al frontend a recalcular todo.
+    """
+    import openpyxl, datetime, json, math
+    provider_names = provider_names or []
+    result = {
+        "version": "v0.3.13-dashboard-web",
+        "run_type": mode or "unknown",
+        "mode": mode or "unknown",
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "summary": {
+            "total_contractors": 0,
+            "best_candidate": None,
+            "has_ai_analysis": False,
+            "has_market": False,
+            "has_multiple_contractors": False,
+            "has_base_matrix": False,
+        },
+        "contractors": [],
+        "providers": [],
+        "provider_scores": [],
+        "rows": [],
+        "critical_concepts": [],
+        "top_concepts": [],
+        "cost_breakdown": {},
+        "charts": {"totals_by_contractor": [], "families_by_contractor": [], "market_vs_contractor": []},
+        "ai_analysis": {"available": False, "text": None},
+        "files": {},
+        "dashboard": {"tabs": ["resumen", "familias", "grafica_totales", "analisis_ia"]},
+        "data_quality": {"has_structured_summary": False, "warnings": []},
+    }
+    try:
+        wb = openpyxl.load_workbook(output_path, data_only=True, read_only=True)
+    except Exception as exc:
+        result["data_quality"]["warnings"].append(f"No se pudo leer Excel para dashboard: {type(exc).__name__}: {exc}")
+        return result
+
+    try:
+        sheet_names = list(wb.sheetnames)
+        detail_names = [n for n in sheet_names if str(n).strip().lower() == "detalle" or str(n).strip().lower().startswith("detalle - p")]
+        has_ai = "Analisis IA" in sheet_names or "Analisis experto IA" in sheet_names
+        has_market_cols = False
+        contractors = []
+        critical = []
+        family_chart = []
+
+        # Detectar run_type si no viene claro.
+        if not mode or mode in {"unknown", "single_provider", "multi_provider"}:
+            if detail_names == ["Detalle"] and not has_ai:
+                mode = "base_matrix"
+            elif len(detail_names) > 1:
+                mode = "multi_contractor"
+            elif len(detail_names) == 1:
+                mode = "single_contractor"
+        result["run_type"] = mode
+        result["mode"] = mode
+        result["summary"]["has_base_matrix"] = mode == "base_matrix"
+
+        for idx, name in enumerate(detail_names):
+            ws = wb[name]
+            headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+            hmap = {_norm_header_key(v): c for c, v in enumerate(headers, start=1) if v not in (None, "")}
+            # Cabeceras aprobadas del Detalle v0.3.x.
+            c_code = hmap.get("codigo") or 1
+            c_desc = hmap.get("concepto") or 2
+            c_unit = hmap.get("unidad") or 3
+            c_pu = hmap.get("p_unitario") or 4
+            c_op = hmap.get("op") or 5
+            c_qty = hmap.get("cantidad") or 6
+            c_amount = hmap.get("importe") or 7
+            c_pct = hmap.get("") or 8
+            c_mpu = hmap.get("mercado_p_unitario")
+            c_mop = hmap.get("mercado_op")
+            c_mqty = hmap.get("mercado_cantidad")
+            c_mamount = hmap.get("mercado_importe")
+            sheet_has_market = bool(c_mpu and c_mamount)
+            has_market_cols = has_market_cols or sheet_has_market
+            provider = "Matriz base / Mercado" if mode == "base_matrix" else _v0313_detail_provider_name(name, idx, provider_names)
+            families = _v0313_empty_family_dict()
+            market_families = _v0313_empty_family_dict()
+            total = 0.0
+            market_total = 0.0
+            items = []
+            current_service = None
+            current_family = None
+            service_amount = {}
+
+            for r in range(2, ws.max_row + 1):
+                code = ws.cell(r, c_code).value if c_code else None
+                desc = ws.cell(r, c_desc).value if c_desc else None
+                unit = ws.cell(r, c_unit).value if c_unit else None
+                pu = _to_float_safe(ws.cell(r, c_pu).value if c_pu else None)
+                op = ws.cell(r, c_op).value if c_op else None
+                qty = _to_float_safe(ws.cell(r, c_qty).value if c_qty else None)
+                amount = _to_float_safe(ws.cell(r, c_amount).value if c_amount else None)
+                pct = _to_float_safe(ws.cell(r, c_pct).value if c_pct else None)
+                mpu = _to_float_safe(ws.cell(r, c_mpu).value if c_mpu else None) if c_mpu else None
+                mamount = _to_float_safe(ws.cell(r, c_mamount).value if c_mamount else None) if c_mamount else None
+                text = str(desc or "").strip()
+                norm = _v0313_norm_text(text)
+                if not any([code, desc, unit, pu, qty, amount, mpu, mamount]):
+                    continue
+                # Servicio/matriz principal: trae código y descripción, pero no pertenece a una familia activa.
+                if code and text and (norm not in {"materiales", "mano de obra", "equipo y herramienta", "basicos", "otros"}) and (current_family is None or norm.startswith("instalacion") or str(code).upper().startswith("FLEX")) and not norm.startswith("subtotal"):
+                    # Si parece renglón de insumo dentro de familia, no cambiar servicio.
+                    if current_family is None or str(code).upper().startswith(("FLEX", "SERV", "CONC")):
+                        current_service = {"code": str(code), "description": text, "amount": amount, "market_amount": mamount}
+                        if amount:
+                            service_amount[str(code)] = (service_amount.get(str(code)) or 0) + amount
+                        continue
+                if norm in {"materiales", "mano de obra", "equipo y herramienta", "basicos", "básicos", "otros", "seccion financiera", "seccion financiera"}:
+                    current_family = None if "financiera" in norm else _v0313_family_key(text)
+                    continue
+                if norm.startswith("subtotal"):
+                    fkey = _v0313_family_key(text)
+                    if amount is not None:
+                        families[fkey] = families.get(fkey, 0.0) + amount
+                    if mamount is not None:
+                        market_families[fkey] = market_families.get(fkey, 0.0) + mamount
+                    continue
+                finkey = _v0313_financial_key(text)
+                if finkey:
+                    if amount is not None:
+                        families[finkey] = families.get(finkey, 0.0) + amount
+                    if mamount is not None:
+                        market_families[finkey] = market_families.get(finkey, 0.0) + mamount
+                    if finkey == "total_costo_unitario" and amount is not None:
+                        total += amount
+                    if finkey == "total_costo_unitario" and mamount is not None:
+                        market_total += mamount
+                    continue
+                # Renglón técnico dentro de familia.
+                if current_family and amount is not None:
+                    items.append({
+                        "code": str(code or ""),
+                        "description": text,
+                        "family": current_family,
+                        "amount": amount,
+                        "market_amount": mamount,
+                        "difference_amount": (amount - mamount) if mamount is not None else None,
+                        "difference_percent": ((amount - mamount) / mamount) if mamount not in (None, 0) else None,
+                        "source": provider,
+                        "provider": provider,
+                    })
+
+            if not total:
+                # fallback: suma familias directas si no hubo TOTAL COSTO UNITARIO.
+                total = sum(families.get(k, 0.0) for k in ["materiales", "mano_obra", "equipo_herramienta", "basicos", "otros", "costo_indirecto", "financiamiento", "utilidad"])
+            if sheet_has_market and not market_total:
+                market_total = sum(market_families.get(k, 0.0) for k in ["materiales", "mano_obra", "equipo_herramienta", "basicos", "otros", "costo_indirecto", "financiamiento", "utilidad"])
+            diff_amount = (total - market_total) if sheet_has_market and market_total else None
+            diff_pct = (diff_amount / market_total) if diff_amount is not None and market_total else None
+            row = {
+                "id": "BASE" if mode == "base_matrix" else f"P{idx+1}",
+                "name": provider,
+                "nombre": provider,
+                "provider": provider,
+                "total": total or None,
+                "total_estimado": total or None,
+                "total_oferta": total or None,
+                "market_total": market_total or None,
+                "total_mercado": market_total or None,
+                "difference_amount": diff_amount,
+                "diferencia_total": diff_amount,
+                "difference_percent": diff_pct,
+                "desviacion_total_pct": diff_pct,
+                "families": families,
+                "market_families": market_families if sheet_has_market else None,
+                "top_items": sorted(items, key=lambda x: abs(x.get("amount") or 0), reverse=True)[:8],
+                "business_rules": [],
+                "conceptos": len(items),
+                "dictamen": "Matriz base usada como referencia de mercado." if mode == "base_matrix" else "Fuente incluida en dashboard comparativo.",
+            }
+            # Reglas de negocio simples, basadas en evidencia disponible.
+            if row["top_items"]:
+                row["business_rules"].append("Las partidas/familias principales se concentran en: " + ", ".join([x["code"] or x["description"][:24] for x in row["top_items"][:3]]) + ".")
+            if diff_pct is not None:
+                if diff_pct > 0.15:
+                    row["business_rules"].append(f"La fuente se ubica {diff_pct:.1%} arriba del mercado calculado; revisar partidas de mayor impacto.")
+                elif diff_pct < -0.15:
+                    row["business_rules"].append(f"La fuente se ubica {abs(diff_pct):.1%} abajo del mercado; validar alcance y omisiones antes de considerarlo ahorro real.")
+                else:
+                    row["business_rules"].append("La fuente está razonablemente alineada con el mercado calculado.")
+            contractors.append(row)
+            for k, v in families.items():
+                family_chart.append({"source": provider, "family": k, "amount": v})
+            # Criticos desde top_items con diferencia.
+            for it in row["top_items"]:
+                if it.get("difference_amount") is not None and abs(it.get("difference_amount") or 0) > 0:
+                    critical.append({
+                        "code": it.get("code"), "description": it.get("description"), "provider": provider,
+                        "impact": it.get("difference_amount"), "difference_pct": it.get("difference_percent"),
+                        "risk": "Alta" if abs(it.get("difference_percent") or 0) >= 0.30 else "Media",
+                        "action": "Revisar soporte de precio, alcance y match de mercado en el Excel técnico.",
+                    })
+
+        contractors = sorted(contractors, key=lambda x: x.get("total") if x.get("total") is not None else 9e99)
+        for i, c in enumerate(contractors, 1):
+            c["rank"] = i
+        result["contractors"] = contractors
+        result["providers"] = contractors
+        result["provider_scores"] = contractors
+        result["summary"]["total_contractors"] = len(contractors)
+        result["summary"]["best_candidate"] = contractors[0]["name"] if contractors and mode != "base_matrix" else None
+        result["summary"]["has_ai_analysis"] = has_ai
+        result["summary"]["has_market"] = has_market_cols
+        result["summary"]["has_multiple_contractors"] = len(contractors) > 1
+        result["charts"]["totals_by_contractor"] = [{"name": c["name"], "total": c.get("total"), "market_total": c.get("market_total")} for c in contractors]
+        result["charts"]["families_by_contractor"] = family_chart
+        result["charts"]["market_vs_contractor"] = [{"name": c["name"], "contractor": c.get("total"), "market": c.get("market_total")} for c in contractors if c.get("market_total")]
+        # cost_breakdown compatible legado: cuando hay una fuente, objeto por familia; cuando hay varias, conservar por fuente.
+        if len(contractors) == 1:
+            result["cost_breakdown"] = {k: {"contractor": v, "market": (contractors[0].get("market_families") or {}).get(k), "rows": 0} for k, v in (contractors[0].get("families") or {}).items()}
+        else:
+            result["cost_breakdown"] = {c["name"]: c.get("families") for c in contractors}
+        result["critical_concepts"] = sorted(critical, key=lambda x: abs(x.get("impact") or 0), reverse=True)[:12]
+        result["top_concepts"] = result["critical_concepts"][:8]
+        result["rows"] = [it for c in contractors for it in (c.get("top_items") or [])]
+        # Analisis IA: hoja nueva v0.3.8+ o nombre anterior.
+        ai_sheet = wb["Analisis IA"] if "Analisis IA" in wb.sheetnames else (wb["Analisis experto IA"] if "Analisis experto IA" in wb.sheetnames else None)
+        if ai_sheet:
+            text = _v0313_sheet_text(ai_sheet)
+            if text:
+                result["ai_analysis"] = {"available": True, "text": text}
+                result["ai_findings"] = [{"text": text[:4000]}]
+        else:
+            result["dashboard"]["tabs"] = [t for t in result["dashboard"]["tabs"] if t != "analisis_ia"]
+        result["data_quality"]["has_structured_summary"] = bool(contractors)
+        if not contractors:
+            result["data_quality"]["warnings"].append("No se encontraron datos suficientes en Detalle para el dashboard.")
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+    return result
+
+
+# Sobrescribe el extractor web anterior: mantiene compatibilidad de nombres legacy.
+def _build_analysis_summary_from_excel(output_path: str, mode: str = None, provider_names=None):
+    return _v0313_parse_dashboard_from_excel(output_path, mode=mode, provider_names=provider_names)
+
+
+@app.get("/api/v2/base-budget/{job_id}/download")
+def download_base_matrix_result(job_id: str):
+    job_dir = _job_dir(f"matrix_{job_id}")
+    output_path = job_dir / "matriz_propuesta_ia.xlsx"
+    if not output_path.exists():
+        raise HTTPException(404, "No se encontro el Excel de matriz base para descargar.")
+    return FileResponse(str(output_path), filename=f"matriz_propuesta_ia_{job_id}.xlsx", media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
