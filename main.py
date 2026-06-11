@@ -2584,7 +2584,11 @@ async def propose_base_matrix(
         raise HTTPException(500, f"No se pudo generar la matriz propuesta: {exc}")
 
     filename = f"matriz_propuesta_ia_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-    summary = _build_analysis_summary_from_excel(output_path, mode="base_matrix", provider_names=["Matriz base / Mercado"])
+    # V0.3.15: preferir el summary canónico devuelto por el motor de matriz base.
+    # Fallback al extractor desde Excel solo si una versión anterior no lo entrega.
+    summary = result.get("analysis_summary") if isinstance(result, dict) else None
+    if not summary:
+        summary = _build_analysis_summary_from_excel(output_path, mode="base_matrix", provider_names=["Matriz base / Mercado"])
     summary.setdefault("files", {})["excel_url"] = f"/api/v2/base-budget/{job_id}/download"
     summary.setdefault("files", {})["filename"] = filename
     return JSONResponse({

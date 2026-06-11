@@ -2029,3 +2029,384 @@ def _v0312_item_import(row: Any) -> Optional[float]:
     base = _v0312_row_get(row, "base_calculo", "base", "costo_directo", default=None)
     calc = _v0312_calc_amount(unit_cost, op, qty, base)
     return calc if calc is not None else _as_float(fallback)
+
+# ===========================================================================
+# V0.3.15 - Motor canonico base: una sola fuente para Comparativa/Detalle/Web
+# ===========================================================================
+# Problema corregido:
+# - La matriz base generaba Comparativa y Detalle desde rutas independientes.
+# - Los operadores de insumos se perdian y se pintaban como '*'.
+# - Los conceptos porcentuales (%MO, unidad %) se trataban como multiplicacion.
+#
+# Regla de producto:
+# - Para matriz base, la matriz Construdata generada ES el mercado.
+# - Comparativa y Detalle se pintan desde el mismo modelo canonico calculado.
+# - No hay columnas Mercado ni Analisis IA en este flujo.
+
+V0315_HEADER_FILL = "1F4E78"
+V0315_GROUP_FILL = "D9EAF7"
+V0315_FAMILY_FILL = "F2F2F2"
+V0315_TOTAL_FILL = "B4C6E7"
+V0315_FIN_FILL = "EAF2F8"
+V0315_TEXT = "1F1F1F"
+
+
+def _v0315_money(v: Any) -> float:
+    try:
+        x = _as_float(v)
+        return float(x or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _v0315_pct_value(value: Any) -> float:
+    """Normaliza porcentajes: 25 -> 0.25, 0.25 -> 0.25."""
+    x = _as_float(value)
+    if x is None:
+        return 0.0
+    return float(x) / 100.0 if abs(float(x)) > 1 else float(x)
+
+
+def _v0315_operator_from_matrix_row(r: MatrixRow) -> str:
+    unit = normalize_text(getattr(r, "insumo_unit", ""))
+    code = normalize_text(getattr(r, "insumo_code", ""))
+    tipo = normalize_text(getattr(r, "tipo", ""))
+    if unit == "%" or code.startswith("%") or "porcentaje" in tipo:
+        return "%"
+    if bool(getattr(r, "is_yield", False)):
+        return "/"
+    return "*"
+
+
+def _v0315_calc_amount(unit_cost: Any, op: Any, qty: Any, base: Any = None) -> Optional[float]:
+    opn = _v0312_norm_operator(op, default="*")
+    pu = _as_float(unit_cost)
+    q = _as_float(qty)
+    b = _as_float(base)
+    if opn == "%":
+        if b is None or q is None:
+            return None
+        return b * _v0315_pct_value(q)
+    if opn == "/":
+        if pu is None or q in (None, 0):
+            return None
+        return pu / q
+    if pu is None or q is None:
+        return None
+    return pu * q
+
+
+def _v0315_calc_selected_matrix_rows(base: ConstrudataMatrixBase, item: ServiceItem, selected: List[MatrixCandidate]) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
+    """Calcula renglones canonicos de una partida.
+
+    El resultado incluye operador real y base de calculo para porcentuales. Esta
+    funcion reemplaza el viejo calculo que doble-aplicaba factor en %MO y no
+    preservaba el operador.
+    """
+    detail: List[Dict[str, Any]] = []
+    totals = {fam: 0.0 for fam in V0312_FAMILY_ORDER}
+    for cand in selected:
+        rows = sorted(base.rows.get(cand.code, []), key=lambda x: getattr(x, "order", 0))
+        factor = _service_factor(item, cand)
+        if cand.role == "Complementaria" and "cople" in normalize_text(cand.name + " " + cand.desc) and ("ambos extremos" in normalize_text(item.description) or "coples" in normalize_text(item.description)):
+            factor = 2.0
+
+        prelim: List[Tuple[MatrixRow, str, Optional[float], Optional[float]]] = []
+        mo_subtotal = 0.0
+        for r in rows:
+            op = _v0315_operator_from_matrix_row(r)
+            if op == "%":
+                prelim.append((r, op, None, None))
+                continue
+            amount = _v0315_calc_amount(r.unit_cost, op, r.quantity, None)
+            if amount is not None:
+                amount *= factor
+            prelim.append((r, op, amount, None))
+            if normalize_text(r.tipo) == normalize_text("MANO DE OBRA"):
+                mo_subtotal += float(amount or 0.0)
+
+        for r, op, amount, base_calc in prelim:
+            base_for_row = base_calc
+            if op == "%":
+                # En Construdata los %MO se calculan sobre la MO de la matriz ya
+                # afectada por el factor de servicio. No volver a multiplicar factor.
+                base_for_row = mo_subtotal
+                amount = _v0315_calc_amount(r.unit_cost, op, r.quantity, base_for_row)
+            fam = _v0312_family_label(r.tipo, f"{r.insumo_code} {r.insumo_name} {r.insumo_desc} {r.insumo_unit}")
+            totals[fam] = totals.get(fam, 0.0) + float(amount or 0.0)
+            detail.append({
+                "part": item.part,
+                "service": item.description,
+                "unit_service": item.unit,
+                "role": cand.role,
+                "matrix_code": cand.code,
+                "matrix_name": cand.name,
+                "tipo": r.tipo or fam,
+                "family": fam,
+                "insumo_code": r.insumo_code,
+                "insumo": r.insumo_desc or r.insumo_name,
+                "unit": r.insumo_unit,
+                "qty": r.quantity,
+                "factor": factor,
+                "unit_cost": r.unit_cost,
+                "op": op,
+                "base_calculo": base_for_row,
+                "importe": float(amount or 0.0),
+                "raw_import": r.raw_import,
+                "formula_kind": "porcentaje" if op == "%" else ("division" if op == "/" else "multiplicacion"),
+                "decision": "Incluir",
+                "observacion": cand.reason,
+            })
+    return detail, totals
+
+
+# Reemplazo global para que otros flujos de matriz base reutilicen el mismo calculo.
+calculate_matrix_rows = _v0315_calc_selected_matrix_rows
+
+
+def _v0315_build_records(services: List[ServiceItem], base: ConstrudataMatrixBase, indirect_pct: float, max_services: Optional[int] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    visible_services = services[:max_services] if max_services else services
+    records: List[Dict[str, Any]] = []
+    summary = {"services": 0, "with_matrix": 0, "requires_review": 0, "details": 0, "budget_total": 0.0}
+    for item in visible_services:
+        selected, candidates, status, obs = choose_matrices(item, base)
+        detail_rows, family_totals = calculate_matrix_rows(base, item, selected)
+        direct = sum(float(family_totals.get(f, 0.0) or 0.0) for f in V0312_FAMILY_ORDER)
+        indirect = direct * float(indirect_pct or 0.0)
+        financing_pct = 0.0
+        utility_pct = 0.0
+        charges_pct = 0.0
+        financing = direct * financing_pct
+        utility = direct * utility_pct
+        charges = direct * charges_pct
+        pu = direct + indirect + financing + utility + charges
+        qty_service = float(item.qty or 0.0)
+        total = pu * qty_service
+        rec = {
+            "service": item,
+            "selected": selected,
+            "candidates": candidates,
+            "status": status,
+            "obs": obs,
+            "detail_rows": detail_rows,
+            "totals": family_totals,
+            "direct": direct,
+            "indirect_pct": float(indirect_pct or 0.0),
+            "indirect": indirect,
+            "financing_pct": financing_pct,
+            "financing": financing,
+            "utility_pct": utility_pct,
+            "utility": utility,
+            "charges_pct": charges_pct,
+            "charges": charges,
+            "pu": pu,
+            "qty": qty_service,
+            "total": total,
+        }
+        records.append(rec)
+        summary["services"] += 1
+        summary["with_matrix"] += 1 if selected else 0
+        summary["requires_review"] += 1 if ("revision" in normalize_text(status) or not selected) else 0
+        summary["details"] += len(detail_rows)
+        summary["budget_total"] += total
+    return records, summary
+
+
+def _v0315_cell_style(cell, fill: Optional[str] = None, bold: bool = False, font_color: str = V0315_TEXT, align: str = "center", wrap: bool = True) -> None:
+    cell.font = Font(name="Calibri", size=9, bold=bold, color=font_color)
+    cell.alignment = Alignment(horizontal=align, vertical="center", wrap_text=wrap)
+    cell.border = Border(left=Side(style="thin", color="D9E2F3"), right=Side(style="thin", color="D9E2F3"), top=Side(style="thin", color="D9E2F3"), bottom=Side(style="thin", color="D9E2F3"))
+    if fill:
+        cell.fill = PatternFill("solid", fgColor=fill)
+
+
+def _v0315_write_comparativa(wb: Workbook, records: List[Dict[str, Any]], project_meta: Dict[str, str]) -> None:
+    if "Comparativa" in wb.sheetnames:
+        del wb["Comparativa"]
+    ws = wb.create_sheet("Comparativa")
+    ws.sheet_view.showGridLines = False
+    headers = ["Partida", "Descripción", "Unidad", "Cantidad", "P.U.", "Importe", "% Part.", "% ajuste", "Mercado P.U.", "Mercado Importe"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(1, c, h)
+        _v0315_cell_style(ws.cell(1, c), V0315_HEADER_FILL, True, "FFFFFF")
+    grand_total = sum(float(r.get("total") or 0.0) for r in records)
+    r_idx = 2
+    for rec in records:
+        svc = rec["service"]
+        pu = float(rec.get("pu") or 0.0)
+        total = float(rec.get("total") or 0.0)
+        vals = [svc.part, svc.description, svc.unit, rec.get("qty"), pu, total, (total / grand_total) if grand_total else None, 0.0, pu, total]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(r_idx, c, v)
+            _v0315_cell_style(cell, None, False, V0315_TEXT, "left" if c == 2 else "center")
+            if c in {5, 6, 9, 10}:
+                cell.number_format = '$#,##0.00'
+            if c in {7, 8}:
+                cell.number_format = '0.00%'
+            if c == 4:
+                cell.number_format = '#,##0.0000'
+        r_idx += 1
+    total_row = r_idx
+    ws.cell(total_row, 2, "TOTAL")
+    ws.cell(total_row, 6, grand_total)
+    ws.cell(total_row, 10, grand_total)
+    for c in range(1, 11):
+        _v0315_cell_style(ws.cell(total_row, c), V0315_TOTAL_FILL, True)
+        if c in {6, 10}:
+            ws.cell(total_row, c).number_format = '$#,##0.00'
+    ws.freeze_panes = "A2"
+    widths = {"A":16, "B":72, "C":10, "D":12, "E":15, "F":16, "G":11, "H":11, "I":15, "J":16}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    try:
+        ws.auto_filter.ref = f"A1:J{total_row}"
+    except Exception:
+        pass
+
+
+def _v0315_style_detail_row(ws, rr: int, kind: str) -> None:
+    fill = None
+    bold = False
+    if kind == "service":
+        fill = V0315_GROUP_FILL; bold = True
+    elif kind in {"family", "subtotal"}:
+        fill = V0315_FAMILY_FILL; bold = True
+    elif kind == "financial":
+        fill = V0315_FIN_FILL; bold = True
+    elif kind == "total":
+        fill = V0315_TOTAL_FILL; bold = True
+    for c in range(1, 9):
+        _v0315_cell_style(ws.cell(rr, c), fill, bold, V0315_TEXT, "left" if c == 2 else "center")
+        if c in {4, 7}:
+            ws.cell(rr, c).number_format = '$#,##0.00'
+        if c == 6:
+            ws.cell(rr, c).number_format = '#,##0.0000'
+        if c == 8:
+            ws.cell(rr, c).number_format = '0.00%'
+
+
+def _v0315_write_detalle_base(wb: Workbook, records: List[Dict[str, Any]]) -> None:
+    if "Detalle" in wb.sheetnames:
+        del wb["Detalle"]
+    ws = wb.create_sheet("Detalle")
+    ws.sheet_view.showGridLines = False
+    headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(1, c, h)
+        _v0315_cell_style(ws.cell(1, c), V0315_HEADER_FILL, True, "FFFFFF")
+    workbook_total = sum(float(r.get("total") or 0.0) for r in records)
+    rr = 2
+    row_kinds: Dict[int, str] = {}
+    for rec in records:
+        svc: ServiceItem = rec["service"]
+        service_total = float(rec.get("total") or 0.0)
+        service_pct = (service_total / workbook_total) if workbook_total else None
+        vals = [svc.part, svc.description, svc.unit, rec.get("pu"), "*", rec.get("qty"), service_total, service_pct]
+        for c, v in enumerate(vals, 1):
+            ws.cell(rr, c, v)
+        row_kinds[rr] = "service"; rr += 1
+        rows_by_family: Dict[str, List[Dict[str, Any]]] = {fam: [] for fam in V0312_FAMILY_ORDER}
+        for d in rec.get("detail_rows") or []:
+            rows_by_family.setdefault(d.get("family") or "OTROS", []).append(d)
+        for fam in V0312_FAMILY_ORDER:
+            rows = rows_by_family.get(fam) or []
+            if not rows:
+                continue
+            ws.cell(rr, 2, fam); row_kinds[rr] = "family"; rr += 1
+            subtotal = 0.0
+            for d in rows:
+                imp = float(d.get("importe") or 0.0)
+                subtotal += imp
+                vals = [d.get("insumo_code"), d.get("insumo"), d.get("unit"), d.get("unit_cost"), d.get("op"), d.get("qty"), imp, (imp / workbook_total) if workbook_total else None]
+                for c, v in enumerate(vals, 1):
+                    ws.cell(rr, c, v)
+                row_kinds[rr] = "item"; rr += 1
+            vals = ["", f"SUBTOTAL {fam}", "", subtotal, "", None, subtotal, (subtotal / workbook_total) if workbook_total else None]
+            for c, v in enumerate(vals, 1):
+                ws.cell(rr, c, v)
+            row_kinds[rr] = "subtotal"; rr += 1
+        direct = float(rec.get("direct") or 0.0)
+        indirect_pct = float(rec.get("indirect_pct") or 0.0)
+        financial = [
+            ("COSTO DIRECTO", direct, "", None, direct),
+            (f"COSTO INDIRECTO ({indirect_pct:.0%})", direct, "%", indirect_pct, rec.get("indirect")),
+            ("FINANCIAMIENTO", direct, "%", rec.get("financing_pct") or None, rec.get("financing")),
+            ("UTILIDAD / CARGOS ADICIONALES", direct, "%", (rec.get("utility_pct") or 0.0) + (rec.get("charges_pct") or 0.0) or None, (rec.get("utility") or 0.0) + (rec.get("charges") or 0.0)),
+            ("TOTAL COSTO UNITARIO", rec.get("pu"), "", None, rec.get("pu")),
+        ]
+        for label, pu_or_base, op, qty, imp in financial:
+            vals = ["", label, "", pu_or_base, op, qty, imp, (float(imp or 0.0) / workbook_total) if workbook_total else None]
+            for c, v in enumerate(vals, 1):
+                ws.cell(rr, c, v)
+            row_kinds[rr] = "total" if label == "TOTAL COSTO UNITARIO" else "financial"; rr += 1
+        rr += 1
+    if rr == 2:
+        ws.cell(2, 1, "Sin detalle detectado"); row_kinds[2] = "service"; rr = 3
+    last = rr - 1
+    for r in range(2, last + 1):
+        _v0315_style_detail_row(ws, r, row_kinds.get(r, "item"))
+    widths = {"A":16, "B":86, "C":12, "D":15, "E":8, "F":12, "G":16, "H":11}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A2"
+    try:
+        ws.auto_filter.ref = f"A1:H{last}"
+    except Exception:
+        pass
+
+
+def _v0315_analysis_summary(records: List[Dict[str, Any]], output_path: str) -> Dict[str, Any]:
+    total = sum(float(r.get("total") or 0.0) for r in records)
+    fams = {"materiales": 0.0, "mano_obra": 0.0, "equipo_herramienta": 0.0, "basicos": 0.0, "otros": 0.0, "costo_indirecto": 0.0, "financiamiento": 0.0, "utilidad": 0.0}
+    fam_map = {"MATERIALES": "materiales", "MANO DE OBRA": "mano_obra", "EQUIPO Y HERRAMIENTA": "equipo_herramienta", "BASICOS": "basicos", "OTROS": "otros"}
+    critical = []
+    for rec in records:
+        for fam, val in (rec.get("totals") or {}).items():
+            fams[fam_map.get(fam, "otros")] += float(val or 0.0)
+        fams["costo_indirecto"] += float(rec.get("indirect") or 0.0)
+        fams["financiamiento"] += float(rec.get("financing") or 0.0)
+        fams["utilidad"] += float(rec.get("utility") or 0.0) + float(rec.get("charges") or 0.0)
+        svc = rec.get("service")
+        critical.append({"code": getattr(svc, "part", ""), "description": getattr(svc, "description", ""), "amount": float(rec.get("total") or 0.0), "market_amount": None, "difference_percent": None, "motivo": "Partida de matriz base/mercado"})
+    critical = sorted(critical, key=lambda x: x["amount"], reverse=True)[:10]
+    return {
+        "run_type": "base_matrix",
+        "summary": {"total_contractors": 0, "best_candidate": None, "has_ai_analysis": False, "has_market": False, "has_base_matrix": True, "has_multiple_contractors": False, "total": total, "services": len(records)},
+        "contractors": [{"id": "BASE", "name": "Matriz base / Mercado", "total": total, "market_total": None, "difference_amount": None, "difference_percent": None, "families": fams, "top_items": critical, "business_rules": ["La matriz base se interpreta como referencia de mercado; no se calculan columnas Mercado en Detalle.", "Comparativa y Detalle se calculan desde el mismo modelo canónico."]}],
+        "charts": {"totals_by_contractor": [{"name": "Matriz base / Mercado", "total": total}], "families_by_contractor": [{"name": "Matriz base / Mercado", "families": fams}], "market_vs_contractor": []},
+        "critical_items": critical,
+        "ai_analysis": {"available": False, "text": None},
+        "files": {"excel_url": output_path, "filename": Path(output_path).name},
+    }
+
+
+def write_matrix_proposal_excel(
+    output_path: str,
+    services: List[ServiceItem],
+    base: ConstrudataMatrixBase,
+    project_meta: Optional[Dict[str, str]] = None,
+    indirect_pct: float = 0.25,
+    max_services: Optional[int] = None,
+) -> Dict[str, Any]:
+    """V0.3.15: writer canonico para matriz base.
+
+    Crea solo Comparativa + Detalle. Ambos tabs salen del mismo records[] y se
+    validan por reconciliacion antes de guardar.
+    """
+    project_meta = project_meta or {}
+    records, summary = _v0315_build_records(services, base, indirect_pct, max_services=max_services)
+    wb = Workbook()
+    # Remover sheet inicial para controlar orden.
+    default = wb.active
+    wb.remove(default)
+    _v0315_write_comparativa(wb, records, project_meta)
+    _v0315_write_detalle_base(wb, records)
+    wb._sheets = [wb["Comparativa"], wb["Detalle"]]
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_path)
+    # Reconciliacion dura: Comparativa total debe ser total canonico.
+    comp_total = sum(float(r.get("total") or 0.0) for r in records)
+    if abs(float(summary.get("budget_total") or 0.0) - comp_total) > 0.01:
+        raise ValueError("Reconciliacion fallida: total canonico no coincide con Comparativa")
+    summary.update({"analysis_summary": _v0315_analysis_summary(records, output_path), "canonical_total": comp_total, "reconciled": True})
+    return summary
