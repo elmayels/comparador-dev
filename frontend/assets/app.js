@@ -1,0 +1,246 @@
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+
+const state = {
+  user: JSON.parse(localStorage.getItem('apu:user') || 'null'),
+  token: localStorage.getItem('apu:token'),
+  theme: localStorage.getItem('apu:theme') || 'dark',
+  refs: null,
+  baseUploadFiles: [],
+  comparisonFiles: [],
+  comparisonMode: 'MULTI',
+};
+
+document.documentElement.dataset.theme = state.theme;
+
+const routes = {
+  '': landing,
+  'login': login,
+  'dashboard': dashboard,
+  'base-budgets': baseBudgets,
+  'base-budgets-new': baseBudgetsNew,
+  'base-budgets-result': baseBudgetResult,
+  'comparisons': comparisons,
+  'comparison-new': comparisonNew,
+  'comparison-processing': comparisonProcessing,
+  'comparison-results': comparisonResults,
+  'matrix-detail': matrixDetail,
+  'my-runs': myRuns,
+  'team-runs': teamRuns,
+  'global-runs': globalRuns,
+  'users': usersPage,
+  'user-create': userCreate,
+  'user-edit': userEdit,
+  'references': referencesPage,
+  'audit': auditPage,
+  'profile': profile,
+};
+
+const demoUsers = [
+  {name:'Super Administrador', email:'superadmin@demo.com', role:'SUPER_ADMIN', org:'Global', status:'Activo'},
+  {name:'Administrador Demo', email:'admin@demo.com', role:'ADMIN', org:'Empresa Demo', status:'Activo'},
+  {name:'Analista Demo', email:'analista@demo.com', role:'ANALYST', org:'Empresa Demo', status:'Activo'},
+  {name:'Analista Obra Norte', email:'analista.norte@demo.com', role:'ANALYST', org:'Empresa Demo', status:'Inactivo'},
+];
+
+const mockBaseBudgets = [
+  {id:'BB-2026-0001', name:'Presupuesto base Sucursal Norte', user:'Analista Demo', total:56520000, concepts:128, status:'Con advertencias', risk:'Medio', date:'17/06/2026'},
+  {id:'BB-2026-0002', name:'Presupuesto ampliación bodega', user:'Administrador Demo', total:88400000, concepts:211, status:'Completado', risk:'Bajo', date:'14/06/2026'},
+];
+const mockRuns = [
+  {id:'RUN-2026-0145', name:'Comparativo Sucursal Norte', user:'Analista Demo', type:'Múltiples contratistas', contractors:3, status:'Completa', risk:'Amarillo', date:'17/06/2026'},
+  {id:'RUN-2026-0141', name:'Propuesta individual Planta A', user:'Analista Demo', type:'Un contratista', contractors:1, status:'Completa', risk:'Rojo', date:'15/06/2026'},
+  {id:'RUN-2026-0137', name:'Validación preliminar', user:'Administrador Demo', type:'Múltiples contratistas', contractors:4, status:'Fallida', risk:'N/A', date:'10/06/2026'},
+];
+
+function money(n){return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(n)}
+function go(hash){ location.hash = '#/' + hash; }
+function currentRoute(){ return location.hash.replace(/^#\/?/, '').replace(/^\//,'') || ''; }
+function can(view){
+  const role = state.user?.role;
+  if (!state.user) return false;
+  if (role === 'SUPER_ADMIN') return true;
+  if (view === 'audit' || view === 'global-runs') return false;
+  if (view === 'users') return role === 'ADMIN';
+  if (view === 'team-runs') return role === 'ADMIN';
+  return true;
+}
+
+function render(){
+  const r = currentRoute();
+  const publicRoutes = ['', 'login'];
+  if (!state.user && !publicRoutes.includes(r)) return go('login');
+  if (state.user && r === 'login') return go('dashboard');
+  (routes[r] || notFound)();
+  bindCommon();
+}
+
+window.addEventListener('hashchange', render);
+
+function bindCommon(){
+  $$('[data-nav]').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.nav); });
+  $$('[data-theme-toggle]').forEach(b => b.onclick = () => {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('apu:theme', state.theme);
+    document.documentElement.dataset.theme = state.theme;
+    render();
+  });
+  $$('[data-logout]').forEach(b => b.onclick = () => {
+    localStorage.removeItem('apu:user'); localStorage.removeItem('apu:token'); state.user=null; state.token=null; go('');
+  });
+}
+
+function shell(content, title='Plataforma APU'){
+  const menu = [
+    ['dashboard','Dashboard',''],
+    ['base-budgets','Presupuestos base',''],
+    ['comparisons','Comparador',''],
+    ['my-runs','Mis corridas',''],
+    ['team-runs','Corridas equipo','ADMIN'],
+    ['global-runs','Historial global','SUPER_ADMIN'],
+    ['references','Referencias data',''],
+    ['users','Usuarios','ADMIN_OR_SUPER'],
+    ['audit','Auditoría','SUPER_ADMIN'],
+    ['profile','Mi perfil',''],
+  ].filter(([_,__,perm]) => {
+    if (!perm) return true;
+    if (perm === 'ADMIN') return state.user.role === 'ADMIN' || state.user.role === 'SUPER_ADMIN';
+    if (perm === 'ADMIN_OR_SUPER') return ['ADMIN','SUPER_ADMIN'].includes(state.user.role);
+    return state.user.role === perm;
+  });
+  const active = currentRoute();
+  $('#app').innerHTML = `
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="side-head"><div class="logo">Q</div><div><strong>Quantia APU</strong><div class="muted small">Canonical V0</div></div></div>
+        <nav class="menu">${menu.map(([h,l])=>`<a href="#/${h}" class="${active===h?'active':''}">${l}<span>›</span></a>`).join('')}</nav>
+        <div class="side-foot">
+          <div class="small muted">Usuario</div>
+          <strong>${state.user.name}</strong>
+          <div class="small muted">${state.user.role} · ${state.user.org}</div>
+        </div>
+      </aside>
+      <main class="main">
+        <header class="topbar"><div><strong>${title}</strong><div class="small muted">Presupuesto base independiente · Comparador · Detalle APU</div></div><div class="actions"><button class="btn btn-secondary" data-theme-toggle>${state.theme==='dark'?'Tema claro':'Tema oscuro'}</button><button class="btn btn-secondary" data-logout>Salir</button></div></header>
+        <section class="page">${content}</section>
+      </main>
+    </div>`;
+}
+
+function landing(){
+  $('#app').innerHTML = `<div class="public">
+    <nav class="nav"><div class="brand"><div class="logo">Q</div><div><h1>Quantia APU</h1><p>Presupuesto base y comparador canónico</p></div></div><div class="actions"><button class="btn btn-secondary" data-theme-toggle>${state.theme==='dark'?'Tema claro':'Tema oscuro'}</button><button class="btn btn-primary" data-nav="login">Iniciar sesión</button></div></nav>
+    <section class="hero"><div><div class="badge info">Versión 0 navegable</div><h2>Análisis profesional de APU sin mezclar procesos.</h2><p>Genera presupuestos base independientes con matrices Construdata, compara propuestas de uno o varios contratistas y revisa el detalle APU con referencias granulares de materiales, mano de obra y maquinaria.</p><div class="actions" style="margin-top:24px"><button class="btn btn-primary" data-nav="login">Entrar a la plataforma</button><button class="btn btn-secondary" data-nav="references">Ver referencias</button></div></div><div class="hero-card"><div class="orb"></div><div class="floating f1"><strong>Comparativa + Detalle</strong><div class="small muted">Excel de salida preparado</div></div><div class="floating f2"><strong>Light / Dark</strong><div class="small muted">Guía visual rescatada</div></div></div></section>
+    <section class="feature-row"><div class="feature"><strong>Presupuesto base</strong><span>Módulo independiente con conceptos de ingeniería + construdata_matrices.xlsx.</span></div><div class="feature"><strong>Comparador</strong><span>Funciona con un contratista o múltiples contratistas, con o sin matriz base.</span></div><div class="feature"><strong>Detalle APU</strong><span>Usa matriz del contratista + materiales/MO/maquinaria desde data.</span></div><div class="feature"><strong>Roles e historial</strong><span>Super Admin, Admin y Analista con trazabilidad de corridas.</span></div></section>
+  </div>`;
+}
+
+function login(){
+  $('#app').innerHTML = `<div class="login-page"><div class="login-card"><div class="brand" style="margin-bottom:18px"><div class="logo">Q</div><div><h1>Quantia APU</h1><p>Canonical V0</p></div></div><h2>Iniciar sesión</h2><p>Usa uno de los usuarios demo para validar navegación, permisos e historial.</p><form id="loginForm" class="form-grid"><div><label class="label">Correo</label><input class="input" name="email" value="superadmin@demo.com"></div><div><label class="label">Contraseña</label><input class="input" name="password" type="password" value="demo123"></div><button class="btn btn-primary">Ingresar</button><div id="loginError" class="bad badge hidden"></div></form><div class="demo-box"><strong>Demo:</strong><br>superadmin@demo.com / demo123<br>admin@demo.com / demo123<br>analista@demo.com / demo123</div></div></div>`;
+  $('#loginForm').onsubmit = async e => {
+    e.preventDefault();
+    const payload = Object.fromEntries(new FormData(e.target));
+    try{
+      const res = await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      if(!res.ok) throw new Error('Credenciales inválidas');
+      const data = await res.json(); state.user=data.user; state.token=data.token;
+      localStorage.setItem('apu:user', JSON.stringify(data.user)); localStorage.setItem('apu:token', data.token); go('dashboard');
+    }catch(err){ $('#loginError').textContent=err.message; $('#loginError').classList.remove('hidden'); }
+  }
+}
+
+function pageHead(title, subtitle, action=''){
+  return `<div class="page-head"><div><h2>${title}</h2><p>${subtitle}</p></div><div class="actions">${action}</div></div>`;
+}
+function kpis(items){return `<div class="grid cols-4">${items.map(i=>`<div class="card kpi"><label>${i.label}</label><strong>${i.value}</strong><span>${i.text||''}</span></div>`).join('')}</div>`}
+function table(headers, rows){return `<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
+
+function dashboard(){
+  const role = state.user.role;
+  const cards = role==='SUPER_ADMIN' ? [
+    {label:'Usuarios activos',value:'45',text:'Visibilidad global'}, {label:'Corridas totales',value:'326',text:'Historial completo'}, {label:'Presupuestos base',value:'28',text:'Módulo independiente'}, {label:'Errores recientes',value:'5',text:'Auditoría disponible'}
+  ] : role==='ADMIN' ? [
+    {label:'Analistas activos',value:'12',text:'Equipo asignado'}, {label:'Corridas mes',value:'48',text:'Bajo su gestión'}, {label:'Con error',value:'3',text:'Requieren revisión'}, {label:'Presupuestos',value:'8',text:'Creados por equipo'}
+  ] : [
+    {label:'Mis corridas',value:'9',text:'Historial personal'}, {label:'Presupuestos base',value:'2',text:'Independientes'}, {label:'Pendientes',value:'1',text:'Con advertencias'}, {label:'Último riesgo',value:'Amarillo',text:'Comparativo reciente'}
+  ];
+  shell(`${pageHead('Dashboard', 'Entrada principal según rol. La V0 separa presupuesto base, comparador, referencias e historial.', `<button class="btn btn-primary" data-nav="base-budgets-new">Nuevo presupuesto</button><button class="btn btn-secondary" data-nav="comparison-new">Nueva comparación</button>`)}${kpis(cards)}<div class="grid cols-2" style="margin-top:16px"><div class="card"><h3>Flujo recomendado</h3><p>Presupuesto base es opcional e independiente. El comparador puede ejecutarse sin presupuesto base.</p><div class="actions" style="margin-top:14px"><button class="btn btn-secondary" data-nav="base-budgets">Ver presupuestos</button><button class="btn btn-secondary" data-nav="comparisons">Ver comparador</button></div></div><div class="card"><h3>Regla canónica</h3><p><strong>El sistema calcula.</strong> La IA interpreta. El tablero comunica. En V0 la IA queda mockeada y separada.</p></div></div>`, 'Dashboard');
+}
+
+function baseBudgets(){
+  shell(`${pageHead('Presupuestos base', 'Módulo independiente: conceptos de ingeniería + data/construdata_matrices.xlsx.', `<button class="btn btn-primary" data-nav="base-budgets-new">Nuevo presupuesto base</button>`)}${kpis([{label:'Total estimado',value:money(144920000),text:'Suma mock'}, {label:'Presupuestos',value:'2',text:'Histórico'}, {label:'Con revisión',value:'1',text:'Matches medios'}, {label:'Fuente matriz',value:'data',text:'Construdata matrices'}])}<div style="margin-top:16px">${table(['ID','Nombre','Usuario','Monto','Conceptos','Estado','Riesgo','Acciones'], mockBaseBudgets.map(b=>[b.id,b.name,b.user,money(b.total),b.concepts,`<span class="badge warn">${b.status}</span>`,b.risk,`<button class="btn btn-secondary" data-nav="base-budgets-result">Ver</button>`]))}</div>`, 'Presupuestos base');
+}
+
+function filePicker(id, multiple=true){return `<div class="drop" data-drop="${id}"><strong>Arrastra o selecciona archivos .xlsx</strong><span class="muted small">Solo Excel .xlsx. No PDF, CSV ni ZIP.</span><input id="${id}" type="file" ${multiple?'multiple':''} accept=".xlsx" class="hidden"></div><div id="${id}List" class="file-list"></div>`}
+function bindPicker(id, target){
+  const drop = $(`[data-drop="${id}"]`), input = $('#'+id), list = $('#'+id+'List');
+  drop.onclick = () => input.click();
+  input.onchange = () => { state[target] = [...input.files]; renderFileList(list, state[target]); };
+  renderFileList(list, state[target]);
+}
+function renderFileList(list, files){ list.innerHTML = files.length ? files.map(f=>`<div class="file-item"><div><strong>${f.name}</strong><div class="small muted">${(f.size/1024).toFixed(1)} KB</div></div><span class="badge ${f.name.toLowerCase().endsWith('.xlsx')?'ok':'bad'}">${f.name.toLowerCase().endsWith('.xlsx')?'Válido':'No permitido'}</span></div>`).join('') : ''; }
+
+function baseBudgetsNew(){
+  shell(`${pageHead('Nuevo presupuesto base', 'Crear presupuesto independiente desde archivo de conceptos de ingeniería y matrices Construdata en data.', `<button class="btn btn-secondary" data-nav="base-budgets">Volver</button>`)}<div class="stepper"><span class="step active">1 Datos</span><span class="step active">2 Carga .xlsx</span><span class="step">3 Match Construdata</span><span class="step">4 Resultado</span></div><div class="grid cols-2"><div class="card"><h3>Datos del presupuesto</h3><div class="form-grid"><div><label class="label">Nombre</label><input class="input" value="Presupuesto base Sucursal Norte"></div><div><label class="label">Cliente / Obra</label><input class="input" value="Cliente A / Obra Civil 2026"></div><div><label class="label">Fuente Construdata detectada</label><input class="input" value="data/construdata_matrices.xlsx" readonly></div></div></div><div class="card"><h3>Archivo de conceptos de ingeniería</h3><p>Este módulo no requiere contratistas ni licitación.</p>${filePicker('baseFiles', false)}<div class="actions" style="margin-top:16px"><button id="runBase" class="btn btn-primary">Generar presupuesto base mock</button></div></div></div><div class="callout" style="margin-top:16px"><strong>Separación clave:</strong> este flujo usa <span class="mono">construdata_matrices.xlsx</span>. El detalle APU de contratistas usa materiales/MO/maquinaria desde data y no busca matrices Construdata.</div>`, 'Nuevo presupuesto base');
+  bindPicker('baseFiles','baseUploadFiles');
+  $('#runBase').onclick = async () => {
+    if (!state.baseUploadFiles.length) { alert('Carga un archivo .xlsx de conceptos de ingeniería.'); return; }
+    if (state.baseUploadFiles.some(f=>!f.name.toLowerCase().endsWith('.xlsx'))) { alert('Solo se aceptan archivos .xlsx'); return; }
+    go('base-budgets-result');
+  };
+}
+
+function baseBudgetResult(){
+  shell(`${pageHead('Resultado presupuesto base', 'Resultado mock: matriz presupuestada independiente lista para descarga y revisión.', `<a class="btn btn-primary" href="/api/reports/base">Descargar Excel base</a>`)}${kpis([{label:'Monto estimado',value:money(56520000),text:'Presupuesto base'}, {label:'Conceptos',value:'128',text:'Archivo ingeniería'}, {label:'Con match',value:'104',text:'Contra matrices Construdata'}, {label:'En revisión',value:'17',text:'Match medio'}])}<div class="grid cols-2" style="margin-top:16px"><div class="card"><h3>Hallazgos IA mock</h3><p>7 conceptos no tienen match directo. 17 conceptos requieren revisión técnica por unidad o descripción ambigua.</p></div><div class="card"><h3>Distribución por familia</h3>${table(['Familia','Importe','Participación'], [['Movimiento de tierras',money(10560000),'18.7%'],['Concreto',money(16800000),'29.7%'],['Acero',money(11160000),'19.7%'],['Acabados',money(18000000),'31.9%']])}</div></div><div style="margin-top:16px">${table(['Código','Concepto ingeniería','Unidad','Cantidad','Concepto Construdata','PU ref.','Importe','Estado'], [['001','Excavación manual','m3','120','Excavación manual material común',money(88000),money(10560000),'<span class="badge ok">Con precio</span>'],['002','Concreto f\'c 250','m3','40','Concreto 250 kg/cm2',money(420000),money(16800000),'<span class="badge ok">Con precio</span>'],['003','Acero de refuerzo','kg','1800','Acero fy 4200',money(6200),money(11160000),'<span class="badge warn">Revisar</span>'],['004','Partida especial','gl','1','Sin referencia','—','—','<span class="badge bad">Sin match</span>']])}</div>`, 'Resultado presupuesto base');
+}
+
+function comparisons(){
+  shell(`${pageHead('Comparador', 'Comparar propuesta individual o múltiples contratistas. El presupuesto base es opcional.', `<button class="btn btn-primary" data-nav="comparison-new">Nueva comparación</button>`)}${kpis([{label:'Corridas',value:'3',text:'Historial demo'}, {label:'Mejor oferta',value:money(1180000),text:'Última corrida'}, {label:'Partidas críticas',value:'18',text:'Último análisis'}, {label:'Riesgo global',value:'Amarillo',text:'Última corrida'}])}<div style="margin-top:16px">${table(['ID','Proyecto','Tipo','Contratistas','Estado','Riesgo','Acciones'], mockRuns.map(r=>[r.id,r.name,r.type,r.contractors,`<span class="badge ${r.status==='Fallida'?'bad':'ok'}">${r.status}</span>`,r.risk,`<button class="btn btn-secondary" data-nav="comparison-results">Ver</button>`]))}</div>`, 'Comparador');
+}
+
+function comparisonNew(){
+  shell(`${pageHead('Nueva comparación', 'Carga solo .xlsx. Elige si analizarás una propuesta individual o múltiples contratistas.', `<button class="btn btn-secondary" data-nav="comparisons">Volver</button>`)}<div class="grid cols-2"><div class="card"><h3>Tipo de comparación</h3><div class="tabs"><button class="tab ${state.comparisonMode==='SINGLE'?'active':''}" data-mode="SINGLE">Un contratista</button><button class="tab ${state.comparisonMode==='MULTI'?'active':''}" data-mode="MULTI">Múltiples contratistas</button></div><p>${state.comparisonMode==='SINGLE'?'No se mostrará ranking económico; se analizarán desviaciones contra referencias disponibles.':'Se mostrará ranking económico, diferencias, mediana, promedio y semáforo por contratista.'}</p><div class="form-grid" style="margin-top:14px"><div><label class="label">Proyecto</label><input class="input" value="Comparativo Sucursal Norte"></div><div><label class="label">Presupuesto base opcional</label><select class="select"><option>No usar presupuesto base</option><option>BB-2026-0001 · Sucursal Norte</option></select></div></div></div><div class="card"><h3>Archivos de contratistas</h3>${filePicker('comparisonFiles', true)}<div class="actions" style="margin-top:16px"><button id="runComparison" class="btn btn-primary">Validar y procesar mock</button></div></div></div><div class="callout" style="margin-top:16px"><strong>Detalle APU:</strong> para cada contratista se usará su propia matriz/APU + referencias granulares desde data: materiales, mano de obra, maquinaria y porcentajes. No se usa <span class="mono">construdata_matrices.xlsx</span> para este detalle.</div>`, 'Nueva comparación');
+  $$('.tab').forEach(t=>t.onclick=()=>{state.comparisonMode=t.dataset.mode; render();});
+  bindPicker('comparisonFiles','comparisonFiles');
+  $('#runComparison').onclick=()=>{
+    const min = state.comparisonMode==='MULTI'?2:1;
+    if(state.comparisonFiles.length<min){alert(`Carga mínimo ${min} archivo(s) .xlsx`); return;}
+    if(state.comparisonFiles.some(f=>!f.name.toLowerCase().endsWith('.xlsx'))){alert('Solo se aceptan archivos .xlsx'); return;}
+    go('comparison-processing');
+  };
+}
+
+function comparisonProcessing(){
+  shell(`${pageHead('Procesamiento IA / análisis', 'Procesamiento simulado para validar UX y etapas canónicas.')}<div class="card"><div class="progress"><span></span></div><div class="grid cols-2" style="margin-top:18px"><div><h3>Etapas</h3><p>✓ Lectura de .xlsx<br>✓ Normalización de columnas<br>✓ Homologación de conceptos<br>✓ Comparación económica<br>→ Detalle APU con referencias data<br>→ IA mock de hallazgos<br>○ Generación de Excel</p></div><div><h3>Mensaje actual</h3><p>Identificando componentes que explican diferencias: materiales, mano de obra, maquinaria, porcentajes e indirectos.</p><button class="btn btn-primary" data-nav="comparison-results">Ver resultados mock</button></div></div></div>`, 'Procesamiento');
+}
+
+function comparisonResults(){
+  const multi = state.comparisonMode !== 'SINGLE';
+  shell(`${pageHead('Resultados de comparación', multi?'Ranking económico y tablero ejecutivo mock.':'Análisis individual sin ranking económico.', `<a class="btn btn-primary" href="/api/reports/comparison">Descargar Excel resultado</a><button class="btn btn-secondary" data-nav="matrix-detail">Ver detalle APU</button>`)}${kpis(multi?[{label:'Mejor oferta',value:money(1180000),text:'Contratista B'}, {label:'Riesgo global',value:'Amarillo',text:'Con advertencias'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Sin referencia',value:'14',text:'Catálogos granulares'}]:[{label:'Monto ofertado',value:money(1250000),text:'Contratista único'}, {label:'Desv. referencia',value:'+12.3%',text:'Sin ranking'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Semáforo',value:'Amarillo',text:'Riesgo medio'}])}<div class="grid cols-2" style="margin-top:16px"><div class="card"><h3>Hallazgos IA mock</h3><p>El sobrecosto se concentra en concreto, acero e instalaciones. Se recomienda revisar primero partidas con mayor impacto monetario, no solo las de mayor desviación porcentual.</p></div><div class="card"><h3>Recomendaciones</h3><p>Solicitar desglose APU, validar rendimientos, revisar precios de maquinaria fuera de referencia y negociar porcentajes superiores al rango esperado.</p></div></div><div style="margin-top:16px">${multi?table(['Ranking','Contratista','Monto','Dif vs menor','Desv. promedio','Semáforo','Acciones'], [['1','Contratista B',money(1180000),'0.0%','-7.8%','<span class="badge ok">Verde</span>','Ver detalle'],['2','Contratista A',money(1250000),'+5.9%','+2.4%','<span class="badge warn">Amarillo</span>','Ver detalle'],['3','Contratista C',money(1410000),'+19.5%','+14.3%','<span class="badge bad">Rojo</span>','Ver detalle']]):table(['Contratista','Monto','Desv. referencia','Partidas críticas','Semáforo','Observación'], [['Contratista A',money(1250000),'+12.3%','18','<span class="badge warn">Amarillo</span>','Sin ranking por ser análisis individual']])}</div><div style="margin-top:16px">${table(['Partida crítica','Contratista','PU ofertado','PU ref. data','Dif %','Impacto','Prioridad'], [['Concreto f\'c 250','Contratista C',money(2850000),money(2300000),'+24%',money(95000),'Alta'],['Acero refuerzo','Contratista A',money(42000),money(35000),'+20%',money(62000),'Alta'],['Luminarias LED','Contratista C',money(1200000),money(980000),'+22%',money(48000),'Media']])}</div>`, 'Resultados');
+}
+
+function matrixDetail(){
+  shell(`${pageHead('Detalle de matriz/APU por contratista', 'Tab Detalle conceptual del Excel. Se arma desde matriz del contratista + referencias granulares data.', `<a class="btn btn-primary" href="/api/reports/comparison">Descargar Excel resultado</a>`)}${kpis([{label:'Materiales',value:'data',text:'construdata-materiales'}, {label:'Mano de obra',value:'3',text:'archivos detectados'}, {label:'Maquinaria',value:'data',text:'construdata-maquinaria'}, {label:'Matrices',value:'No',text:'No usar para detalle'}])}<div class="callout" style="margin-bottom:16px"><strong>Regla:</strong> <span class="mono">construdata_matrices.xlsx</span> aplica al presupuesto base. El detalle de contratistas no busca matrices; usa insumos y porcentajes de referencia desde <span class="mono">data</span>.</div>${table(['Contratista','Concepto','Tipo','Insumo','Unidad','Cantidad','Precio contratista','Precio base data','Dif %','Alerta'], [['Contratista A','Concreto f\'c 250','Material','Cemento','kg','320',money(580),money(560),'+3.57%','<span class="badge ok">OK</span>'],['Contratista A','Concreto f\'c 250','MO','Oficial','hr','1.2',money(18000),money(17500),'+2.85%','<span class="badge ok">OK</span>'],['Contratista C','Concreto f\'c 250','Maquinaria','Mezcladora','hr','0.4',money(42000),money(34000),'+23.52%','<span class="badge warn">Revisar</span>'],['Contratista C','Acabados','%','Indirectos','%','1','18%','15%','+20%','<span class="badge warn">Porcentaje superior</span>']])}`, 'Detalle APU');
+}
+
+function myRuns(){ shell(`${pageHead('Mis corridas', 'Historial personal del usuario autenticado.')} ${table(['Fecha','Proyecto','Tipo','Estado','Riesgo','Acciones'], mockRuns.filter(r=>state.user.role!=='ANALYST'||r.user==='Analista Demo').map(r=>[r.date,r.name,r.type,`<span class="badge ${r.status==='Fallida'?'bad':'ok'}">${r.status}</span>`,r.risk,'Ver · Descargar · Duplicar']))}`, 'Mis corridas'); }
+function teamRuns(){ shell(`${pageHead('Corridas del equipo', 'Visible para Admin y Super Admin.')} ${table(['Fecha','Usuario','Proyecto','Estado','Riesgo','Acciones'], mockRuns.map(r=>[r.date,r.user,r.name,`<span class="badge ${r.status==='Fallida'?'bad':'ok'}">${r.status}</span>`,r.risk,'Ver · Descargar']))}`, 'Corridas equipo'); }
+function globalRuns(){ shell(`${pageHead('Historial global', 'Visible únicamente para Super Admin.')} ${table(['Fecha','Usuario','Rol','Proyecto','Estado','Riesgo','Auditoría'], mockRuns.map((r,i)=>[r.date,r.user,i===2?'ADMIN':'ANALYST',r.name,`<span class="badge ${r.status==='Fallida'?'bad':'ok'}">${r.status}</span>`,r.risk,'Ver evento']))}`, 'Historial global'); }
+
+function usersPage(){
+  shell(`${pageHead('Administración de usuarios', 'Crear, editar, activar o desactivar usuarios según rol.', `<button class="btn btn-primary" data-nav="user-create">Crear usuario</button>`)}${table(['Nombre','Correo','Rol','Organización','Estado','Acciones'], demoUsers.filter(u=>state.user.role==='SUPER_ADMIN'||u.role==='ANALYST').map(u=>[u.name,u.email,u.role,u.org,`<span class="badge ${u.status==='Activo'?'ok':'warn'}">${u.status}</span>`,`<button class="btn btn-secondary" data-nav="user-edit">Editar</button>`]))}`, 'Usuarios');
+}
+function userCreate(){ shell(`${pageHead('Crear usuario', 'El Admin solo crea Analistas. El Super Admin puede crear Admins y Analistas.')}<div class="card"><div class="form-grid two"><div><label class="label">Nombre</label><input class="input" value="Nuevo Analista"></div><div><label class="label">Correo</label><input class="input" value="nuevo@empresa.com"></div><div><label class="label">Rol</label><select class="select"><option>ANALYST</option>${state.user.role==='SUPER_ADMIN'?'<option>ADMIN</option>':''}</select></div><div><label class="label">Organización</label><input class="input" value="Empresa Demo"></div></div><div class="actions" style="margin-top:16px"><button class="btn btn-primary" data-nav="users">Crear usuario mock</button><button class="btn btn-secondary" data-nav="users">Cancelar</button></div></div>`, 'Crear usuario'); }
+function userEdit(){ shell(`${pageHead('Editar usuario', 'Cambiar estado, rol permitido o restablecer contraseña.')}<div class="card"><div class="form-grid two"><div><label class="label">Nombre</label><input class="input" value="Analista Demo"></div><div><label class="label">Correo</label><input class="input" value="analista@demo.com"></div><div><label class="label">Rol</label><select class="select"><option>ANALYST</option></select></div><div><label class="label">Estado</label><select class="select"><option>Activo</option><option>Inactivo</option></select></div></div><div class="actions" style="margin-top:16px"><button class="btn btn-primary" data-nav="users">Guardar cambios</button><button class="btn btn-danger">Restablecer contraseña</button></div></div>`, 'Editar usuario'); }
+
+async function ensureRefs(){ if(!state.refs){ const r = await fetch('/api/references'); state.refs = await r.json(); } return state.refs; }
+async function referencesPage(){
+  shell(`${pageHead('Referencias data', 'Archivos reales detectados desde la carpeta data del proyecto viejo.')}<div class="card"><p>Cargando referencias...</p></div>`, 'Referencias');
+  const data = await ensureRefs();
+  shell(`${pageHead('Referencias data', 'Archivos reales detectados desde la carpeta data. Se muestran con su uso canónico.')} ${kpis([{label:'Total archivos',value:data.summary.total,text:'data'}, {label:'Matrices base',value:data.summary.baseBudgetMatrix,text:'presupuesto base'}, {label:'Materiales',value:data.summary.materials,text:'detalle APU'}, {label:'MO / Equipo',value:data.summary.labor + data.summary.equipment,text:'detalle APU'}])}<div style="margin-top:16px">${table(['Archivo','Uso canónico','Tipo','Tamaño','Hojas'], data.references.map(r=>[r.name,r.canonicalUse,r.kind,`${(r.sizeBytes/1024/1024).toFixed(2)} MB`,(r.sheets||[]).map(s=>`${s.name} (${s.rows||'?' }x${s.columns||'?'})`).join('<br>')||'—']))}</div>`, 'Referencias');
+}
+function auditPage(){ shell(`${pageHead('Auditoría', 'Eventos relevantes mock para Super Admin.')} ${table(['Fecha','Usuario','Acción','Detalle'], [['17/06/2026','admin@demo.com','Creó usuario','analista.norte@demo.com'],['17/06/2026','analista@demo.com','Ejecutó corrida','RUN-2026-0145'],['16/06/2026','superadmin@demo.com','Consultó referencias','data/construdata_matrices.xlsx']])}`, 'Auditoría'); }
+function profile(){ shell(`${pageHead('Mi perfil', 'Datos del usuario y cambio de contraseña mock.')}<div class="card"><div class="form-grid two"><div><label class="label">Nombre</label><input class="input" value="${state.user.name}"></div><div><label class="label">Correo</label><input class="input" value="${state.user.email}" readonly></div><div><label class="label">Rol</label><input class="input" value="${state.user.role}" readonly></div><div><label class="label">Último acceso</label><input class="input" value="17/06/2026 15:30" readonly></div></div><div class="actions" style="margin-top:16px"><button class="btn btn-primary">Guardar mock</button></div></div>`, 'Mi perfil'); }
+function notFound(){ shell(pageHead('No encontrado','Ruta no disponible en V0.'), 'No encontrado'); }
+
+render();
