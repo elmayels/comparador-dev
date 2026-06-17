@@ -58,3 +58,14 @@ Conectar los motores reales de parsing/cálculo por etapas, manteniendo esta sep
 - Presupuesto base: conceptos ingeniería + matrices Construdata.
 - Detalle APU contratista: matriz contratista + materiales/MO/maquinaria/porcentajes desde `data`.
 - Comparador: ranking, desviaciones, KPIs y hallazgos.
+
+
+## Railway note
+
+This V0 intentionally does not require pandas. Railway/Railpack may default to Python 3.13, and older pandas builds can fail there. The app uses openpyxl for the mock Excel generation. A `.python-version` file is included with Python 3.12 as a safer runtime target.
+
+Start command:
+
+```bash
+python run.py
+```
