@@ -14,6 +14,10 @@ from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.formatting.rule import ColorScaleRule, DataBarRule, CellIsRule, FormulaRule
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.comments import Comment
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
@@ -185,239 +189,504 @@ async def comparison_mock_run(mode: str = Form("MULTI"), projectName: str = Form
     }
 
 
-def _style_sheet(ws, title: str):
-    ws.freeze_panes = "A4"
-    ws["A1"] = title
-    ws["A1"].font = Font(bold=True, size=16, color="FFFFFF")
-    ws["A1"].fill = PatternFill("solid", fgColor="0B1020")
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)
-    ws["A2"] = "Versión 0 canónica - datos mockeados, estructura preparada para motor real"
-    ws["A2"].font = Font(italic=True, color="667085")
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=10)
+# -----------------------------------------------------------------------------
+# Professional Excel report engine V0
+# -----------------------------------------------------------------------------
+# The workbook below is deliberately a professional, clean deliverable. The
+# historical Excel is only a semantic reference for the Comparativa and Detalle
+# tabs. We do not copy its dark visual style or paste a full reference matrix.
+
+BRAND = {
+    "navy": "1F4E79",
+    "blue": "D9EAF7",
+    "blue2": "EDF6FC",
+    "green": "E2F0D9",
+    "green_text": "0E6B3D",
+    "yellow": "FFF2CC",
+    "red": "FCE4D6",
+    "gray": "F2F4F7",
+    "line": "D9E2EC",
+    "text": "1F2937",
+    "muted": "667085",
+}
+
+MONEY_FMT = '$#,##0.00'
+PCT_FMT = '0.00%'
+INT_FMT = '#,##0'
 
 
-def _write_table(ws, start_row: int, headers: list[str], rows: list[list]):
-    header_fill = PatternFill("solid", fgColor="17213D")
-    header_font = Font(bold=True, color="FFFFFF")
-    thin = Side(style="thin", color="D0D5DD")
-    for col, h in enumerate(headers, start=1):
-        c = ws.cell(start_row, col, h)
-        c.fill = header_fill
-        c.font = header_font
-        c.alignment = Alignment(horizontal="center")
-        c.border = Border(bottom=thin)
-    for r_i, row in enumerate(rows, start=start_row + 1):
-        for c_i, val in enumerate(row, start=1):
-            cell = ws.cell(r_i, c_i, val)
-            cell.border = Border(bottom=Side(style="hair", color="EAECF0"))
-            if isinstance(val, (int, float)):
-                cell.number_format = '#,##0.00'
-    for idx, _ in enumerate(headers, start=1):
-        ws.column_dimensions[get_column_letter(idx)].width = 18
+def _thin_border(color: str = "D9E2EC"):
+    side = Side(style="thin", color=color)
+    return Border(left=side, right=side, top=side, bottom=side)
 
 
-
-def _money(cell):
-    cell.number_format = '$#,##0.00'
-
-
-def _pct(cell):
-    cell.number_format = '0.00%'
+def _bottom_border(color: str = "CBD5E1"):
+    return Border(bottom=Side(style="thin", color=color))
 
 
-def _dark_header(ws, row: int, col_start: int, col_end: int):
-    fill = PatternFill("solid", fgColor="000000")
-    font = Font(bold=True, color="FF0000")
-    border = Border(bottom=Side(style="thin", color="00B050"))
-    for col in range(col_start, col_end + 1):
-        cell = ws.cell(row, col)
-        cell.fill = fill
-        cell.font = font
-        cell.border = border
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-
-def _dark_body_row(ws, row: int, col_start: int, col_end: int, section: bool = False):
-    fill = PatternFill("solid", fgColor="000000")
-    border = Border(top=Side(style="thin", color="008000"), bottom=Side(style="thin", color="008000"))
-    for col in range(col_start, col_end + 1):
-        cell = ws.cell(row, col)
-        cell.fill = fill
-        cell.font = Font(color="0000FF", bold=section)
-        cell.border = border
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
-
-
-def _configure_legacy_visual_sheet(ws):
+def _setup_sheet(ws, title: str, subtitle: str, max_col: int):
     ws.sheet_view.showGridLines = False
-    widths = {
-        'A': 14, 'B': 70, 'C': 12, 'D': 14, 'E': 10, 'F': 14, 'G': 14,
-        'H': 12, 'I': 4, 'J': 16, 'K': 12, 'L': 16, 'M': 16
-    }
+    ws.freeze_panes = "A7"
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+    ws["A1"] = title
+    ws["A1"].font = Font(bold=True, size=17, color=BRAND["navy"])
+    ws["A1"].alignment = Alignment(vertical="center")
+    ws["A2"] = subtitle
+    ws["A2"].font = Font(italic=True, color=BRAND["muted"])
+    ws["A2"].alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 34
+
+
+def _set_widths(ws, widths: dict[str, float]):
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
 
 
-def _write_comparativa_like_legacy(ws):
-    ws.title = "Comparativa"
-    _configure_legacy_visual_sheet(ws)
-    ws.freeze_panes = "A3"
-    ws["A1"] = "Servicios / Cotización"
-    ws["E1"] = "Matrices Pu FLEXIBILIDAD TQ 41 Y 42"
-    for rng in ["A1:D1", "E1:J1"]:
-        ws.merge_cells(rng)
-    for cell in [ws["A1"], ws["E1"]]:
-        cell.fill = PatternFill("solid", fgColor="000000")
-        cell.font = Font(bold=True, color="0000FF")
+def _section_label(ws, row: int, label: str, max_col: int, fill: str = "EDF6FC"):
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=max_col)
+    cell = ws.cell(row, 1, label)
+    cell.fill = PatternFill("solid", fgColor=fill)
+    cell.font = Font(bold=True, color=BRAND["navy"])
+    cell.alignment = Alignment(vertical="center")
+    cell.border = _bottom_border()
+    ws.row_dimensions[row].height = 22
+
+
+def _write_kpi(ws, row: int, col: int, label: str, value, note: str = "", fill: str = "F8FAFC"):
+    # 3-row, 2-column KPI card
+    ws.merge_cells(start_row=row, start_column=col, end_row=row, end_column=col+1)
+    ws.merge_cells(start_row=row+1, start_column=col, end_row=row+1, end_column=col+1)
+    ws.merge_cells(start_row=row+2, start_column=col, end_row=row+2, end_column=col+1)
+    for r in range(row, row+3):
+        for c in range(col, col+2):
+            ws.cell(r, c).fill = PatternFill("solid", fgColor=fill)
+            ws.cell(r, c).border = _thin_border()
+    ws.cell(row, col, label).font = Font(bold=True, size=9, color=BRAND["muted"])
+    ws.cell(row+1, col, value).font = Font(bold=True, size=15, color=BRAND["navy"])
+    ws.cell(row+2, col, note).font = Font(size=9, color=BRAND["muted"])
+    for r in range(row, row+3):
+        ws.cell(r, col).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+
+def _header_style(ws, row: int, start_col: int, end_col: int, fill: str = "1F4E79", font_color: str = "FFFFFF"):
+    for col in range(start_col, end_col + 1):
+        c = ws.cell(row, col)
+        c.fill = PatternFill("solid", fgColor=fill)
+        c.font = Font(bold=True, color=font_color)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = _thin_border("B6C2CF")
+    ws.row_dimensions[row].height = 36
+
+
+def _body_style(ws, min_row: int, max_row: int, min_col: int, max_col: int):
+    for row in range(min_row, max_row + 1):
+        for col in range(min_col, max_col + 1):
+            c = ws.cell(row, col)
+            c.border = _thin_border("EAECF0")
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+            c.font = Font(color=BRAND["text"])
+        if row % 2 == 0:
+            for col in range(min_col, max_col + 1):
+                ws.cell(row, col).fill = PatternFill("solid", fgColor="FCFCFD")
+
+
+def _add_table(ws, ref: str, name: str, style: str = "TableStyleMedium2"):
+    tab = Table(displayName=name, ref=ref)
+    tab.tableStyleInfo = TableStyleInfo(name=style, showFirstColumn=False, showLastColumn=False, showRowStripes=True, showColumnStripes=False)
+    ws.add_table(tab)
+    return tab
+
+
+def _apply_formats(ws, money_cols=None, pct_cols=None, int_cols=None, start_row=1, end_row=100):
+    money_cols = money_cols or []
+    pct_cols = pct_cols or []
+    int_cols = int_cols or []
+    for row in range(start_row, end_row + 1):
+        for col in money_cols:
+            ws.cell(row, col).number_format = MONEY_FMT
+        for col in pct_cols:
+            ws.cell(row, col).number_format = PCT_FMT
+        for col in int_cols:
+            ws.cell(row, col).number_format = INT_FMT
+
+
+def _status_fill(value: str):
+    value = str(value or "").lower()
+    if "alto" in value or "rojo" in value or "sobrecosto" in value or "error" in value:
+        return "FCE4D6"
+    if "medio" in value or "amarillo" in value or "revisar" in value or "advert" in value:
+        return "FFF2CC"
+    if "verde" in value or "ok" in value or "alineado" in value:
+        return "E2F0D9"
+    return "F8FAFC"
+
+
+def _sample_contractors():
+    return [
+        {"rank": 1, "contractor": "Contratista B", "amount": 1180000, "diff_min": 0.00, "avg_dev": -0.078, "risk": "Bajo", "traffic": "Verde"},
+        {"rank": 2, "contractor": "Contratista A", "amount": 1250000, "diff_min": 0.059, "avg_dev": 0.024, "risk": "Medio", "traffic": "Amarillo"},
+        {"rank": 3, "contractor": "Contratista C", "amount": 1410000, "diff_min": 0.195, "avg_dev": 0.143, "risk": "Alto", "traffic": "Rojo"},
+    ]
+
+
+def _write_resumen_ejecutivo(ws, mode: str):
+    _setup_sheet(ws, "Resumen Ejecutivo", "Vista gerencial: KPIs, ranking, hallazgos y navegación interna del reporte.", 10)
+    _set_widths(ws, {"A": 20, "B": 18, "C": 18, "D": 18, "E": 18, "F": 18, "G": 18, "H": 18, "I": 18, "J": 18})
+    ws.freeze_panes = "A12"
+
+    _write_kpi(ws, 4, 1, "Mejor oferta", 1180000, "Contratista B", "F8FAFC")
+    _write_kpi(ws, 4, 3, "Riesgo global", "Amarillo", "Con advertencias", "FFF7E6")
+    _write_kpi(ws, 4, 5, "Partidas críticas", 18, "Prioridad alta/media", "F8FAFC")
+    _write_kpi(ws, 4, 7, "Sin referencia", 14, "Revisar alcance", "F8FAFC")
+    _write_kpi(ws, 4, 9, "Modo", "Multi" if mode == "comparison" else "Base", "V0 mock", "F8FAFC")
+    for cell in ["A5", "C5", "E5", "G5", "I5"]:
+        if isinstance(ws[cell].value, (int, float)):
+            ws[cell].number_format = MONEY_FMT if cell == "A5" else INT_FMT
+
+    _section_label(ws, 9, "Ranking económico", 10)
+    headers = ["Posición", "Contratista", "Monto total", "Dif. vs menor", "Desv. promedio", "Riesgo", "Semáforo"]
+    for i, h in enumerate(headers, 1):
+        ws.cell(10, i, h)
+    _header_style(ws, 10, 1, len(headers), fill="1F4E79")
+    for r, item in enumerate(_sample_contractors(), 11):
+        vals = [item["rank"], item["contractor"], item["amount"], item["diff_min"], item["avg_dev"], item["risk"], item["traffic"]]
+        for c, v in enumerate(vals, 1):
+            ws.cell(r, c, v)
+        ws.cell(r, 6).fill = PatternFill("solid", fgColor=_status_fill(item["risk"]))
+        ws.cell(r, 7).fill = PatternFill("solid", fgColor=_status_fill(item["traffic"]))
+    _body_style(ws, 11, 13, 1, len(headers))
+    _apply_formats(ws, money_cols=[3], pct_cols=[4, 5], start_row=11, end_row=13)
+    _add_table(ws, "A10:G13", "ExecutiveRanking", "TableStyleMedium2")
+
+    _section_label(ws, 16, "Hallazgos y recomendaciones", 10)
+    findings = [
+        ["Hallazgo", "Cinco partidas explican la mayor parte de la diferencia económica entre contratistas."],
+        ["Riesgo", "Existen insumos y porcentajes de referencia que deben verificarse en Detalle APU antes de negociar."],
+        ["Recomendación", "Priorizar revisión por impacto económico, no solo por desviación porcentual."],
+        ["Limitación", "V0 usa datos mockeados; V1 debe leer la matriz/APU real de cada contratista."],
+    ]
+    for r, row in enumerate(findings, 17):
+        ws.cell(r, 1, row[0]).font = Font(bold=True, color=BRAND["navy"])
+        ws.cell(r, 2, row[1])
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=10)
+        for c in range(1, 11):
+            ws.cell(r, c).border = _thin_border("EAECF0")
+            ws.cell(r, c).alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[17].height = 30
+    ws.row_dimensions[18].height = 30
+    ws.row_dimensions[19].height = 30
+    ws.row_dimensions[20].height = 30
+
+    _section_label(ws, 23, "Navegación", 10)
+    links = [
+        ("Comparativa", "#'Comparativa'!A1"),
+        ("Detalle APU", "#'Detalle APU'!A1"),
+        ("Partidas Críticas", "#'Partidas Críticas'!A1"),
+        ("Insumos Críticos", "#'Insumos Críticos'!A1"),
+        ("Validaciones", "#'Validaciones'!A1"),
+        ("Parámetros", "#'Parámetros'!A1"),
+    ]
+    for idx, (text, target) in enumerate(links, 1):
+        cell = ws.cell(24, idx, text)
+        cell.hyperlink = target
+        cell.style = "Hyperlink"
         cell.alignment = Alignment(horizontal="center")
-        cell.border = Border(bottom=Side(style="thin", color="008000"))
 
-    headers = ["Partida", "Descripción", "Unidad", "Cantidad", "P.U.", "Importe", "% Part.", "% ajuste", "Mercado P.U.", "Mercado Importe"]
-    for idx, header in enumerate(headers, 1):
-        ws.cell(2, idx, header)
-    _dark_header(ws, 2, 1, 10)
 
+def _write_comparativa_professional(ws):
+    _setup_sheet(ws, "Comparativa", "Tabla económica principal. Vista normalizada, filtrable y auditable por partida/contratista.", 16)
+    _set_widths(ws, {
+        "A": 14, "B": 42, "C": 16, "D": 11, "E": 11, "F": 16, "G": 16, "H": 16,
+        "I": 16, "J": 16, "K": 16, "L": 12, "M": 16, "N": 12, "O": 16, "P": 30
+    })
+    headers = ["Partida", "Descripción", "Familia", "Unidad", "Cantidad", "Contratista", "P.U. ofertado", "Importe ofertado", "P.U. referencia", "Importe referencia", "Diferencia", "Desviación %", "Impacto", "Peso %", "Estado", "Observación"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(5, c, h)
+    _header_style(ws, 5, 1, len(headers), fill="1F4E79")
     rows = [
-        ["FLEX41.11", "Instalación de bomba centrifuga Fristam, modelo FPR 3531-155 con motor de 2HP para transferencia de producto a placa. Incluye materiales, mano de obra, herramientas, equipos y todo lo necesario para su correcta instalación.", "PZA", 1, 31524.55, 31524.55, 0.028268, 4.236288, 6020.40, 6020.40],
-        ["FLEX41.12", "Suministro e instalación de guarda protectora para bomba centrifuga en acero inoxidable 304. Incluye materiales, mano de obra, herramientas, equipos y limpieza final.", "PZA", 1, 24937.16, 24937.16, 0.022361, 3.142110, 6020.40, 6020.40],
-        ["FLEX41.29", "Suministro e instalación de tubería sanitaria de acero inoxidable 316L 3 pulgadas. Incluye soportes, cortes, pulidos y limpieza del área de trabajo.", "M", 41, 3496.73, 143365.93, 0.128557, -0.419186, 6020.40, 246836.40],
-        ["FLEX41.40", "Suministro e instalación de tubería sanitaria de acero inoxidable 316L 2-1/2 pulgadas. Incluye materiales, mano de obra y equipos.", "M", 38, 3496.73, 132875.74, 0.11915, -0.419186, 6020.40, 228775.20],
-        ["FLEX41.62", "Servicio de control de aseguramiento de calidad a través de ensayo de boroscopia en tuberías de acero inoxidable.", "SERVICIO", 1, 75226.36, 75226.36, 0.067456, 11.495093, 6020.40, 6020.40],
+        ["FLEX41.11", "Instalación de bomba centrífuga", "Mecánica", "PZA", 1, "Contratista A", 31524.55, "=E6*G6", 6020.40, "=E6*I6", "=H6-J6", "=K6/J6", "=MAX(K6,0)", "=H6/SUM($H$6:$H$14)", "Sobrecosto", "Validar alcance y matriz APU"],
+        ["FLEX41.12", "Guarda protectora para bomba", "Mecánica", "PZA", 1, "Contratista A", 24937.16, "=E7*G7", 6020.40, "=E7*I7", "=H7-J7", "=K7/J7", "=MAX(K7,0)", "=H7/SUM($H$6:$H$14)", "Sobrecosto", "Revisar precio unitario"],
+        ["FLEX41.29", "Tubería sanitaria acero inoxidable 316L 3 pulgadas", "Tubería", "M", 41, "Contratista A", 3496.73, "=E8*G8", 6020.40, "=E8*I8", "=H8-J8", "=K8/J8", "=MAX(K8,0)", "=H8/SUM($H$6:$H$14)", "Bajo mercado", "Confirmar que no haya omisión de alcance"],
+        ["FLEX41.40", "Tubería sanitaria acero inoxidable 316L 2 1/2 pulgadas", "Tubería", "M", 38, "Contratista B", 3496.73, "=E9*G9", 6020.40, "=E9*I9", "=H9-J9", "=K9/J9", "=MAX(K9,0)", "=H9/SUM($H$6:$H$14)", "Bajo mercado", "Validar especificación técnica"],
+        ["FLEX41.62", "Ensayo de boroscopia en tuberías", "Ensayos", "SERV", 1, "Contratista C", 75226.36, "=E10*G10", 6020.40, "=E10*I10", "=H10-J10", "=K10/J10", "=MAX(K10,0)", "=H10/SUM($H$6:$H$14)", "Sobrecosto", "Negociar o justificar servicio"],
+        ["CIV-001", "Concreto f'c 250", "Concreto", "m3", 40, "Contratista C", 2850000, "=E11*G11", 2300000, "=E11*I11", "=H11-J11", "=K11/J11", "=MAX(K11,0)", "=H11/SUM($H$6:$H$14)", "Sobrecosto", "Alto impacto"],
+        ["CIV-002", "Acero de refuerzo", "Acero", "kg", 1800, "Contratista A", 42000, "=E12*G12", 35000, "=E12*I12", "=H12-J12", "=K12/J12", "=MAX(K12,0)", "=H12/SUM($H$6:$H$14)", "Sobrecosto", "Revisar insumo base"],
+        ["ELE-001", "Luminarias LED", "Instalaciones", "pza", 35, "Contratista C", 1200000, "=E13*G13", 980000, "=E13*I13", "=H13-J13", "=K13/J13", "=MAX(K13,0)", "=H13/SUM($H$6:$H$14)", "Sobrecosto", "Solicitar ficha técnica"],
+        ["GEN-001", "Partida sin referencia directa", "Especial", "gl", 1, "Contratista B", 15000000, "=E14*G14", 0, "=E14*I14", "=IF(I14=0,0,H14-J14)", "=IF(I14=0,0,K14/J14)", "=IF(I14=0,H14,MAX(K14,0))", "=H14/SUM($H$6:$H$14)", "Sin referencia", "Requiere cotización externa"],
     ]
-    for r, row in enumerate(rows, 3):
-        for c, val in enumerate(row, 1):
-            ws.cell(r, c, val)
-        _dark_body_row(ws, r, 1, 10)
-        for col in [5, 6, 9, 10]:
-            _money(ws.cell(r, col))
-        for col in [7, 8]:
-            _pct(ws.cell(r, col))
-        ws.row_dimensions[r].height = 40
-
-    total_row = 3 + len(rows)
-    ws.cell(total_row, 1, "TOTAL")
-    ws.cell(total_row, 5, "=AVERAGE(E3:E7)")
-    ws.cell(total_row, 6, "=SUM(F3:F7)")
-    ws.cell(total_row, 9, "=AVERAGE(I3:I7)")
-    ws.cell(total_row, 10, "=SUM(J3:J7)")
-    _dark_body_row(ws, total_row, 1, 10, section=True)
-    for col in [5, 6, 9, 10]:
-        _money(ws.cell(total_row, col))
-
-    summary_start = total_row + 2
-    bullets = [
-        ["Resumen individual por contratista"],
-        ["Matrices Pu FLEXIBILIDAD TQ 41 Y 42"],
-        ["• Las partidas sombreadas en azul concentran el mayor impacto económico del contratista."],
-        ["• El total cotizado se compara contra mercado calculado usando los precios base de materiales, mano de obra y maquinaria desde data."],
-        ["• Las partidas con mayor desviación deben revisarse contra alcance, exclusiones y suficiencia técnica."],
-        ["• Esta hoja replica la lógica histórica del tab Comparativa: partida, precio ofertado, importe, participación, ajuste y mercado."],
-    ]
-    for i, row in enumerate(bullets, summary_start):
-        ws.cell(i, 1, row[0])
-        ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=10)
-        _dark_body_row(ws, i, 1, 10, section=i in [summary_start, summary_start + 1])
+    for r, row in enumerate(rows, 6):
+        for c, v in enumerate(row, 1):
+            ws.cell(r, c, v)
+    _body_style(ws, 6, 14, 1, len(headers))
+    _apply_formats(ws, money_cols=[7, 8, 9, 10, 11, 13], pct_cols=[12, 14], int_cols=[5], start_row=6, end_row=14)
+    _add_table(ws, "A5:P14", "ComparativaTable", "TableStyleMedium2")
+    ws.auto_filter.ref = "A5:P14"
+    ws.freeze_panes = "A6"
+    # Conditional formatting
+    ws.conditional_formatting.add("L6:L14", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+    ws.conditional_formatting.add("M6:M14", DataBarRule(start_type="num", start_value=0, end_type="max", color="5B9BD5", showValue=True))
+    ws.conditional_formatting.add("O6:O14", FormulaRule(formula=['$O6="Sobrecosto"'], fill=PatternFill("solid", fgColor="FCE4D6")))
+    ws.conditional_formatting.add("O6:O14", FormulaRule(formula=['$O6="Bajo mercado"'], fill=PatternFill("solid", fgColor="E2F0D9")))
+    ws.conditional_formatting.add("O6:O14", FormulaRule(formula=['$O6="Sin referencia"'], fill=PatternFill("solid", fgColor="E7E6E6")))
+    ws["A16"] = "Regla canónica"
+    ws["A16"].font = Font(bold=True, color=BRAND["navy"])
+    ws["A17"] = "Comparativa resume importes y desviaciones. El Detalle APU explica de dónde viene cada precio desde la matriz propia del contratista."
+    ws.merge_cells("A17:P17")
+    ws["A17"].alignment = Alignment(wrap_text=True)
 
 
-def _write_detalle_like_legacy(ws):
-    ws.title = "Detalle"
-    _configure_legacy_visual_sheet(ws)
-    ws.freeze_panes = "A2"
-    headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%", "", "Mercado P. Unitario", "Mercado Op.", "Mercado Cantidad", "Mercado Importe"]
-    for idx, header in enumerate(headers, 1):
-        ws.cell(1, idx, header)
-    _dark_header(ws, 1, 1, 13)
-
+def _write_detalle_apu_professional(ws):
+    _setup_sheet(ws, "Detalle APU", "Reconstrucción ordenada de la matriz/APU del contratista, enriquecida con referencias granulares de data.", 18)
+    _set_widths(ws, {
+        "A": 16, "B": 26, "C": 16, "D": 38, "E": 12, "F": 10, "G": 13, "H": 16, "I": 18,
+        "J": 16, "K": 16, "L": 14, "M": 14, "N": 18, "O": 18, "P": 16, "Q": 18, "R": 34
+    })
+    headers = ["Contratista", "Partida", "Bloque APU", "Concepto / insumo", "Unidad", "Op.", "Cantidad", "P.U. contratista", "Importe contratista", "P.U. referencia", "Importe referencia", "Diferencia", "Desv. %", "Fuente referencia", "Estado match", "Tipo fila", "Alerta", "Regla / observación"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(5, c, h)
+    _header_style(ws, 5, 1, len(headers), fill="1F4E79")
     rows = [
-        ["FLEX41.11", "Instalación de bomba centrifuga Fristam, modelo FPR 3531-155 con motor de 2HP para transferencia de producto a placa. Incluye materiales, mano de obra, herramientas y equipos.", "PZA", 31524.55, None, 1, 31524.55, 0.028268, None, 6020.40, "*", 1, 6020.40, "concept"],
-        [None, "MATERIALES", None, None, None, None, None, None, None, None, None, None, None, "section"],
-        ["consu-mec", "Consumibles para corte y soldadura", "%", 22453.38, "*", 0.08, 1796.27, 0.001611, None, 22453.38, "*", 0.08, 1796.27, "item"],
-        [None, "SUBTOTAL MATERIALES", None, 1796.27, None, None, 1796.27, 0.001611, None, None, None, None, None, "subtotal"],
-        [None, "MANO DE OBRA", None, None, None, None, None, None, None, None, None, None, None, "section"],
-        ["SUP-O", "Supervisor Obra", "JOR", 2643.19, "*", 0.10, 264.32, 0.000237, None, 1757.33, "*", 0.10, 175.73, "item"],
-        ["SUP-SEG", "Supervisor de Seguridad", "JOR", 2287.73, "*", 0.333333, 762.58, 0.000684, None, 1757.33, "*", 0.33, 579.92, "item"],
-        ["OF-SOL", "Oficial Soldador/argonero", "JOR", 2120.45, "*", 1, 2120.45, 0.001901, None, 1326.14, "*", 1, 1326.14, "item"],
-        ["OF-TUB", "Oficial Tubero", "JOR", 2120.45, "*", 1, 2120.45, 0.001901, None, 1221.95, "*", 1, 1221.95, "item"],
-        ["AYU-GRAL", "Ayudante General", "JOR", 1074.96, "*", 1, 1074.96, 0.000964, None, 777.88, "*", 1, 777.88, "item"],
-        [None, "SUBTOTAL MANO DE OBRA", None, 6342.76, None, None, 6342.76, 0.005688, None, 4081.62, None, None, 4081.62, "subtotal"],
-        [None, "EQUIPO Y HERRAMIENTA", None, None, None, None, None, None, None, None, None, None, None, "section"],
-        ["%HERR", "Herramienta Menor", "%", 6342.76, "%", 0.09, 570.85, 0.000512, None, 4081.62, "%", 0.09, 367.35, "item"],
-        ["%EPP", "Equipo de proteccion personal Basico", "%", 6342.76, "%", 0.09, 570.85, 0.000512, None, 4081.62, "%", 0.09, 367.35, "item"],
-        [None, "SUBTOTAL EQUIPO Y HERRAMIENTA", None, 1141.70, None, None, 1141.70, 0.001024, None, 734.70, None, None, 734.70, "subtotal"],
-        [None, "SECCION FINANCIERA", None, None, None, None, None, None, None, None, None, None, None, "section"],
-        [None, "COSTO DIRECTO", None, 9280.73, None, None, 9280.73, 0.021745, None, 4816.32, None, None, 4816.32, "subtotal"],
-        [None, "COSTO INDIRECTO", None, 7274.90, "%", 0.25, 7274.90, 0.25, None, 4816.32, "%", 0.25, 1204.08, "subtotal"],
-        [None, "TOTAL COSTO UNITARIO", None, 31524.55, None, None, 31524.55, 0.028268, None, 6020.40, None, None, 6020.40, "total"],
-        [None, "TOTAL POR SERVICIO", None, 31524.55, None, 1, 31524.55, 0.028268, None, 6020.40, None, 1, 6020.40, "total"],
-        [None, None, None, None, None, None, None, None, None, None, None, None, None, "blank"],
-        ["FLEX41.12", "Suministro e instalación de guarda protectora para bomba centrifuga en acero inoxidable 304. Incluye materiales, mano de obra, herramientas, equipos y limpieza final.", "PZA", 24937.16, None, 1, 24937.16, 0.022361, None, 6020.40, "*", 1, 6020.40, "concept"],
-        [None, "MATERIALES", None, None, None, None, None, None, None, None, None, None, None, "section"],
-        ["flex4.16", "Lamina lisa en acero inoxidable calibre 20", "M2", 3016.00, "*", 1, 3016.00, 0.002704, None, 3016.00, "*", 1, 3016.00, "item"],
-        ["consu-mec", "Consumibles para corte y soldadura", "%", 3016.00, "%", 0.08, 241.28, 0.001074, None, 3016.00, "%", 0.08, 241.28, "item"],
-        [None, "SUBTOTAL MATERIALES", None, 3257.28, None, None, 3257.28, 0.002921, None, None, None, None, None, "subtotal"],
+        ["Contratista A", "FLEX41.11", "PARTIDA", "Instalación de bomba centrífuga", "PZA", "*", 1, 31524.55, "=G6*H6", 6020.40, "=G6*J6", "=I6-K6", "=IF(K6=0,0,L6/K6)", "Comparativa", "Leído", "PARTIDA", "Revisar", "Partida principal leída desde archivo del contratista"],
+        ["Contratista A", "FLEX41.11", "MATERIALES", "Consumibles para corte y soldadura", "%", "%", 0.08, 22453.38, "=G7*H7", 22453.38, "=G7*J7", "=I7-K7", "=IF(K7=0,0,L7/K7)", "data/materiales", "Match medio", "INSUMO", "OK", "Porcentaje sobre base de materiales"],
+        ["Contratista A", "FLEX41.11", "MANO DE OBRA", "Supervisor Obra", "JOR", "*", 0.10, 2643.19, "=G8*H8", 1757.33, "=G8*J8", "=I8-K8", "=IF(K8=0,0,L8/K8)", "data/mano_obra", "Match alto", "INSUMO", "Revisar", "Precio MO superior a referencia"],
+        ["Contratista A", "FLEX41.11", "MANO DE OBRA", "Oficial soldador/argonero", "JOR", "*", 1, 2120.45, "=G9*H9", 1326.14, "=G9*J9", "=I9-K9", "=IF(K9=0,0,L9/K9)", "data/mano_obra", "Match alto", "INSUMO", "Revisar", "Validar rendimiento y tarifa"],
+        ["Contratista A", "FLEX41.11", "EQUIPO Y HERRAMIENTA", "Herramienta menor", "%", "%", 0.09, "=SUM(I8:I9)", "=G10*H10", "=SUM(K8:K9)", "=G10*J10", "=I10-K10", "=IF(K10=0,0,L10/K10)", "data/porcentajes", "Referencia", "PORCENTAJE", "OK", "%HERR sobre mano de obra"],
+        ["Contratista A", "FLEX41.11", "EQUIPO Y HERRAMIENTA", "Equipo de protección personal", "%", "%", 0.09, "=SUM(I8:I9)", "=G11*H11", "=SUM(K8:K9)", "=G11*J11", "=I11-K11", "=IF(K11=0,0,L11/K11)", "data/porcentajes", "Referencia", "PORCENTAJE", "OK", "%EPP sobre mano de obra"],
+        ["Contratista A", "FLEX41.11", "SUBTOTAL", "Costo directo", "", "", 1, "=SUM(I7:I11)", "=H12", "=SUM(K7:K11)", "=J12", "=I12-K12", "=IF(K12=0,0,L12/K12)", "Cálculo", "Calculado", "SUBTOTAL", "OK", "Suma materiales + MO + equipo"],
+        ["Contratista A", "FLEX41.11", "FINANCIERO", "Costo indirecto", "%", "%", 0.25, "=I12", "=G13*H13", "=K12", "=G13*J13", "=I13-K13", "=IF(K13=0,0,L13/K13)", "data/porcentajes", "Referencia", "PORCENTAJE", "Revisar", "Comparar porcentaje aplicado vs rango permitido"],
+        ["Contratista A", "FLEX41.11", "TOTAL", "Total costo unitario", "", "", 1, "=I12+I13", "=H14", "=K12+K13", "=J14", "=I14-K14", "=IF(K14=0,0,L14/K14)", "Cálculo", "Calculado", "TOTAL", "Reconciliar", "Debe reconciliar contra P.U. en Comparativa"],
     ]
-    for r, row in enumerate(rows, 2):
-        kind = row[-1]
-        for c, val in enumerate(row[:-1], 1):
-            ws.cell(r, c, val)
-        _dark_body_row(ws, r, 1, 13, section=kind in {"section", "subtotal", "total"})
-        if kind == "blank":
-            ws.row_dimensions[r].height = 8
-        elif kind == "concept":
-            ws.row_dimensions[r].height = 48
-        for col in [4, 7, 10, 13]:
-            if isinstance(ws.cell(r, col).value, (int, float)):
-                _money(ws.cell(r, col))
-        for col in [8]:
-            if isinstance(ws.cell(r, col).value, (int, float)):
-                _pct(ws.cell(r, col))
+    for r, row in enumerate(rows, 6):
+        for c, v in enumerate(row, 1):
+            ws.cell(r, c, v)
+        # Fill by type
+        row_type = row[15]
+        fill = "FFFFFF"
+        if row_type == "PARTIDA": fill = "EAF2FF"
+        elif row_type in {"SUBTOTAL", "TOTAL"}: fill = "FFF2CC"
+        elif row_type == "PORCENTAJE": fill = "F8FAFC"
+        for c in range(1, len(headers)+1):
+            ws.cell(r, c).fill = PatternFill("solid", fgColor=fill)
+            ws.cell(r, c).border = _thin_border("EAECF0")
+            ws.cell(r, c).alignment = Alignment(vertical="top", wrap_text=True)
+            if row_type in {"PARTIDA", "SUBTOTAL", "TOTAL"}:
+                ws.cell(r, c).font = Font(bold=True, color=BRAND["text"])
+    _apply_formats(ws, money_cols=[8, 9, 10, 11, 12], pct_cols=[7, 13], start_row=6, end_row=14)
+    _add_table(ws, "A5:R14", "DetalleApuTable", "TableStyleMedium4")
+    ws.freeze_panes = "A6"
+    ws.auto_filter.ref = "A5:R14"
+    ws.conditional_formatting.add("M6:M14", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+    ws.conditional_formatting.add("L6:L14", DataBarRule(start_type="num", start_value=0, end_type="max", color="5B9BD5", showValue=True))
+    # group detail rows visually
+    for r in range(7, 12):
+        ws.row_dimensions[r].outlineLevel = 1
+    for r in range(13, 14):
+        ws.row_dimensions[r].outlineLevel = 1
+    ws["A17"] = "Regla canónica"
+    ws["A17"].font = Font(bold=True, color=BRAND["navy"])
+    ws["A18"] = "Esta hoja NO se crea copiando matrices Construdata. V1 debe leer el APU/matriz del contratista, identificar bloques y cruzar insumos contra materiales, mano de obra, maquinaria y porcentajes desde data."
+    ws.merge_cells("A18:R18")
+    ws["A18"].alignment = Alignment(wrap_text=True)
+
+
+def _write_partidas_criticas(ws):
+    _setup_sheet(ws, "Partidas Críticas", "Priorización de partidas por impacto económico, desviación y riesgo de negociación.", 12)
+    _set_widths(ws, {"A": 10, "B": 16, "C": 16, "D": 36, "E": 18, "F": 16, "G": 14, "H": 14, "I": 18, "J": 26, "K": 22, "L": 18})
+    headers = ["Prioridad", "Contratista", "Partida", "Descripción", "Familia", "Impacto", "Desv. %", "Peso %", "Motivo", "Acción sugerida", "Estado revisión", "Responsable"]
+    for c, h in enumerate(headers, 1): ws.cell(5, c, h)
+    _header_style(ws, 5, 1, len(headers))
+    rows = [
+        [1, "Contratista C", "CIV-001", "Concreto f'c 250", "Concreto", 95000, 0.24, 0.18, "Alto impacto", "Solicitar desglose APU", "Pendiente", "Ingeniería"],
+        [2, "Contratista A", "CIV-002", "Acero de refuerzo", "Acero", 62000, 0.20, 0.12, "Precio sobre referencia", "Negociar precio unitario", "Pendiente", "Compras"],
+        [3, "Contratista C", "ELE-001", "Luminarias LED", "Instalaciones", 48000, 0.22, 0.09, "Ficha técnica no validada", "Solicitar aclaración", "Pendiente", "Ingeniería"],
+        [4, "Contratista B", "GEN-001", "Partida sin referencia directa", "Especial", 15000000, 0, 0.20, "Sin referencia", "Cotización externa", "Pendiente", "Costos"],
+    ]
+    for r, row in enumerate(rows, 6):
+        for c, v in enumerate(row, 1): ws.cell(r, c, v)
+    _body_style(ws, 6, 9, 1, len(headers))
+    _apply_formats(ws, money_cols=[6], pct_cols=[7, 8], start_row=6, end_row=9)
+    _add_table(ws, "A5:L9", "PartidasCriticasTable", "TableStyleMedium2")
+    ws.freeze_panes = "A6"
+    ws.conditional_formatting.add("F6:F9", DataBarRule(start_type="num", start_value=0, end_type="max", color="5B9BD5", showValue=True))
+    ws.conditional_formatting.add("G6:G9", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+    dv = DataValidation(type="list", formula1='"Pendiente,Revisado,Aceptado,Solicitar aclaración,Negociar"', allow_blank=False)
+    ws.add_data_validation(dv)
+    dv.add("K6:K50")
+
+
+def _write_insumos_criticos(ws):
+    _setup_sheet(ws, "Insumos Críticos", "Insumos, mano de obra, maquinaria y porcentajes que explican variaciones relevantes.", 13)
+    _set_widths(ws, {"A": 16, "B": 16, "C": 18, "D": 28, "E": 10, "F": 14, "G": 16, "H": 16, "I": 14, "J": 16, "K": 22, "L": 20, "M": 28})
+    headers = ["Contratista", "Partida", "Tipo insumo", "Insumo", "Unidad", "Cantidad", "P.U. contratista", "P.U. referencia", "Desv. %", "Impacto", "Fuente data", "Alerta", "Observación"]
+    for c, h in enumerate(headers, 1): ws.cell(5, c, h)
+    _header_style(ws, 5, 1, len(headers))
+    rows = [
+        ["Contratista A", "FLEX41.11", "MO", "Supervisor Obra", "JOR", 0.10, 2643.19, 1757.33, "=(G6-H6)/H6", "=MAX((G6-H6)*F6,0)", "data/mano_obra", "Revisar", "Tarifa superior a referencia"],
+        ["Contratista A", "FLEX41.11", "MO", "Oficial soldador/argonero", "JOR", 1, 2120.45, 1326.14, "=(G7-H7)/H7", "=MAX((G7-H7)*F7,0)", "data/mano_obra", "Revisar", "Validar rendimiento"],
+        ["Contratista C", "CIV-001", "Material", "Concreto premezclado", "m3", 40, 2850000, 2300000, "=(G8-H8)/H8", "=MAX((G8-H8)*F8,0)", "data/materiales", "Alto impacto", "Negociar precio base"],
+        ["Contratista C", "ELE-001", "Material", "Luminaria LED", "pza", 35, 1200000, 980000, "=(G9-H9)/H9", "=MAX((G9-H9)*F9,0)", "data/materiales", "Ficha técnica", "Confirmar especificación"],
+    ]
+    for r, row in enumerate(rows, 6):
+        for c, v in enumerate(row, 1): ws.cell(r, c, v)
+    _body_style(ws, 6, 9, 1, len(headers))
+    _apply_formats(ws, money_cols=[7, 8, 10], pct_cols=[9], start_row=6, end_row=9)
+    _add_table(ws, "A5:M9", "InsumosCriticosTable", "TableStyleMedium2")
+    ws.conditional_formatting.add("I6:I9", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+    ws.conditional_formatting.add("J6:J9", DataBarRule(start_type="num", start_value=0, end_type="max", color="5B9BD5", showValue=True))
+    ws.freeze_panes = "A6"
+
+
+def _write_validaciones(ws):
+    _setup_sheet(ws, "Validaciones", "Bitácora de advertencias, inconsistencias y puntos que requieren revisión técnica.", 10)
+    _set_widths(ws, {"A": 14, "B": 24, "C": 16, "D": 16, "E": 18, "F": 24, "G": 36, "H": 26, "I": 28, "J": 18})
+    headers = ["Severidad", "Tipo", "Contratista", "Partida", "Campo", "Valor detectado", "Problema", "Impacto potencial", "Acción sugerida", "Estado"]
+    for c, h in enumerate(headers, 1): ws.cell(5, c, h)
+    _header_style(ws, 5, 1, len(headers))
+    rows = [
+        ["Alta", "Total no cuadra", "Contratista A", "FLEX41.11", "P.U.", "31524.55", "El total calculado debe reconciliar con Comparativa", "Puede afectar ranking", "Revisar matriz APU", "Pendiente"],
+        ["Media", "Unidad dudosa", "Contratista C", "ELE-001", "Unidad", "pza", "La especificación técnica de luminaria no es suficiente", "Precio no comparable", "Solicitar ficha técnica", "Pendiente"],
+        ["Media", "Insumo no encontrado", "Contratista B", "GEN-001", "Referencia", "N/A", "No existe referencia granular en data", "Requiere cotización externa", "Solicitar soporte", "Pendiente"],
+        ["Baja", "Match medio", "Contratista A", "CIV-002", "Insumo", "Acero", "Match por descripción, no por código", "Revisión documental", "Validar código", "Pendiente"],
+    ]
+    for r, row in enumerate(rows, 6):
+        for c, v in enumerate(row, 1): ws.cell(r, c, v)
+        ws.cell(r, 1).fill = PatternFill("solid", fgColor=_status_fill(row[0]))
+    _body_style(ws, 6, 9, 1, len(headers))
+    _add_table(ws, "A5:J9", "ValidacionesTable", "TableStyleMedium2")
+    dv = DataValidation(type="list", formula1='"Pendiente,Revisado,Resuelto,No aplica"')
+    ws.add_data_validation(dv)
+    dv.add("J6:J100")
+    ws.freeze_panes = "A6"
+
+
+def _write_parametros(ws):
+    _setup_sheet(ws, "Parámetros", "Trazabilidad del reporte: fuentes, reglas, versiones y limitaciones metodológicas.", 8)
+    _set_widths(ws, {"A": 28, "B": 70, "C": 20, "D": 22, "E": 22, "F": 22, "G": 22, "H": 22})
+    params = [
+        ["Versión sistema", "V0 canónica", ""],
+        ["Fecha generación", datetime.now().strftime("%Y-%m-%d %H:%M"), ""],
+        ["Motor Excel", "ExcelReportEngineV1 - versión profesional inicial", ""],
+        ["Presupuesto base", "Usa data/construdata_matrices.xlsx solamente para módulo independiente", "Regla canónica"],
+        ["Detalle APU", "Usa matriz/APU del contratista + referencias granulares de data", "Regla canónica"],
+        ["Materiales", "data/construdata-materiales-052026.xlsx", "Referencia granular"],
+        ["Mano de obra", "data/construdata-manodeobra-052026*.xlsx", "Referencia granular"],
+        ["Maquinaria", "data/construdata-maquinaria-052026.xlsx", "Referencia granular"],
+        ["IA", "Interpreta resultados calculados; no calcula montos", "Regla canónica"],
+        ["Limitación V0", "Datos mockeados para validar diseño y estructura. V1 conectará lectura real de matrices/APU.", "Importante"],
+    ]
+    headers = ["Parámetro", "Valor", "Tipo"]
+    for c, h in enumerate(headers, 1): ws.cell(5, c, h)
+    _header_style(ws, 5, 1, 3)
+    for r, row in enumerate(params, 6):
+        for c, v in enumerate(row, 1): ws.cell(r, c, v)
+    _body_style(ws, 6, 15, 1, 3)
+    _add_table(ws, "A5:C15", "ParametrosTable", "TableStyleMedium2")
+
+
+def _write_analisis_ia(ws):
+    _setup_sheet(ws, "Análisis IA", "Narrativa ejecutiva generada sobre datos calculados. La IA no inventa importes ni modifica cálculos.", 6)
+    _set_widths(ws, {"A": 24, "B": 95, "C": 18, "D": 18, "E": 18, "F": 18})
+    sections = [
+        ["Resumen ejecutivo", "La comparación identifica una propuesta competitiva, pero con partidas críticas que requieren validación técnica antes de negociar o adjudicar."],
+        ["Riesgos", "El riesgo principal se concentra en partidas con alto impacto económico y en diferencias de insumos de mano de obra y materiales."],
+        ["Recomendaciones", "Solicitar desglose APU, validar rendimiento, comparar porcentajes financieros y negociar partidas con mayor impacto económico."],
+        ["Preguntas al contratista", "¿Qué alcance está incluido en las partidas bajo mercado? ¿Qué tarifas y rendimientos soportan mano de obra? ¿Qué fichas técnicas respaldan los insumos críticos?"],
+        ["Limitaciones", "V0 usa datos mockeados. El motor real debe leer la matriz/APU del contratista y poblar Detalle APU desde esa fuente."],
+    ]
+    headers = ["Sección", "Contenido"]
+    for c, h in enumerate(headers, 1): ws.cell(5, c, h)
+    _header_style(ws, 5, 1, 2)
+    for r, row in enumerate(sections, 6):
+        ws.cell(r, 1, row[0]).font = Font(bold=True, color=BRAND["navy"])
+        ws.cell(r, 2, row[1])
+        ws.row_dimensions[r].height = 45
+    _body_style(ws, 6, 10, 1, 2)
+    _add_table(ws, "A5:B10", "AnalisisIATable", "TableStyleMedium2")
+
+
+def _write_base_budget_report(wb):
+    # Professional base-budget version; kept separate from contractor comparison.
+    ws = wb.active
+    ws.title = "Resumen Ejecutivo"
+    _setup_sheet(ws, "Presupuesto Base", "Presupuesto independiente generado desde conceptos de ingeniería + matrices Construdata.", 10)
+    _set_widths(ws, {"A": 22, "B": 22, "C": 22, "D": 22, "E": 22, "F": 22, "G": 22, "H": 22, "I": 22, "J": 22})
+    _write_kpi(ws, 4, 1, "Monto estimado", 56520000, "Base mock", "F8FAFC")
+    _write_kpi(ws, 4, 3, "Conceptos", 128, "Archivo ingeniería", "F8FAFC")
+    _write_kpi(ws, 4, 5, "Con match", 104, "Construdata matrices", "E2F0D9")
+    _write_kpi(ws, 4, 7, "En revisión", 17, "Match medio", "FFF2CC")
+    _write_kpi(ws, 4, 9, "Sin match", 7, "Cotizar", "FCE4D6")
+    for cell in ["A5"]: ws[cell].number_format = MONEY_FMT
+    comp = wb.create_sheet("Comparativa")
+    _setup_sheet(comp, "Comparativa presupuesto base", "Conceptos presupuestados contra matrices Construdata. No es flujo obligatorio de licitación.", 10)
+    _set_widths(comp, {"A":14,"B":42,"C":12,"D":12,"E":42,"F":16,"G":18,"H":14,"I":16,"J":28})
+    headers = ["Código", "Concepto ingeniería", "Unidad", "Cantidad", "Concepto Construdata", "P.U. referencia", "Importe base", "Confianza", "Estado", "Observación"]
+    for c,h in enumerate(headers,1): comp.cell(5,c,h)
+    _header_style(comp,5,1,10)
+    rows = [
+        ["001", "Excavación manual", "m3", 120, "Excavación manual material común", 88000, "=D6*F6", "Alta", "Con precio", "Match por descripción/unidad"],
+        ["002", "Concreto f'c 250", "m3", 40, "Concreto 250 kg/cm2", 420000, "=D7*F7", "Alta", "Con precio", "Match confiable"],
+        ["003", "Acero de refuerzo", "kg", 1800, "Acero fy 4200", 6200, "=D8*F8", "Media", "Revisar", "Validar especificación"],
+        ["004", "Partida especial", "gl", 1, "", 0, "=D9*F9", "Baja", "Sin referencia", "Requiere cotización externa"],
+    ]
+    for r,row in enumerate(rows,6):
+        for c,v in enumerate(row,1): comp.cell(r,c,v)
+    _body_style(comp,6,9,1,10)
+    _apply_formats(comp, money_cols=[6,7], start_row=6, end_row=9)
+    _add_table(comp,"A5:J9","BaseBudgetComparativaTable","TableStyleMedium2")
+    detail = wb.create_sheet("Detalle Base")
+    _setup_sheet(detail, "Detalle presupuesto base", "Cruce conceptual entre conceptos de ingeniería y matrices Construdata.", 9)
+    _set_widths(detail,{"A":22,"B":44,"C":44,"D":12,"E":12,"F":16,"G":18,"H":18,"I":32})
+    headers = ["Concepto base", "Descripción ingeniería", "Matriz Construdata", "Unidad", "Cantidad", "P.U. ref.", "Importe", "Estado", "Nota"]
+    for c,h in enumerate(headers,1): detail.cell(5,c,h)
+    _header_style(detail,5,1,9)
+    rows = [
+        ["Excavación", "Excavación manual", "Excavación manual material común", "m3", 120, 88000, "=E6*F6", "Con precio", "Usado para presupuesto base independiente"],
+        ["Acero", "Acero de refuerzo", "Acero fy 4200", "kg", 1800, 6200, "=E7*F7", "Revisar", "Match medio por descripción"],
+    ]
+    for r,row in enumerate(rows,6):
+        for c,v in enumerate(row,1): detail.cell(r,c,v)
+    _body_style(detail,6,7,1,9)
+    _apply_formats(detail, money_cols=[6,7], start_row=6, end_row=7)
+    _add_table(detail,"A5:I7","BaseBudgetDetalleTable","TableStyleMedium4")
+    _write_parametros(wb.create_sheet("Parámetros"))
+
+
+def _write_comparison_report(wb):
+    ws = wb.active
+    ws.title = "Resumen Ejecutivo"
+    _write_resumen_ejecutivo(ws, "comparison")
+    _write_comparativa_professional(wb.create_sheet("Comparativa"))
+    _write_detalle_apu_professional(wb.create_sheet("Detalle APU"))
+    _write_partidas_criticas(wb.create_sheet("Partidas Críticas"))
+    _write_insumos_criticos(wb.create_sheet("Insumos Críticos"))
+    _write_validaciones(wb.create_sheet("Validaciones"))
+    _write_parametros(wb.create_sheet("Parámetros"))
+    _write_analisis_ia(wb.create_sheet("Análisis IA"))
 
 
 def build_report(kind: str) -> Path:
     wb = Workbook()
-    ws = wb.active
     if kind == "comparison":
-        _write_comparativa_like_legacy(ws)
-        detail = wb.create_sheet("Detalle")
-        _write_detalle_like_legacy(detail)
-        ai = wb.create_sheet("Analisis IA")
-        ai["A1"] = "Analisis IA"
-        ai["A1"].font = Font(bold=True, size=14)
-        ai_rows = [
-            "1. Veredicto general",
-            "La propuesta se evalúa contra mercado granular usando referencias de data para materiales, mano de obra y maquinaria.",
-            "2. Principales riesgos detectados",
-            "Validar partidas bajo mercado para descartar omisiones de alcance y revisar porcentajes financieros/indirectos.",
-            "3. Limitaciones",
-            "V0 usa datos mockeados; el motor real deberá leer la matriz/APU del contratista para poblar Detalle.",
-        ]
-        for i, text in enumerate(ai_rows, 3):
-            ai.cell(i, 1, text)
-            ai.column_dimensions['A'].width = 120
-            ai.cell(i, 1).alignment = Alignment(wrap_text=True, vertical="top")
+        _write_comparison_report(wb)
     else:
-        ws.title = "Comparativa"
-        _style_sheet(ws, "Comparativa")
-        headers = ["Código", "Concepto ingeniería", "Unidad", "Cantidad", "Concepto Construdata", "PU referencia", "Importe base", "Confianza", "Estado"]
-        rows = [
-            ["001", "Excavación manual", "m3", 120, "Excavación manual material común", 88000, 10560000, "Alta", "Con precio"],
-            ["002", "Concreto f'c 250", "m3", 40, "Concreto 250 kg/cm2", 420000, 16800000, "Alta", "Con precio"],
-            ["003", "Acero de refuerzo", "kg", 1800, "Acero fy 4200", 6200, 11160000, "Media", "Revisar"],
-            ["004", "Partida especial", "gl", 1, "", 0, 0, "Baja", "Sin referencia"],
-        ]
-        _write_table(ws, 4, headers, rows)
-        detail = wb.create_sheet("Detalle")
-        _style_sheet(detail, "Detalle")
-        headers = ["Concepto base", "Matriz Construdata", "Unidad", "Cantidad", "PU ref.", "Importe", "Operador", "Estado", "Nota"]
-        rows = [
-            ["Excavación manual", "Excavación manual material común", "m3", 120, 88000, 10560000, "*", "Con precio", "Usado para presupuesto base independiente"],
-            ["Acero de refuerzo", "Acero fy 4200", "kg", 1800, 6200, 11160000, "*", "Revisar", "Match medio por descripción"],
-        ]
-        _write_table(detail, 4, headers, rows)
+        _write_base_budget_report(wb)
 
+    # Workbook-level finishing touches
     for sheet in wb.worksheets:
         sheet.sheet_view.showGridLines = False
-    filename = f"apu_v0_{kind}_{int(time.time())}.xlsx"
+        # Make first tab active by default and keep tab colors subtle.
+        if sheet.title in {"Resumen Ejecutivo", "Presupuesto Base"}:
+            sheet.sheet_properties.tabColor = BRAND["navy"]
+        elif "Detalle" in sheet.title:
+            sheet.sheet_properties.tabColor = "70AD47"
+        elif "Validaciones" in sheet.title:
+            sheet.sheet_properties.tabColor = "FFC000"
+        elif "IA" in sheet.title:
+            sheet.sheet_properties.tabColor = "5B9BD5"
+
+    filename = f"apu_v0_{kind}_professional_{int(time.time())}.xlsx"
     out = REPORTS_DIR / filename
     wb.save(out)
     return out

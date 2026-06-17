@@ -1,112 +1,130 @@
-# Especificación V0 - Tabs Excel Comparativa y Detalle
+# Especificación canónica de Excel - V0 corregida
 
-Este documento incorpora el ejemplo `Comparativo_cotizacion-138 2.xlsx` como referencia histórica para la generación del Excel de salida.
+## Criterio de diseño
 
-## 1. Tab Comparativa
+El archivo histórico `Comparativo_cotizacion-138 2.xlsx` se usa únicamente como referencia funcional, no como plantilla visual literal.
 
-La hoja `Comparativa` debe ser el resumen económico por partida/servicio.
+La V0 corregida debe generar un Excel limpio, claro y profesional, con fondo blanco, encabezados suaves, tipografía legible y sin replicar el estilo oscuro/negro del archivo histórico.
 
-Columnas canónicas observadas:
+## Hojas principales
 
-1. Partida
-2. Descripción
-3. Unidad
-4. Cantidad
-5. P.U.
-6. Importe
-7. % Part.
-8. % ajuste
-9. Mercado P.U.
-10. Mercado Importe
+### 1. Comparativa
 
-Uso funcional:
+Objetivo: resumir el resultado económico por partida/servicio.
 
-- `P.U.` e `Importe` vienen de la propuesta del contratista.
-- `% Part.` mide el peso de la partida dentro del total del contratista.
-- `% ajuste` mide la desviación contra mercado.
-- `Mercado P.U.` y `Mercado Importe` se calculan usando referencias granulares de `data` para materiales, mano de obra y maquinaria.
-- Para un solo contratista no debe mostrarse ranking global.
-- Para múltiples contratistas se deberá extender esta lógica por contratista, manteniendo un resumen económico claro.
+Columnas canónicas:
 
-## 2. Tab Detalle
+- Partida
+- Descripción
+- Unidad
+- Cantidad
+- P.U. ofertado
+- Importe ofertado
+- % participación
+- % ajuste
+- Mercado P.U.
+- Mercado importe
+- Diferencia vs mercado
+- Diferencia %
+- Estado
 
-La hoja `Detalle` debe reconstruir la matriz/APU del contratista.
+La hoja debe calcular importes y diferencias con fórmulas. No debe ser solo una copia de valores.
 
-Columnas canónicas observadas:
+### 2. Detalle
 
-1. Código
-2. Concepto
-3. Unidad
-4. P. Unitario
-5. Op.
-6. Cantidad
-7. Importe
-8. %
-9. Columna separadora visual
-10. Mercado P. Unitario
-11. Mercado Op.
-12. Mercado Cantidad
-13. Mercado Importe
+Objetivo: mostrar la reconstrucción de la matriz/APU del contratista.
 
-## 3. Estructura jerárquica del Detalle
+Regla clave:
 
-Cada partida debe abrir un bloque con:
+> El Detalle se genera desde la matriz/APU propia del contratista. No se copia una matriz completa de referencia ni se usa `construdata_matrices.xlsx` para este flujo.
 
-- Renglón principal de partida.
-- Sección `MATERIALES`.
-- Insumos de materiales.
-- `SUBTOTAL MATERIALES`.
-- Sección `MANO DE OBRA`.
-- Insumos de mano de obra.
-- `SUBTOTAL MANO DE OBRA`.
-- Sección `EQUIPO Y HERRAMIENTA`, cuando aplique.
-- Insumos o porcentajes como `%HERR`, `%EPP`, andamios u otros.
-- `SUBTOTAL EQUIPO Y HERRAMIENTA`.
-- `SECCION FINANCIERA`.
-- `COSTO DIRECTO`.
-- `COSTO INDIRECTO`.
-- `TOTAL COSTO UNITARIO`.
-- `TOTAL POR SERVICIO`.
+Fuentes reales esperadas para el motor V1:
 
-## 4. Reglas de origen de datos
+- Archivo del contratista: contiene la matriz/APU propia.
+- `data/construdata-materiales-052026.xlsx`: referencias de materiales.
+- `data/construdata-manodeobra-052026*.xlsx`: referencias de mano de obra.
+- `data/construdata-maquinaria-052026.xlsx`: referencias de maquinaria/equipo.
+- Archivos auxiliares de porcentajes/parámetros en `data`, si existen.
 
-La matriz de detalle se genera a partir de la matriz/APU propia presentada por cada contratista.
+Bloques esperados:
 
-No se debe usar `data/construdata_matrices.xlsx` para generar el Detalle del contratista.
+- Partida principal
+- Materiales
+- Subtotal materiales
+- Mano de obra
+- Subtotal mano de obra
+- Equipo y herramienta
+- Subtotal equipo y herramienta
+- Sección financiera
+- Costo directo
+- Costo indirecto
+- Total costo unitario
+- Total por servicio
 
-Para el Detalle del contratista se usan:
+Columnas canónicas:
 
-- `data/construdata-materiales-052026.xlsx`
-- `data/construdata-manodeobra-052026.xlsx`
-- `data/construdata-manodeobra-052026-2.xlsx`
-- `data/construdata-manodeobra-052026-3.xlsx`
-- `data/construdata-maquinaria-052026.xlsx`
-- Archivos auxiliares de porcentajes/parámetros, cuando existan.
+- Código
+- Concepto / insumo
+- Unidad
+- P. Unitario
+- Op.
+- Cantidad
+- Importe
+- %
+- Separador visual
+- Mercado P.U.
+- Op. referencia
+- Cantidad referencia
+- Mercado importe
+- Alerta / regla
 
-`data/construdata_matrices.xlsx` aplica al módulo independiente de presupuesto base.
+## Qué NO debe hacerse
 
-## 5. Operadores
+- No copiar literalmente la matriz completa del archivo histórico.
+- No copiar el tema negro ni colores de fuente del archivo histórico.
+- No usar `construdata_matrices.xlsx` para el detalle de contratistas.
+- No tratar el archivo histórico como fuente de verdad visual.
 
-El motor debe conservar los operadores históricos:
+## Qué SÍ debe hacerse
 
-- `*`: cantidad directa multiplicada por precio unitario.
-- `/`: rendimiento inverso o consumo calculado por división.
-- `%`: porcentaje aplicado sobre una base.
+- Usar el archivo histórico para entender la estructura conceptual de `Comparativa` y `Detalle`.
+- Generar una salida limpia y ejecutiva.
+- Mantener fórmulas trazables.
+- Separar claramente datos del contratista vs referencias de mercado.
+- Dejar visible la regla con la que se obtuvo cada comparación.
 
-## 6. Porcentajes especiales
+## Iteración profesional del Excel
 
-Deben soportarse porcentajes como:
+La versión profesional del reporte queda diseñada como un entregable ejecutivo y técnico, no como una copia visual del Excel histórico.
 
-- Herramienta menor.
-- EPP / equipo de protección personal.
-- Andamios.
-- Indirectos.
-- Financiamiento.
-- Utilidad.
-- Otros porcentajes definidos por familia o sección.
+### Hojas del reporte de comparación
 
-## 7. Regla canónica
+1. **Resumen Ejecutivo**: KPIs, ranking, hallazgos y navegación interna.
+2. **Comparativa**: tabla económica principal normalizada, filtrable y auditable.
+3. **Detalle APU**: reconstrucción ordenada de la matriz/APU del contratista, generada desde su propio archivo y enriquecida con referencias granulares de `data`.
+4. **Partidas Críticas**: priorización de revisión por impacto económico y desviación.
+5. **Insumos Críticos**: materiales, mano de obra, maquinaria y porcentajes que explican variaciones.
+6. **Validaciones**: bitácora de alertas e inconsistencias.
+7. **Parámetros**: trazabilidad del análisis, fuentes, reglas y limitaciones.
+8. **Análisis IA**: narrativa ejecutiva sobre datos calculados.
 
-El tab `Comparativa` resume el resultado económico por partida.
+### Reglas visuales
 
-El tab `Detalle` explica cómo se construye cada precio unitario desde la matriz/APU del contratista, enriquecida con referencias de mercado granular desde `data`.
+- Fondo blanco, limpio y profesional.
+- Encabezados sobrios en azul corporativo.
+- Tablas estructuradas con filtros.
+- Congelamiento de encabezados.
+- Formatos de moneda y porcentaje.
+- Barras de datos para impacto económico.
+- Escalas de color suaves para desviación.
+- Estados de revisión con validación de datos.
+- Hipervínculos internos desde Resumen Ejecutivo.
+
+### Regla canónica del Detalle APU
+
+El tab `Detalle APU` no se genera copiando una matriz Construdata ni pegando una matriz histórica completa. En V1, el motor debe:
+
+1. Leer la matriz/APU propia del contratista.
+2. Detectar bloques: materiales, mano de obra, maquinaria/equipo, porcentajes y sección financiera.
+3. Cruzar cada insumo contra referencias granulares de `data`.
+4. Calcular diferencias, desviaciones, alertas y reconciliación contra la `Comparativa`.

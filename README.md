@@ -58,3 +58,18 @@ Conectar los motores reales de parsing/cálculo por etapas, manteniendo esta sep
 - Presupuesto base: conceptos ingeniería + matrices Construdata.
 - Detalle APU contratista: matriz contratista + materiales/MO/maquinaria/porcentajes desde `data`.
 - Comparador: ranking, desviaciones, KPIs y hallazgos.
+
+## Actualización Excel profesional
+
+La V0 ahora incluye un generador de Excel profesional para `/api/reports/comparison` con hojas ejecutivas y técnicas:
+
+- Resumen Ejecutivo
+- Comparativa
+- Detalle APU
+- Partidas Críticas
+- Insumos Críticos
+- Validaciones
+- Parámetros
+- Análisis IA
+
+El diseño es limpio y profesional. El archivo histórico se usa únicamente como referencia funcional, no visual. El tab `Detalle APU` queda modelado como reconstrucción desde la matriz/APU del contratista + referencias granulares de `data`.
