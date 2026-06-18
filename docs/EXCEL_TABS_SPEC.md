@@ -71,3 +71,13 @@ La V1 debe leer esta base desde el archivo real del contratista. La V0 lo modela
   - `% SOBRE DIRECTO+IND` aplica al costo directo más indirectos.
 - `construdata_matrices.xlsx` no participa en la generación del detalle de contratistas.
 - El detalle de contratistas se enriquece con referencias granulares desde `data`: materiales, mano de obra, maquinaria y porcentajes.
+
+
+## Ajuste V0.5 - Carga por proveedor y nombres canónicos
+
+- Para comparativas, cada proveedor debe registrar un nombre visible de máximo 10 caracteres.
+- Ese nombre se propaga a resúmenes, hoja Comparativa y hojas Detalle.
+- Cada proveedor debe cargar dos archivos `.xlsx`: catálogo/listado de conceptos y matriz/APU.
+- La hoja Comparativa puede ser horizontal por proveedor.
+- El Detalle no puede ser horizontal común: se genera una hoja independiente por proveedor porque cada matriz/APU puede tener estructura distinta.
+- Los nombres genéricos de demo solo aplican cuando no se envían nombres desde la UI; no representan homologación real de contratistas.

@@ -52,9 +52,9 @@ const mockBaseBudgets = [
   {id:'BB-2026-0002', name:'Presupuesto ampliación bodega', user:'Administrador Demo', total:88400000, concepts:211, status:'Completado', risk:'Bajo', date:'14/06/2026'},
 ];
 const mockRuns = [
-  {id:'RUN-2026-0145', name:'Comparativo Sucursal Norte', user:'Analista Demo', type:'Múltiples contratistas', contractors:3, status:'Completa', risk:'Amarillo', date:'17/06/2026'},
-  {id:'RUN-2026-0141', name:'Propuesta individual Planta A', user:'Analista Demo', type:'Un contratista', contractors:1, status:'Completa', risk:'Rojo', date:'15/06/2026'},
-  {id:'RUN-2026-0137', name:'Validación preliminar', user:'Administrador Demo', type:'Múltiples contratistas', contractors:4, status:'Fallida', risk:'N/A', date:'10/06/2026'},
+  {id:'RUN-2026-0145', name:'Comparativo Sucursal Norte', user:'Analista Demo', type:'Múltiples proveedors', contractors:3, status:'Completa', risk:'Amarillo', date:'17/06/2026'},
+  {id:'RUN-2026-0141', name:'Propuesta individual Planta A', user:'Analista Demo', type:'Un proveedor', contractors:1, status:'Completa', risk:'Rojo', date:'15/06/2026'},
+  {id:'RUN-2026-0137', name:'Validación preliminar', user:'Administrador Demo', type:'Múltiples proveedors', contractors:4, status:'Fallida', risk:'N/A', date:'10/06/2026'},
 ];
 
 function money(n){return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(n)}
@@ -134,85 +134,96 @@ function shell(content, title='Plataforma APU'){
 function landing(){
   $('#app').innerHTML = `<div class="public marketing">
     <nav class="nav landing-nav">
-      <div class="brand"><div class="logo">Q</div><div><h1>Quantia APU</h1><p>Inteligencia aplicada a presupuestos y precios unitarios</p></div></div>
-      <div class="landing-links"><a href="#capabilities">Capacidades</a><a href="#workflow">Flujo</a><a href="#deliverables">Entregables</a></div>
+      <div class="brand"><div class="logo">Q</div><div><h1>Quantia APU</h1><p>Presupuestos, mercado y APU con inteligencia artificial</p></div></div>
+      <div class="landing-links"><a href="#market">Mercado</a><a href="#budgets">Presupuestos</a><a href="#workflow">Flujo</a><a href="#deliverables">Entregables</a></div>
       <div class="actions"><button class="btn btn-secondary" data-theme-toggle>${state.theme==='dark'?'Tema claro':'Tema oscuro'}</button><button class="btn btn-primary" data-nav="login">Iniciar sesión</button></div>
     </nav>
 
     <section class="landing-hero">
       <div class="hero-copy">
-        <div class="eyebrow"><span></span> Plataforma profesional para análisis APU con IA</div>
-        <h2>Convierte propuestas de obra en decisiones económicas trazables.</h2>
-        <p class="lead">Quantia APU estructura conceptos, matrices, insumos y referencias de mercado para entregar comparativos claros, detalles auditables y hallazgos ejecutivos apoyados por inteligencia artificial.</p>
-        <div class="hero-actions"><button class="btn btn-primary" data-nav="login">Explorar plataforma</button><button class="btn btn-secondary" onclick="document.getElementById('workflow').scrollIntoView({behavior:'smooth'})">Ver cómo funciona</button></div>
-        <div class="trust-strip"><span>Presupuesto base independiente</span><span>Comparativo multi-proveedor</span><span>Detalle APU por contratista</span><span>Excel ejecutivo</span></div>
+        <div class="eyebrow"><span></span> Comparativa de mercado con referencias Construdata e IA</div>
+        <h2>Presupuesta, compara y negocia precios unitarios con evidencia de mercado.</h2>
+        <p class="lead">Quantia APU convierte catálogos de conceptos, propuestas de proveedores y matrices APU en un análisis económico claro: presupuestos base, comparativas contra mercado, detalle técnico por proveedor y recomendaciones ejecutivas generadas con apoyo de IA.</p>
+        <div class="hero-actions"><button class="btn btn-primary" data-nav="login">Explorar plataforma</button><button class="btn btn-secondary" onclick="document.getElementById('market').scrollIntoView({behavior:'smooth'})">Ver valor de mercado</button></div>
+        <div class="trust-strip"><span>Referencias Construdata</span><span>Presupuesto desde conceptos base</span><span>Comparativa multi-proveedor</span><span>Detalle APU auditado</span></div>
       </div>
       <div class="product-showcase" aria-label="Vista previa del sistema">
         <div class="showcase-top"><span></span><span></span><span></span></div>
-        <div class="score-card large"><label>Riesgo global</label><strong>Amarillo</strong><small>5 partidas concentran el mayor impacto económico</small></div>
+        <div class="score-card large"><label>Desviación contra mercado</label><strong>+8.7%</strong><small>La propuesta supera la referencia en partidas de alto impacto.</small></div>
         <div class="mini-dashboard">
-          <div><label>Mejor oferta</label><strong>$1.180M</strong></div>
-          <div><label>Desviación ref.</label><strong>+8.7%</strong></div>
-          <div><label>Matches data</label><strong>86%</strong></div>
+          <div><label>Presupuesto base</label><strong>$56.5M</strong></div>
+          <div><label>Cobertura ref.</label><strong>86%</strong></div>
+          <div><label>Partidas críticas</label><strong>18</strong></div>
         </div>
         <div class="chart-card"><div class="bar b1"></div><div class="bar b2"></div><div class="bar b3"></div><div class="bar b4"></div></div>
-        <div class="ai-note"><strong>IA de análisis</strong><p>Detecta patrones, explica desviaciones y prioriza negociación sin reemplazar los cálculos determinísticos.</p></div>
+        <div class="ai-note"><strong>IA sobre datos calculados</strong><p>Resume desviaciones, explica causas probables y prioriza partidas para revisión sin reemplazar la trazabilidad numérica.</p></div>
       </div>
     </section>
 
     <section class="landing-section problem-section">
-      <div class="section-head"><span class="section-kicker">El problema</span><h3>Los comparativos tradicionales esconden riesgo en hojas difíciles de leer.</h3><p>Cuando cada contratista presenta conceptos y matrices con estructuras distintas, el análisis manual termina siendo lento, poco trazable y difícil de defender ante gerencia, compras o ingeniería.</p></div>
+      <div class="section-head"><span class="section-kicker">El reto</span><h3>Una oferta baja no siempre es competitiva; una oferta alta no siempre está mal justificada.</h3><p>La decisión correcta exige mirar cada concepto contra referencias de mercado, entender la composición de su APU y detectar qué insumos, rendimientos o porcentajes explican la diferencia.</p></div>
       <div class="pain-grid">
-        <div class="pain-card"><strong>Propuestas no homogéneas</strong><p>Conceptos, unidades y matrices llegan con formatos distintos y criterios no siempre comparables.</p></div>
-        <div class="pain-card"><strong>Sobrecostos difíciles de explicar</strong><p>El monto total no basta: se necesita entender qué partida, insumo o porcentaje genera la desviación.</p></div>
-        <div class="pain-card"><strong>Excel sin narrativa</strong><p>La información técnica debe convertirse en recomendaciones claras, priorizadas y auditables.</p></div>
+        <div class="pain-card"><strong>Mercado disperso</strong><p>Los precios unitarios cambian por alcance, ciudad, rendimiento, disponibilidad e insumos. El sistema ayuda a comparar contra referencias Construdata y archivos de mercado.</p></div>
+        <div class="pain-card"><strong>Catálogos incompletos</strong><p>Antes de licitar, los equipos técnicos necesitan convertir conceptos base en un presupuesto defendible, con partidas en revisión y conceptos sin match.</p></div>
+        <div class="pain-card"><strong>APU difíciles de auditar</strong><p>Cada proveedor puede presentar una matriz distinta. El detalle debe respetar su estructura y mostrar la comparación contra materiales, mano de obra y maquinaria de referencia.</p></div>
+      </div>
+    </section>
+
+    <section id="market" class="landing-section ai-section">
+      <div class="ai-gradient"><span class="section-kicker">Comparativa de mercado</span><h3>Evalúa propuestas contra valores de referencia Construdata y detecta desviaciones con impacto real.</h3><p>El análisis no se queda en el monto total. La plataforma cruza precios unitarios, importes, insumos y porcentajes contra referencias disponibles en data para identificar sobrecostos, partidas sin referencia, unidades dudosas y oportunidades de negociación.</p><div class="ai-pill-row"><span>Materiales de referencia</span><span>Mano de obra</span><span>Maquinaria y equipo</span><span>Porcentajes aplicados</span><span>Impacto económico</span></div></div>
+    </section>
+
+    <section id="budgets" class="landing-section">
+      <div class="section-head"><span class="section-kicker">Presupuestos base</span><h3>Genera presupuestos desde un catálogo de conceptos base creado por ingeniería.</h3><p>Cuando aún no existe licitación, Quantia APU permite tomar un archivo de conceptos base, cruzarlo contra matrices Construdata y producir un presupuesto inicial para estimar costo, revisar alcance y preparar mejor la salida a mercado.</p></div>
+      <div class="capability-grid">
+        <article class="capability-card accent-blue"><div class="cap-icon">01</div><h4>Catálogo de conceptos base</h4><p>Parte del archivo elaborado por ingeniería con conceptos, unidades y cantidades del proyecto.</p><ul><li>Conceptos técnicos</li><li>Unidades y cantidades</li><li>Observaciones de alcance</li></ul></article>
+        <article class="capability-card accent-green"><div class="cap-icon">02</div><h4>Matrices Construdata</h4><p>Busca equivalencias y referencias para estimar precios unitarios base de forma trazable.</p><ul><li>Matches por concepto</li><li>Partidas sin referencia</li><li>Confianza del cruce</li></ul></article>
+        <article class="capability-card accent-purple"><div class="cap-icon">03</div><h4>Presupuesto estimado</h4><p>Genera una línea base económica para validar alcance, rangos y rubros principales antes de cotizar.</p><ul><li>Monto total base</li><li>Distribución por familias</li><li>Conceptos en revisión</li></ul></article>
+        <article class="capability-card accent-orange"><div class="cap-icon">04</div><h4>Salida ejecutiva</h4><p>Entrega un Excel limpio y un resumen para revisar, ajustar y usar como soporte técnico.</p><ul><li>Resumen ejecutivo</li><li>Matriz presupuestada</li><li>Alertas de consistencia</li></ul></article>
       </div>
     </section>
 
     <section id="capabilities" class="landing-section">
-      <div class="section-head"><span class="section-kicker">Capacidades</span><h3>Un sistema diseñado para separar procesos, no mezclarlos.</h3><p>Cada módulo responde a un objetivo distinto y conserva la trazabilidad de los archivos, referencias y resultados usados.</p></div>
+      <div class="section-head"><span class="section-kicker">Capacidades</span><h3>Un sistema para presupuestar, comparar y explicar diferencias económicas.</h3><p>La solución separa el presupuesto base independiente de la comparación de propuestas, pero mantiene una misma lógica de trazabilidad, referencias y análisis ejecutivo.</p></div>
       <div class="capability-grid">
-        <article class="capability-card accent-blue"><div class="cap-icon">01</div><h4>Presupuesto base</h4><p>Módulo independiente para generar presupuestos desde conceptos de ingeniería y matrices Construdata disponibles en data.</p><ul><li>Conceptos base</li><li>Match contra referencia</li><li>Estimación previa a licitar</li></ul></article>
-        <article class="capability-card accent-green"><div class="cap-icon">02</div><h4>Comparador de propuestas</h4><p>Evalúa una propuesta individual o múltiples proveedores sin exigir presupuesto base previo.</p><ul><li>Ranking económico</li><li>Desviaciones por partida</li><li>Semáforos de riesgo</li></ul></article>
-        <article class="capability-card accent-purple"><div class="cap-icon">03</div><h4>Detalle APU por contratista</h4><p>Reconstruye el detalle desde la matriz propia del contratista y cruza insumos contra referencias granulares.</p><ul><li>Materiales</li><li>Mano de obra</li><li>Maquinaria y porcentajes</li></ul></article>
-        <article class="capability-card accent-orange"><div class="cap-icon">04</div><h4>IA ejecutiva</h4><p>Transforma cálculos y validaciones en hallazgos, causas probables y preguntas de negociación.</p><ul><li>Hallazgos</li><li>Recomendaciones</li><li>Prioridades de revisión</li></ul></article>
+        <article class="capability-card accent-blue"><div class="cap-icon">A</div><h4>Presupuesto base independiente</h4><p>Conceptos de ingeniería + matrices Construdata para obtener una estimación previa.</p><ul><li>No depende de una licitación</li><li>Puede ejecutarse solo</li><li>Genera línea base</li></ul></article>
+        <article class="capability-card accent-green"><div class="cap-icon">B</div><h4>Comparador de propuestas</h4><p>Analiza uno o varios proveedores, mostrando diferencias contra mercado y entre ofertas.</p><ul><li>Formato multi-proveedor</li><li>Ranking económico</li><li>Partidas críticas</li></ul></article>
+        <article class="capability-card accent-purple"><div class="cap-icon">C</div><h4>Detalle APU por proveedor</h4><p>Cada matriz se analiza en su propia hoja porque no todos los proveedores declaran la misma estructura.</p><ul><li>Materiales</li><li>Mano de obra</li><li>Maquinaria y porcentajes</li></ul></article>
+        <article class="capability-card accent-orange"><div class="cap-icon">D</div><h4>IA ejecutiva</h4><p>Transforma cálculos y validaciones en hallazgos, riesgos y preguntas de negociación.</p><ul><li>Causas probables</li><li>Recomendaciones</li><li>Prioridades</li></ul></article>
       </div>
     </section>
 
     <section id="workflow" class="landing-section split-section">
       <div>
         <span class="section-kicker">Flujo operativo</span>
-        <h3>De archivos XLSX a un análisis económico listo para decisión.</h3>
-        <p>El usuario registra cada proveedor con nombre visible, archivo de conceptos y archivo matriz/APU. El sistema valida, normaliza, compara y genera reportes profesionales sin perder el origen de cada dato.</p>
-        <div class="flow-list"><div><b>1</b><span>Cargar conceptos y matriz/APU por proveedor</span></div><div><b>2</b><span>Validar estructura, unidades, importes y referencias</span></div><div><b>3</b><span>Calcular KPIs, impactos, desviaciones y alertas</span></div><div><b>4</b><span>Generar Excel ejecutivo con detalle técnico por contratista</span></div></div>
+        <h3>De archivos XLSX a una lectura económica clara, comparable y defendible.</h3>
+        <p>Para cada proveedor se registra un nombre corto, su catálogo de conceptos y su matriz/APU. El sistema conserva el origen de cada archivo, valida la estructura y genera comparativos profesionales contra mercado.</p>
+        <div class="flow-list"><div><b>1</b><span>Crear presupuesto base desde conceptos o iniciar comparación</span></div><div><b>2</b><span>Cargar por proveedor: nombre, conceptos XLSX y matriz/APU XLSX</span></div><div><b>3</b><span>Comparar precios, importes, insumos y porcentajes contra data de mercado</span></div><div><b>4</b><span>Generar Excel ejecutivo, detalle por proveedor y hallazgos IA</span></div></div>
       </div>
       <div class="workflow-panel">
-        <div class="workflow-row active"><span>Proveedor A</span><strong>Conceptos.xlsx + Matriz_APU.xlsx</strong></div>
-        <div class="workflow-row"><span>Proveedor B</span><strong>Conceptos.xlsx + Matriz_APU.xlsx</strong></div>
-        <div class="workflow-row"><span>Referencias data</span><strong>Materiales · MO · Maquinaria</strong></div>
-        <div class="workflow-result"><strong>Resultado</strong><p>Comparativa horizontal + detalle independiente por contratista.</p></div>
+        <div class="workflow-row active"><span>Conceptos base</span><strong>Presupuesto previo con Construdata</strong></div>
+        <div class="workflow-row"><span>Proveedor 1</span><strong>Conceptos.xlsx + Matriz_APU.xlsx</strong></div>
+        <div class="workflow-row"><span>Proveedor 2</span><strong>Conceptos.xlsx + Matriz_APU.xlsx</strong></div>
+        <div class="workflow-row"><span>Referencias</span><strong>Materiales · MO · Maquinaria · %</strong></div>
+        <div class="workflow-result"><strong>Resultado</strong><p>Comparativa horizontal + detalle independiente por proveedor + análisis de mercado.</p></div>
       </div>
     </section>
 
     <section class="landing-section ai-section">
-      <div class="ai-gradient"><span class="section-kicker">Capa IA</span><h3>Inteligencia artificial con límites claros y resultados auditables.</h3><p>La IA no inventa precios ni reemplaza fórmulas. Opera sobre datos calculados para explicar desviaciones, resumir riesgos, priorizar partidas e identificar preguntas concretas para el contratista.</p><div class="ai-pill-row"><span>Explicación de sobrecostos</span><span>Priorización de negociación</span><span>Lectura ejecutiva</span><span>Alertas de consistencia</span></div></div>
+      <div class="ai-gradient"><span class="section-kicker">Capa IA</span><h3>IA para explicar, no para inventar.</h3><p>La plataforma calcula con reglas determinísticas y usa IA para interpretar resultados: qué partidas concentran riesgo, qué insumos explican el sobrecosto, qué debe revisarse primero y qué preguntas conviene hacer al proveedor.</p><div class="ai-pill-row"><span>Explicación de sobrecostos</span><span>Priorización de negociación</span><span>Resumen ejecutivo</span><span>Alertas de consistencia</span></div></div>
     </section>
 
     <section id="deliverables" class="landing-section deliverables-section">
-      <div class="section-head"><span class="section-kicker">Entregables</span><h3>Excel profesional, tablero web e historial trazable.</h3><p>El sistema explota Excel como una interfaz de análisis, no como un simple archivo de descarga.</p></div>
+      <div class="section-head"><span class="section-kicker">Entregables</span><h3>Excel profesional y resultados diseñados para revisión técnica y decisión ejecutiva.</h3><p>El Excel se aprovecha como una interfaz de análisis: limpio, ordenado, filtrable y con la separación correcta entre comparativa general y detalle técnico.</p></div>
       <div class="deliverable-grid">
-        <div class="deliverable-card"><strong>Resumen Ejecutivo</strong><p>KPIs, semáforos, ranking y hallazgos principales en una vista clara.</p></div>
-        <div class="deliverable-card"><strong>Comparativa</strong><p>Vista horizontal por proveedor para comparar precio unitario, importe, participación y mercado.</p></div>
-        <div class="deliverable-card"><strong>Detalle por contratista</strong><p>Una hoja independiente por matriz/APU, respetando que cada proveedor puede declarar estructuras distintas.</p></div>
-        <div class="deliverable-card"><strong>Validaciones</strong><p>Inconsistencias, unidades dudosas, insumos sin referencia y alertas de cálculo.</p></div>
+        <div class="deliverable-card"><strong>Resumen Ejecutivo</strong><p>KPIs, semáforos, ranking, cobertura de referencias y principales hallazgos.</p></div>
+        <div class="deliverable-card"><strong>Comparativa</strong><p>Vista horizontal por proveedor para comparar P.U., importe, participación y mercado.</p></div>
+        <div class="deliverable-card"><strong>Detalle por proveedor</strong><p>Una hoja independiente por matriz/APU, respetando su estructura y sus porcentajes declarados.</p></div>
+        <div class="deliverable-card"><strong>Validaciones</strong><p>Insumos sin referencia, unidades dudosas, diferencias de cálculo y partidas para revisión.</p></div>
       </div>
     </section>
 
-    <section class="landing-section governance-section">
-      <div class="governance-card"><span class="section-kicker">Gobierno y seguridad</span><h3>Roles, historial y trazabilidad desde la primera versión.</h3><p>Super Administrador, Administrador y Analista trabajan con visibilidad diferenciada. Cada corrida queda asociada a usuario, archivos, fecha, tipo de análisis y resultado generado.</p><div class="governance-list"><span>Usuarios y roles</span><span>Historial por perfil</span><span>Historial global</span><span>Referencias data</span></div></div>
-    </section>
-
-    <section class="landing-cta"><h3>Menos tiempo armando hojas. Más claridad para decidir.</h3><p>Una plataforma para convertir propuestas técnicas y matrices APU en información económica comparable, explicable y lista para negociación.</p><button class="btn btn-primary" data-nav="login">Iniciar análisis</button></section>
+    <section class="landing-cta"><h3>Presupuestos más sólidos. Comparativos más claros. Negociaciones mejor sustentadas.</h3><p>Una plataforma para explotar referencias Construdata, catálogos base y matrices APU con una capa de IA que convierte datos técnicos en decisiones económicas.</p><button class="btn btn-primary" data-nav="login">Iniciar análisis</button></section>
   </div>`;
 }
 
@@ -264,10 +275,10 @@ function renderFileList(list, files){ list.innerHTML = files.length ? files.map(
 
 function ensureContractorCount(){
   const min = state.comparisonMode === 'SINGLE' ? 1 : 2;
-  if (!state.comparisonContractors.length) state.comparisonContractors = [{ id: Date.now(), name: 'Proveedor A', conceptsFile: null, matrixFile: null }];
+  if (!state.comparisonContractors.length) state.comparisonContractors = [{ id: Date.now(), name: 'PROV-A', conceptsFile: null, matrixFile: null }];
   while (state.comparisonContractors.length < min) {
     const idx = state.comparisonContractors.length + 1;
-    state.comparisonContractors.push({ id: Date.now() + idx, name: `Proveedor ${String.fromCharCode(64+idx)}`, conceptsFile: null, matrixFile: null });
+    state.comparisonContractors.push({ id: Date.now() + idx, name: `PROV-${String.fromCharCode(64+idx)}`, conceptsFile: null, matrixFile: null });
   }
   if (state.comparisonMode === 'SINGLE' && state.comparisonContractors.length > 1) state.comparisonContractors = state.comparisonContractors.slice(0,1);
 }
@@ -276,18 +287,26 @@ function xlsxStatus(file){
   if (!file) return '<span class="badge warn">Pendiente</span>';
   return `<span class="badge ${file.name.toLowerCase().endsWith('.xlsx')?'ok':'bad'}">${file.name.toLowerCase().endsWith('.xlsx')?'Válido':'No permitido'}</span>`;
 }
+function shortProviderName(name){ return String(name || '').trim().slice(0,10); }
+function providerNamesParam(){
+  const min = state.comparisonMode === 'SINGLE' ? 1 : 2;
+  const active = state.comparisonContractors.slice(0, state.comparisonMode === 'SINGLE' ? 1 : state.comparisonContractors.length);
+  return encodeURIComponent(active.map((c,i)=> shortProviderName(c.name) || `Prov ${i+1}`).join(','));
+}
+function reportUrl(){ return `/api/reports/comparison?providers=${providerNamesParam()}`; }
 
 function contractorCard(c, idx){
   const canRemove = state.comparisonMode === 'MULTI' && state.comparisonContractors.length > 2;
   return `<div class="contractor-card card" data-contractor="${c.id}">
     <div class="contractor-card-head">
-      <div><h3>Contratista ${idx + 1}</h3><p>Nombre visible en dashboard, resúmenes y Excel.</p></div>
+      <div><h3>Proveedor ${idx + 1}</h3><p>Registra nombre corto, catálogo de conceptos y matriz/APU.</p></div>
       ${canRemove ? `<button class="btn btn-danger" data-remove-contractor="${c.id}">Eliminar</button>` : ''}
     </div>
     <div class="form-grid three">
       <div>
-        <label class="label">Nombre del contratista</label>
-        <input class="input" data-contractor-name="${c.id}" value="${c.name || ''}" placeholder="Ej. Proveedor ABC / Contratista Norte">
+        <label class="label">Nombre corto proveedor <span class="muted small">máx. 10 caracteres</span></label>
+        <input class="input" maxlength="10" data-contractor-name="${c.id}" value="${shortProviderName(c.name) || ''}" placeholder="Ej. PROV-A">
+        <div class="small muted">${shortProviderName(c.name).length}/10 · Este nombre aparecerá en Excel.</div>
       </div>
       <div>
         <label class="label">Archivo de conceptos .xlsx</label>
@@ -314,7 +333,7 @@ function contractorCard(c, idx){
 function bindContractorInputs(){
   $$('[data-contractor-name]').forEach(input => input.oninput = () => {
     const c = state.comparisonContractors.find(x => String(x.id) === String(input.dataset.contractorName));
-    if (c) c.name = input.value;
+    if (c) { input.value = shortProviderName(input.value); c.name = input.value; }
   });
   $$('[data-pick-concepts]').forEach(el => el.onclick = () => $(`#concepts-${el.dataset.pickConcepts}`).click());
   $$('[data-pick-matrix]').forEach(el => el.onclick = () => $(`#matrix-${el.dataset.pickMatrix}`).click());
@@ -335,13 +354,13 @@ function bindContractorInputs(){
   const add = $('#addContractor');
   if (add) add.onclick = () => {
     const idx = state.comparisonContractors.length + 1;
-    state.comparisonContractors.push({ id: Date.now(), name: `Proveedor ${String.fromCharCode(64+idx)}`, conceptsFile: null, matrixFile: null });
+    state.comparisonContractors.push({ id: Date.now(), name: `PROV-${String.fromCharCode(64+idx)}`, conceptsFile: null, matrixFile: null });
     render();
   };
 }
 
 function baseBudgetsNew(){
-  shell(`${pageHead('Nuevo presupuesto base', 'Crear presupuesto independiente desde archivo de conceptos de ingeniería y matrices Construdata en data.', `<button class="btn btn-secondary" data-nav="base-budgets">Volver</button>`)}<div class="stepper"><span class="step active">1 Datos</span><span class="step active">2 Carga .xlsx</span><span class="step">3 Match Construdata</span><span class="step">4 Resultado</span></div><div class="grid cols-2"><div class="card"><h3>Datos del presupuesto</h3><div class="form-grid"><div><label class="label">Nombre</label><input class="input" value="Presupuesto base Sucursal Norte"></div><div><label class="label">Cliente / Obra</label><input class="input" value="Cliente A / Obra Civil 2026"></div><div><label class="label">Fuente Construdata detectada</label><input class="input" value="data/construdata_matrices.xlsx" readonly></div></div></div><div class="card"><h3>Archivo de conceptos de ingeniería</h3><p>Este módulo no requiere contratistas ni licitación.</p>${filePicker('baseFiles', false)}<div class="actions" style="margin-top:16px"><button id="runBase" class="btn btn-primary">Generar presupuesto base mock</button></div></div></div><div class="callout" style="margin-top:16px"><strong>Separación clave:</strong> este flujo usa <span class="mono">construdata_matrices.xlsx</span>. El detalle APU de contratistas usa materiales/MO/maquinaria desde data y no busca matrices Construdata.</div>`, 'Nuevo presupuesto base');
+  shell(`${pageHead('Nuevo presupuesto base', 'Crear presupuesto independiente desde archivo de conceptos de ingeniería y matrices Construdata en data.', `<button class="btn btn-secondary" data-nav="base-budgets">Volver</button>`)}<div class="stepper"><span class="step active">1 Datos</span><span class="step active">2 Carga .xlsx</span><span class="step">3 Match Construdata</span><span class="step">4 Resultado</span></div><div class="grid cols-2"><div class="card"><h3>Datos del presupuesto</h3><div class="form-grid"><div><label class="label">Nombre</label><input class="input" value="Presupuesto base Sucursal Norte"></div><div><label class="label">Cliente / Obra</label><input class="input" value="Cliente A / Obra Civil 2026"></div><div><label class="label">Fuente Construdata detectada</label><input class="input" value="data/construdata_matrices.xlsx" readonly></div></div></div><div class="card"><h3>Archivo de conceptos de ingeniería</h3><p>Este módulo no requiere proveedors ni licitación.</p>${filePicker('baseFiles', false)}<div class="actions" style="margin-top:16px"><button id="runBase" class="btn btn-primary">Generar presupuesto base mock</button></div></div></div><div class="callout" style="margin-top:16px"><strong>Separación clave:</strong> este flujo usa <span class="mono">construdata_matrices.xlsx</span>. El detalle APU de proveedors usa materiales/MO/maquinaria desde data y no busca matrices Construdata.</div>`, 'Nuevo presupuesto base');
   bindPicker('baseFiles','baseUploadFiles');
   $('#runBase').onclick = async () => {
     if (!state.baseUploadFiles.length) { alert('Carga un archivo .xlsx de conceptos de ingeniería.'); return; }
@@ -355,35 +374,36 @@ function baseBudgetResult(){
 }
 
 function comparisons(){
-  shell(`${pageHead('Comparador', 'Comparar propuesta individual o múltiples contratistas. El presupuesto base es opcional.', `<button class="btn btn-primary" data-nav="comparison-new">Nueva comparación</button>`)}${kpis([{label:'Corridas',value:'3',text:'Historial demo'}, {label:'Mejor oferta',value:money(1180000),text:'Última corrida'}, {label:'Partidas críticas',value:'18',text:'Último análisis'}, {label:'Riesgo global',value:'Amarillo',text:'Última corrida'}])}<div style="margin-top:16px">${table(['ID','Proyecto','Tipo','Contratistas','Estado','Riesgo','Acciones'], mockRuns.map(r=>[r.id,r.name,r.type,r.contractors,`<span class="badge ${r.status==='Fallida'?'bad':'ok'}">${r.status}</span>`,r.risk,`<button class="btn btn-secondary" data-nav="comparison-results">Ver</button>`]))}</div>`, 'Comparador');
+  shell(`${pageHead('Comparador', 'Comparar propuesta individual o múltiples proveedors. El presupuesto base es opcional.', `<button class="btn btn-primary" data-nav="comparison-new">Nueva comparación</button>`)}${kpis([{label:'Corridas',value:'3',text:'Historial demo'}, {label:'Mejor oferta',value:money(1180000),text:'Última corrida'}, {label:'Partidas críticas',value:'18',text:'Último análisis'}, {label:'Riesgo global',value:'Amarillo',text:'Última corrida'}])}<div style="margin-top:16px">${table(['ID','Proyecto','Tipo','Proveedors','Estado','Riesgo','Acciones'], mockRuns.map(r=>[r.id,r.name,r.type,r.contractors,`<span class="badge ${r.status==='Fallida'?'bad':'ok'}">${r.status}</span>`,r.risk,`<button class="btn btn-secondary" data-nav="comparison-results">Ver</button>`]))}</div>`, 'Comparador');
 }
 
 function comparisonNew(){
   ensureContractorCount();
   const min = state.comparisonMode === 'MULTI' ? 2 : 1;
   const contractorCards = state.comparisonContractors.map((c,i)=>contractorCard(c,i)).join('');
-  shell(`${pageHead('Nueva comparación', 'Por cada contratista carga dos archivos .xlsx: conceptos y matriz/APU. El nombre ingresado será el nombre visible en web y Excel.', `<button class="btn btn-secondary" data-nav="comparisons">Volver</button>`)}
+  shell(`${pageHead('Nueva comparación', 'Por cada proveedor carga dos archivos .xlsx: conceptos y matriz/APU. El nombre ingresado será el nombre visible en web y Excel.', `<button class="btn btn-secondary" data-nav="comparisons">Volver</button>`)}
   <div class="grid cols-2">
     <div class="card"><h3>Tipo de comparación</h3>
-      <div class="tabs"><button class="tab ${state.comparisonMode==='SINGLE'?'active':''}" data-mode="SINGLE">Un contratista</button><button class="tab ${state.comparisonMode==='MULTI'?'active':''}" data-mode="MULTI">Múltiples contratistas</button></div>
-      <p>${state.comparisonMode==='SINGLE'?'No se mostrará ranking económico; se analizará un contratista contra referencias disponibles.':'Se mostrará ranking económico y comparativa horizontal por proveedor.'}</p>
+      <div class="tabs"><button class="tab ${state.comparisonMode==='SINGLE'?'active':''}" data-mode="SINGLE">Un proveedor</button><button class="tab ${state.comparisonMode==='MULTI'?'active':''}" data-mode="MULTI">Múltiples proveedors</button></div>
+      <p>${state.comparisonMode==='SINGLE'?'No se mostrará ranking económico; se analizará un proveedor contra referencias disponibles.':'Se mostrará ranking económico y comparativa horizontal por proveedor.'}</p>
       <div class="form-grid" style="margin-top:14px"><div><label class="label">Proyecto</label><input class="input" value="Comparativo Sucursal Norte"></div><div><label class="label">Presupuesto base opcional</label><select class="select"><option>No usar presupuesto base</option><option>BB-2026-0001 · Sucursal Norte</option></select></div></div>
     </div>
-    <div class="card"><h3>Regla de carga</h3><p>Cada contratista debe tener su <strong>archivo de conceptos</strong> y su <strong>archivo matriz/APU</strong>. La matriz/APU alimenta su propio tab de detalle en el Excel.</p><div class="callout" style="margin-top:12px"><strong>Importante:</strong> no todos los contratistas tienen la misma matriz. Por eso el Excel genera un tab de detalle separado por contratista.</div></div>
+    <div class="card"><h3>Regla de carga</h3><p>Cada proveedor debe tener su <strong>catálogo de conceptos</strong> y su <strong>matriz/APU</strong>. La matriz/APU alimenta su propio tab de detalle en el Excel.</p><div class="callout" style="margin-top:12px"><strong>Importante:</strong> no todos los proveedors tienen la misma matriz. Por eso el Excel genera un tab de detalle separado por proveedor.</div></div>
   </div>
   <div class="contractor-list" style="margin-top:16px">${contractorCards}</div>
-  ${state.comparisonMode==='MULTI'?'<div class="actions" style="margin-top:14px"><button id="addContractor" class="btn btn-secondary">+ Agregar contratista</button></div>':''}
+  ${state.comparisonMode==='MULTI'?'<div class="actions" style="margin-top:14px"><button id="addContractor" class="btn btn-secondary">+ Agregar proveedor</button></div>':''}
   <div class="actions" style="margin-top:18px"><button id="runComparison" class="btn btn-primary">Validar y procesar mock</button></div>
-  <div class="callout" style="margin-top:16px"><strong>Detalle APU:</strong> por cada contratista se generará un tab propio usando su matriz/APU declarada + referencias granulares desde data. Los porcentajes se aplican según la base declarada en su archivo: materiales, MO, maquinaria, directo o directo + indirecto.</div>`, 'Nueva comparación');
+  <div class="callout" style="margin-top:16px"><strong>Detalle APU:</strong> por cada proveedor se generará un tab propio usando su matriz/APU declarada + referencias granulares desde data. Los porcentajes se aplican según la base declarada en su archivo: materiales, MO, maquinaria, directo o directo + indirecto.</div>`, 'Nueva comparación');
   $$('.tab').forEach(t=>t.onclick=()=>{state.comparisonMode=t.dataset.mode; ensureContractorCount(); render();});
   bindContractorInputs();
   $('#runComparison').onclick=()=>{
     ensureContractorCount();
     const required = state.comparisonMode==='MULTI'?2:1;
     const contractors = state.comparisonContractors.slice(0, required === 1 ? 1 : state.comparisonContractors.length);
-    if(contractors.length < required){alert(`Agrega mínimo ${required} contratista(s).`); return;}
-    const invalid = contractors.find(c => !c.name?.trim() || !c.conceptsFile || !c.matrixFile || !c.conceptsFile.name.toLowerCase().endsWith('.xlsx') || !c.matrixFile.name.toLowerCase().endsWith('.xlsx'));
-    if(invalid){alert('Cada contratista debe tener nombre, archivo de conceptos .xlsx y archivo matriz/APU .xlsx.'); return;}
+    if(contractors.length < required){alert(`Agrega mínimo ${required} proveedor(s).`); return;}
+    const invalid = contractors.find(c => !shortProviderName(c.name) || shortProviderName(c.name).length > 10 || !c.conceptsFile || !c.matrixFile || !c.conceptsFile.name.toLowerCase().endsWith('.xlsx') || !c.matrixFile.name.toLowerCase().endsWith('.xlsx'));
+    if(invalid){alert('Cada proveedor debe tener nombre corto de máximo 10 caracteres, archivo de conceptos .xlsx y archivo matriz/APU .xlsx.'); return;}
+    state.comparisonContractors = state.comparisonContractors.map(c => ({...c, name: shortProviderName(c.name)}));
     go('comparison-processing');
   };
 }
@@ -394,7 +414,9 @@ function comparisonProcessing(){
 
 function comparisonResults(){
   const multi = state.comparisonMode !== 'SINGLE';
-  shell(`${pageHead('Resultados de comparación', multi?'Ranking económico y tablero ejecutivo mock.':'Análisis individual sin ranking económico.', `<a class="btn btn-primary" href="/api/reports/comparison">Descargar Excel resultado</a><button class="btn btn-secondary" data-nav="matrix-detail">Ver detalle APU</button>`)}${kpis(multi?[{label:'Mejor oferta',value:money(1180000),text:'Contratista B'}, {label:'Riesgo global',value:'Amarillo',text:'Con advertencias'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Sin referencia',value:'14',text:'Catálogos granulares'}]:[{label:'Monto ofertado',value:money(1250000),text:'Contratista único'}, {label:'Desv. referencia',value:'+12.3%',text:'Sin ranking'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Semáforo',value:'Amarillo',text:'Riesgo medio'}])}<div class="grid cols-2" style="margin-top:16px"><div class="card"><h3>Hallazgos IA mock</h3><p>El sobrecosto se concentra en concreto, acero e instalaciones. Se recomienda revisar primero partidas con mayor impacto monetario, no solo las de mayor desviación porcentual.</p></div><div class="card"><h3>Recomendaciones</h3><p>Solicitar desglose APU, validar rendimientos, revisar precios de maquinaria fuera de referencia y negociar porcentajes superiores al rango esperado.</p></div></div><div style="margin-top:16px">${multi?table(['Ranking','Contratista','Monto','Dif vs menor','Desv. promedio','Semáforo','Acciones'], [['1','Contratista B',money(1180000),'0.0%','-7.8%','<span class="badge ok">Verde</span>','Ver detalle'],['2','Contratista A',money(1250000),'+5.9%','+2.4%','<span class="badge warn">Amarillo</span>','Ver detalle'],['3','Contratista C',money(1410000),'+19.5%','+14.3%','<span class="badge bad">Rojo</span>','Ver detalle']]):table(['Contratista','Monto','Desv. referencia','Partidas críticas','Semáforo','Observación'], [['Contratista A',money(1250000),'+12.3%','18','<span class="badge warn">Amarillo</span>','Sin ranking por ser análisis individual']])}</div><div style="margin-top:16px">${table(['Partida crítica','Contratista','PU ofertado','PU ref. data','Dif %','Impacto','Prioridad'], [['Concreto f\'c 250','Contratista C',money(2850000),money(2300000),'+24%',money(95000),'Alta'],['Acero refuerzo','Contratista A',money(42000),money(35000),'+20%',money(62000),'Alta'],['Luminarias LED','Contratista C',money(1200000),money(980000),'+22%',money(48000),'Media']])}</div>`, 'Resultados');
+  const names = state.comparisonContractors.map((c,i)=>shortProviderName(c.name)||`Prov ${i+1}`);
+  const n1 = names[0] || 'PROV-A', n2 = names[1] || 'PROV-B', n3 = names[2] || 'PROV-C';
+  shell(`${pageHead('Resultados de comparación', multi?'Ranking económico y tablero ejecutivo mock.':'Análisis individual sin ranking económico.', `<a class="btn btn-primary" href="${reportUrl()}">Descargar Excel resultado</a><button class="btn btn-secondary" data-nav="matrix-detail">Ver detalle APU</button>`)}${kpis(multi?[{label:'Mejor oferta',value:money(1180000),text:(state.comparisonContractors[1]?.name || state.comparisonContractors[0]?.name || 'Proveedor')}, {label:'Riesgo global',value:'Amarillo',text:'Con advertencias'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Sin referencia',value:'14',text:'Catálogos granulares'}]:[{label:'Monto ofertado',value:money(1250000),text:(state.comparisonContractors[0]?.name || 'Proveedor')}, {label:'Desv. referencia',value:'+12.3%',text:'Sin ranking'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Semáforo',value:'Amarillo',text:'Riesgo medio'}])}<div class="grid cols-2" style="margin-top:16px"><div class="card"><h3>Hallazgos IA mock</h3><p>El sobrecosto se concentra en concreto, acero e instalaciones. Se recomienda revisar primero partidas con mayor impacto monetario, no solo las de mayor desviación porcentual.</p></div><div class="card"><h3>Recomendaciones</h3><p>Solicitar desglose APU, validar rendimientos, revisar precios de maquinaria fuera de referencia y negociar porcentajes superiores al rango esperado.</p></div></div><div style="margin-top:16px">${multi?table(['Ranking','Proveedor','Monto','Dif vs menor','Desv. promedio','Semáforo','Acciones'], [['1',n2,money(1180000),'0.0%','-7.8%','<span class="badge ok">Verde</span>','Ver detalle'],['2',n1,money(1250000),'+5.9%','+2.4%','<span class="badge warn">Amarillo</span>','Ver detalle'],['3',n3,money(1410000),'+19.5%','+14.3%','<span class="badge bad">Rojo</span>','Ver detalle']]):table(['Proveedor','Monto','Desv. referencia','Partidas críticas','Semáforo','Observación'], [[n1,money(1250000),'+12.3%','18','<span class="badge warn">Amarillo</span>','Sin ranking por ser análisis individual']])}</div><div style="margin-top:16px">${table(['Partida crítica','Proveedor','PU ofertado','PU ref. data','Dif %','Impacto','Prioridad'], [['Concreto f\'c 250','Proveedor C',money(2850000),money(2300000),'+24%',money(95000),'Alta'],['Acero refuerzo',n1,money(42000),money(35000),'+20%',money(62000),'Alta'],['Luminarias LED',n3,money(1200000),money(980000),'+22%',money(48000),'Media']])}</div>`, 'Resultados');
 }
 
 function matrixDetail(){
@@ -406,7 +428,7 @@ function matrixDetail(){
     `Detalle - ${(c.name || `Proveedor ${i+1}`).substring(0,22)}`,
     '<span class="badge ok">Tab individual</span>'
   ]);
-  shell(`${pageHead('Detalle de matriz/APU por contratista', 'Cada contratista genera su propio tab de detalle porque su matriz/APU puede tener estructura diferente.', `<a class="btn btn-primary" href="/api/reports/comparison">Descargar Excel resultado</a>`)}${kpis([{label:'Materiales',value:'data',text:'construdata-materiales'}, {label:'Mano de obra',value:'3',text:'archivos detectados'}, {label:'Maquinaria',value:'data',text:'construdata-maquinaria'}, {label:'Detalle',value:'1 tab',text:'por contratista'}])}<div class="callout" style="margin-bottom:16px"><strong>Regla:</strong> el Excel no fuerza un detalle horizontal común. La hoja <span class="mono">Comparativa</span> sí puede ser horizontal por proveedor; el detalle se separa como <span class="mono">Detalle - Proveedor A</span>, <span class="mono">Detalle - Proveedor B</span>, etc.</div>${table(['Contratista','Archivo conceptos','Archivo matriz/APU','Tab generado','Estado'], rows)}<div class="card" style="margin-top:16px"><h3>Subtotales y porcentajes</h3><p>En cada tab individual se calculan subtotales de Materiales, Mano de Obra y Maquinaria. Los insumos porcentuales se aplican sobre la sección declarada en la matriz del contratista: % sobre materiales, % sobre MO, % sobre maquinaria, % sobre costo directo o % sobre directo + indirecto.</p></div>`, 'Detalle APU');
+  shell(`${pageHead('Detalle de matriz/APU por proveedor', 'Cada proveedor genera su propio tab de detalle porque su matriz/APU puede tener estructura diferente.', `<a class="btn btn-primary" href="${reportUrl()}">Descargar Excel resultado</a>`)}${kpis([{label:'Materiales',value:'data',text:'construdata-materiales'}, {label:'Mano de obra',value:'3',text:'archivos detectados'}, {label:'Maquinaria',value:'data',text:'construdata-maquinaria'}, {label:'Detalle',value:'1 tab',text:'por proveedor'}])}<div class="callout" style="margin-bottom:16px"><strong>Regla:</strong> los nombres de proveedores provienen del textbox corto (máx. 10 caracteres) y el Excel no fuerza un detalle horizontal común. La hoja <span class="mono">Comparativa</span> sí puede ser horizontal por proveedor; el detalle se separa como <span class="mono">Detalle - Proveedor A</span>, <span class="mono">Detalle - Proveedor B</span>, etc.</div>${table(['Proveedor','Archivo conceptos','Archivo matriz/APU','Tab generado','Estado'], rows)}<div class="card" style="margin-top:16px"><h3>Subtotales y porcentajes</h3><p>En cada tab individual se calculan subtotales de Materiales, Mano de Obra y Maquinaria. Los insumos porcentuales se aplican sobre la sección declarada en la matriz del proveedor: % sobre materiales, % sobre MO, % sobre maquinaria, % sobre costo directo o % sobre directo + indirecto.</p></div>`, 'Detalle APU');
 }
 
 function myRuns(){ shell(`${pageHead('Mis corridas', 'Historial personal del usuario autenticado.')} ${table(['Fecha','Proyecto','Tipo','Estado','Riesgo','Acciones'], mockRuns.filter(r=>state.user.role!=='ANALYST'||r.user==='Analista Demo').map(r=>[r.date,r.name,r.type,`<span class="badge ${r.status==='Fallida'?'bad':'ok'}">${r.status}</span>`,r.risk,'Ver · Descargar · Duplicar']))}`, 'Mis corridas'); }

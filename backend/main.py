@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -323,20 +323,54 @@ def _status_fill(value: str):
     return "F8FAFC"
 
 
-def _sample_contractors():
+
+
+def _safe_provider_names(provider_names: Optional[List[str]] = None) -> List[str]:
+    """Normalize visible provider names for web/Excel.
+
+    V0 rule: the short visible name comes from the UI textbox and is capped
+    at 10 characters so it fits cleanly in Comparativa blocks and detail
+    sheet tabs. These names are the canonical display names for summaries,
+    tables and Excel sheets.
+    """
+    raw = provider_names or []
+    cleaned = []
+    seen = set()
+    for idx, name in enumerate(raw, 1):
+        short = (name or '').strip()[:10]
+        if not short:
+            short = f"Prov {idx}"
+        # Excel sheet names cannot contain these characters.
+        for ch in ['\\', '/', '?', '*', '[', ']', ':']:
+            short = short.replace(ch, '-')
+        base = short[:10]
+        candidate = base
+        n = 2
+        while candidate.lower() in seen:
+            suffix = str(n)
+            candidate = (base[:10-len(suffix)] + suffix)[:10]
+            n += 1
+        seen.add(candidate.lower())
+        cleaned.append(candidate)
+    return cleaned or ['Prov A', 'Prov B']
+
+
+def _sample_contractors(provider_names: Optional[List[str]] = None):
+    names = _safe_provider_names(provider_names)
+    defaults = names + [f"Prov {chr(65+i)}" for i in range(len(names), 3)]
     return [
-        {"rank": 1, "contractor": "Contratista B", "amount": 1180000, "diff_min": 0.00, "avg_dev": -0.078, "risk": "Bajo", "traffic": "Verde"},
-        {"rank": 2, "contractor": "Contratista A", "amount": 1250000, "diff_min": 0.059, "avg_dev": 0.024, "risk": "Medio", "traffic": "Amarillo"},
-        {"rank": 3, "contractor": "Contratista C", "amount": 1410000, "diff_min": 0.195, "avg_dev": 0.143, "risk": "Alto", "traffic": "Rojo"},
+        {"rank": 1, "contractor": defaults[1] if len(defaults) > 1 else defaults[0], "amount": 1180000, "diff_min": 0.00, "avg_dev": -0.078, "risk": "Bajo", "traffic": "Verde"},
+        {"rank": 2, "contractor": defaults[0], "amount": 1250000, "diff_min": 0.059, "avg_dev": 0.024, "risk": "Medio", "traffic": "Amarillo"},
+        {"rank": 3, "contractor": defaults[2] if len(defaults) > 2 else f"{defaults[0]} C", "amount": 1410000, "diff_min": 0.195, "avg_dev": 0.143, "risk": "Alto", "traffic": "Rojo"},
     ]
 
 
-def _write_resumen_ejecutivo(ws, mode: str):
+def _write_resumen_ejecutivo(ws, mode: str, provider_names: Optional[List[str]] = None):
     _setup_sheet(ws, "Resumen Ejecutivo", "Vista gerencial: KPIs, ranking, hallazgos y navegación interna del reporte.", 10)
     _set_widths(ws, {"A": 20, "B": 18, "C": 18, "D": 18, "E": 18, "F": 18, "G": 18, "H": 18, "I": 18, "J": 18})
     ws.freeze_panes = "A12"
 
-    _write_kpi(ws, 4, 1, "Mejor oferta", 1180000, "Contratista B", "F8FAFC")
+    _write_kpi(ws, 4, 1, "Mejor oferta", 1180000, (_safe_provider_names(provider_names)[1] if len(_safe_provider_names(provider_names)) > 1 else _safe_provider_names(provider_names)[0]), "F8FAFC")
     _write_kpi(ws, 4, 3, "Riesgo global", "Amarillo", "Con advertencias", "FFF7E6")
     _write_kpi(ws, 4, 5, "Partidas críticas", 18, "Prioridad alta/media", "F8FAFC")
     _write_kpi(ws, 4, 7, "Sin referencia", 14, "Revisar alcance", "F8FAFC")
@@ -350,7 +384,7 @@ def _write_resumen_ejecutivo(ws, mode: str):
     for i, h in enumerate(headers, 1):
         ws.cell(10, i, h)
     _header_style(ws, 10, 1, len(headers), fill="1F4E79")
-    for r, item in enumerate(_sample_contractors(), 11):
+    for r, item in enumerate(_sample_contractors(provider_names), 11):
         vals = [item["rank"], item["contractor"], item["amount"], item["diff_min"], item["avg_dev"], item["risk"], item["traffic"]]
         for c, v in enumerate(vals, 1):
             ws.cell(r, c, v)
@@ -380,14 +414,10 @@ def _write_resumen_ejecutivo(ws, mode: str):
     ws.row_dimensions[20].height = 30
 
     _section_label(ws, 23, "Navegación", 10)
-    links = [
-        ("Comparativa", "#'Comparativa'!A1"),
-        ("Detalle Proveedor A", "#'Detalle - Proveedor A'!A1"),
-        ("Detalle Proveedor B", "#'Detalle - Proveedor B'!A1"),
-        ("Partidas Críticas", "#'Partidas Críticas'!A1"),
-        ("Insumos Críticos", "#'Insumos Críticos'!A1"),
-        ("Validaciones", "#'Validaciones'!A1"),
-    ]
+    names = _safe_provider_names(provider_names)
+    links = [("Comparativa", "#'Comparativa'!A1")]
+    links += [(f"Detalle {name}", f"#'Detalle - {name}'!A1") for name in names[:4]]
+    links += [("Partidas Críticas", "#'Partidas Críticas'!A1"), ("Insumos Críticos", "#'Insumos Críticos'!A1"), ("Validaciones", "#'Validaciones'!A1")]
     for idx, (text, target) in enumerate(links, 1):
         cell = ws.cell(24, idx, text)
         cell.hyperlink = target
@@ -406,71 +436,111 @@ def _provider_group_header(ws, row: int, start_col: int, end_col: int, title: st
     ws.row_dimensions[row].height = 24
 
 
-def _write_comparativa_professional(ws):
-    # This tab intentionally follows the horizontal multi-provider layout supplied by the user.
-    # It does not include a large title block because row 1 is reserved for provider group headers.
+def _write_comparativa_professional(ws, provider_names: Optional[List[str]] = None):
+    """Horizontal economic comparison by provider.
+
+    This sheet is intentionally horizontal because it compares providers on the
+    same commercial concepts. The provider block names come from the UI textbox
+    (max 10 chars) and are propagated to summaries and Excel detail tabs.
+    """
+    names = _safe_provider_names(provider_names)
     ws.sheet_view.showGridLines = False
-    _set_widths(ws, {
-        "A": 14, "B": 54, "C": 12, "D": 11,
-        "E": 14, "F": 16, "G": 12, "H": 12, "I": 16, "J": 16,
-        "K": 14, "L": 16, "M": 12, "N": 12, "O": 16, "P": 16
-    })
+    base_cols = 4
+    provider_cols = 6
+    total_cols = base_cols + provider_cols * len(names)
+    widths = {"A": 14, "B": 54, "C": 12, "D": 11}
+    for idx, _ in enumerate(names):
+        start = base_cols + idx * provider_cols + 1
+        for offset, width in enumerate([14, 16, 12, 12, 16, 16]):
+            widths[get_column_letter(start + offset)] = width
+    _set_widths(ws, widths)
     ws.freeze_panes = "E3"
     _provider_group_header(ws, 1, 1, 4, "Servicios / Cotización", "475467")
-    _provider_group_header(ws, 1, 5, 10, "Proveedor A", "1F4E79")
-    _provider_group_header(ws, 1, 11, 16, "Proveedor B", "0E6B3D")
-    headers = [
-        "Partida", "Descripción", "Unidad", "Cantidad",
-        "P.U.", "Importe", "% Part.", "% ajuste", "Mercado P.U.", "Mercado Importe",
-        "P.U.", "Importe", "% Part.", "% ajuste", "Mercado P.U.", "Mercado Importe",
-    ]
+    palette = ["1F4E79", "0E6B3D", "7C3AED", "B54708"]
+    for idx, name in enumerate(names):
+        start_col = base_cols + idx * provider_cols + 1
+        _provider_group_header(ws, 1, start_col, start_col + provider_cols - 1, name, palette[idx % len(palette)])
+    headers = ["Partida", "Descripción", "Unidad", "Cantidad"]
+    for _ in names:
+        headers += ["P.U.", "Importe", "% Part.", "% ajuste", "Mercado P.U.", "Mercado Importe"]
     for c, h in enumerate(headers, 1):
         ws.cell(2, c, h)
     _header_style(ws, 2, 1, 4, fill="475467")
-    _header_style(ws, 2, 5, 10, fill="1F4E79")
-    _header_style(ws, 2, 11, 16, fill="0E6B3D")
+    for idx, _ in enumerate(names):
+        start_col = base_cols + idx * provider_cols + 1
+        _header_style(ws, 2, start_col, start_col + provider_cols - 1, fill=palette[idx % len(palette)])
 
-    rows = [
-        ["FLEX41.11", "Instalación de bomba centrífuga FRISTAM. Incluye materiales, mano de obra, herramientas, equipos, traslados, limpieza y puesta en sitio.", "PZA", 1, 19187.17, "=D3*E3", "=F3/$F$7", "=IF(I3=0,0,E3/I3-1)", 7238.26, "=D3*I3", 15842.49, "=D3*K3", "=L3/$L$7", "=IF(O3=0,0,K3/O3-1)", 6618.23, "=D3*O3"],
-        ["FLEX41.12", "Suministro e instalación de guarda protectora para bomba en acero inoxidable 304.", "PZA", 1, 16437.07, "=D4*E4", "=F4/$F$7", "=IF(I4=0,0,E4/I4-1)", 3523.68, "=D4*I4", 13678.38, "=D4*K4", "=L4/$L$7", "=IF(O4=0,0,K4/O4-1)", 3208.53, "=D4*O4"],
-        ["FLEX41.20", "Instalación de válvula doble asiento ALFA LAVAL 2-1/2 pulg. Incluye soportes, anclajes, izajes, acarreo y limpieza.", "PZA", 1, 38976.81, "=D5*E5", "=F5/$F$7", "=IF(I5=0,0,E5/I5-1)", 6727.88, "=D5*I5", 19016.66, "=D5*K5", "=L5/$L$7", "=IF(O5=0,0,K5/O5-1)", 6208.82, "=D5*O5"],
-        ["FLEX41.25", "Instalación de válvula check ALFA LAVAL 3 pulg. Incluye soportería, anclajes, maniobras, mano de obra y limpieza final.", "PZA", 1, 39030.70, "=D6*E6", "=F6/$F$7", "=IF(I6=0,0,E6/I6-1)", 6684.68, "=D6*I6", 19066.29, "=D6*K6", "=L6/$L$7", "=IF(O6=0,0,K6/O6-1)", 6168.96, "=D6*O6"],
-        ["TOTAL", "", "", "", "=AVERAGE(E3:E6)", "=SUM(F3:F6)", "", "", "=AVERAGE(I3:I6)", "=SUM(J3:J6)", "=AVERAGE(K3:K6)", "=SUM(L3:L6)", "", "", "=AVERAGE(O3:O6)", "=SUM(P3:P6)"],
+    base_rows = [
+        ["FLEX41.11", "Instalación de bomba centrífuga. Incluye materiales, mano de obra, herramientas, equipos, traslados, limpieza y puesta en sitio.", "PZA", 1],
+        ["FLEX41.12", "Suministro e instalación de guarda protectora en acero inoxidable 304.", "PZA", 1],
+        ["FLEX41.20", "Instalación de válvula doble asiento. Incluye soportes, anclajes, izajes, acarreo y limpieza.", "PZA", 1],
+        ["FLEX41.25", "Instalación de válvula check. Incluye soportería, anclajes, maniobras, mano de obra y limpieza final.", "PZA", 1],
     ]
-    for r, row in enumerate(rows, 3):
+    provider_prices = [
+        [19187.17, 16437.07, 38976.81, 39030.70],
+        [15842.49, 13678.38, 19016.66, 19066.29],
+        [20220.00, 17105.00, 35500.00, 36550.00],
+        [18440.00, 14990.00, 28620.00, 30100.00],
+    ]
+    market_prices = [
+        [7238.26, 3523.68, 6727.88, 6684.68],
+        [6618.23, 3208.53, 6208.82, 6168.96],
+        [7001.55, 3412.20, 6555.30, 6501.10],
+        [6900.00, 3300.00, 6440.00, 6400.00],
+    ]
+    for r_idx, row in enumerate(base_rows, 3):
         for c, v in enumerate(row, 1):
-            ws.cell(r, c, v)
-    _body_style(ws, 3, 7, 1, 16)
-    for c in range(1, 17):
-        ws.cell(7, c).font = Font(bold=True, color=BRAND["navy"])
-        ws.cell(7, c).fill = PatternFill("solid", fgColor="F8FAFC")
-        ws.cell(7, c).border = Border(top=Side(style="medium", color="1F4E79"), bottom=Side(style="thin", color="D9E2EC"))
-    _apply_formats(ws, money_cols=[5, 6, 9, 10, 11, 12, 15, 16], pct_cols=[7, 8, 13, 14], start_row=3, end_row=7)
-    ws.auto_filter.ref = "A2:P7"
-    ws.conditional_formatting.add("H3:H6", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
-    ws.conditional_formatting.add("N3:N6", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+            ws.cell(r_idx, c, v)
+        for p_idx, _ in enumerate(names):
+            start_col = base_cols + p_idx * provider_cols + 1
+            prices = provider_prices[p_idx % len(provider_prices)]
+            markets = market_prices[p_idx % len(market_prices)]
+            qty_cell = f"D{r_idx}"
+            pu = prices[r_idx - 3]
+            market = markets[r_idx - 3]
+            ws.cell(r_idx, start_col, pu)
+            ws.cell(r_idx, start_col + 1, f"={qty_cell}*{get_column_letter(start_col)}{r_idx}")
+            total_ref = f"${get_column_letter(start_col+1)}$7"
+            ws.cell(r_idx, start_col + 2, f"={get_column_letter(start_col+1)}{r_idx}/{total_ref}")
+            ws.cell(r_idx, start_col + 3, f"=IF({get_column_letter(start_col+4)}{r_idx}=0,0,{get_column_letter(start_col)}{r_idx}/{get_column_letter(start_col+4)}{r_idx}-1)")
+            ws.cell(r_idx, start_col + 4, market)
+            ws.cell(r_idx, start_col + 5, f"={qty_cell}*{get_column_letter(start_col+4)}{r_idx}")
+    total_row = 7
+    ws.cell(total_row, 1, "TOTAL")
+    for p_idx, _ in enumerate(names):
+        start_col = base_cols + p_idx * provider_cols + 1
+        ws.cell(total_row, start_col, f"=AVERAGE({get_column_letter(start_col)}3:{get_column_letter(start_col)}6)")
+        ws.cell(total_row, start_col+1, f"=SUM({get_column_letter(start_col+1)}3:{get_column_letter(start_col+1)}6)")
+        ws.cell(total_row, start_col+4, f"=AVERAGE({get_column_letter(start_col+4)}3:{get_column_letter(start_col+4)}6)")
+        ws.cell(total_row, start_col+5, f"=SUM({get_column_letter(start_col+5)}3:{get_column_letter(start_col+5)}6)")
+    _body_style(ws, 3, total_row, 1, total_cols)
+    for c in range(1, total_cols + 1):
+        ws.cell(total_row, c).font = Font(bold=True, color=BRAND["navy"])
+        ws.cell(total_row, c).fill = PatternFill("solid", fgColor="F8FAFC")
+        ws.cell(total_row, c).border = Border(top=Side(style="medium", color="1F4E79"), bottom=Side(style="thin", color="D9E2EC"))
+    money_cols, pct_cols = [], []
+    for idx in range(len(names)):
+        start_col = base_cols + idx * provider_cols + 1
+        money_cols += [start_col, start_col+1, start_col+4, start_col+5]
+        pct_cols += [start_col+2, start_col+3]
+        ws.conditional_formatting.add(f"{get_column_letter(start_col+3)}3:{get_column_letter(start_col+3)}6", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+    _apply_formats(ws, money_cols=money_cols, pct_cols=pct_cols, start_row=3, end_row=total_row)
+    ws.auto_filter.ref = f"A2:{get_column_letter(total_cols)}{total_row}"
 
-    _section_label(ws, 10, "Resumen individual por proveedor", 16)
-    summaries = [
-        ("Proveedor A", [
-            "Las partidas FLEX41.20 y FLEX41.25 concentran la mayor proporción del importe cotizado.",
-            "El ajuste global contra mercado se calcula contra la referencia generada para su propia matriz/APU.",
-            "Las desviaciones deben validarse con el tab Detalle APU, porque el origen puede estar en insumos, rendimientos o porcentajes."
-        ]),
-        ("Proveedor B", [
-            "La propuesta es menor en monto total, pero conserva partidas con ajuste relevante contra mercado.",
-            "El análisis debe revisar si las diferencias contra Proveedor A obedecen a alcance, rendimiento o precios base.",
-            "La comparación de mercado se muestra por proveedor, no como una referencia única universal."
-        ]),
-    ]
+    _section_label(ws, 10, "Resumen individual por proveedor", total_cols)
     row = 11
-    for title, bullets in summaries:
-        ws.cell(row, 1, title).font = Font(bold=True, color=BRAND["navy"], size=12)
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=16)
+    for idx, name in enumerate(names):
+        ws.cell(row, 1, name).font = Font(bold=True, color=BRAND["navy"], size=12)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=total_cols)
         row += 1
+        bullets = [
+            "El nombre visible proviene del textbox de carga y se usa en resúmenes, Comparativa y tabs de Detalle.",
+            "La comparación de mercado por proveedor se muestra en columnas propias dentro de su bloque.",
+            "Las desviaciones deben validarse en el tab Detalle individual, porque cada matriz/APU puede tener estructura diferente.",
+        ]
         for bullet in bullets:
             ws.cell(row, 1, "• " + bullet)
-            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=16)
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=total_cols)
             ws.cell(row, 1).alignment = Alignment(wrap_text=True, vertical="top")
             ws.row_dimensions[row].height = 28
             row += 1
@@ -514,7 +584,7 @@ def _write_contractor_detail_sheet(ws, contractor_name: str, theme_color: str, v
     finance_rate = 0.0285 if variant == "A" else 0.00
 
     rows = [
-        ["FLEX41.11", "INSTALACIÓN DE BOMBA CENTRÍFUGA FRISTAM MODELO FPR 3531-155", "PZA", "PARTIDA", "", "", 1, "", "", "", "", "", "", "", "", "Matriz propia declarada por el contratista"],
+        ["FLEX41.11", "INSTALACIÓN DE BOMBA CENTRÍFUGA FRISTAM MODELO FPR 3531-155", "PZA", "PARTIDA", "", "", 1, "", "", "", "", "", "", "", "", "Matriz propia declarada por el proveedor"],
         ["", "MATERIALES", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
         ["MAT-BOMBA", "Materiales menores para montaje de bomba", "LOTE", "MATERIALES", 4500*factor, "*", 1, "=E5*G5", "=H5/$H$25", 4500, "*", 1, "=J5*L5", "=IF(J5=0,0,E5/J5-1)", "OK", "Referencia: materiales data"],
         ["ANCL-M10", "Anclaje mecánico acero inoxidable M10", "PZA", "MATERIALES", 120*factor, "*", 8, "=E6*G6", "=H6/$H$25", 120, "*", 8, "=J6*L6", "=IF(J6=0,0,E6/J6-1)", "OK", "Referencia: materiales data"],
@@ -534,7 +604,7 @@ def _write_contractor_detail_sheet(ws, contractor_name: str, theme_color: str, v
         ["", "SUBTOTAL MAQUINARIA", "", "SUBTOTAL MAQUINARIA", "=SUM(H18:H19)", "", "", "=SUM(H18:H19)", "=H20/$H$25", "=SUM(M18:M19)", "", "", "=SUM(M18:M19)", "=IF(M20=0,0,H20/M20-1)", "", "Incluye maquinaria + % aplicables a maquinaria"],
         ["", "SECCIÓN FINANCIERA", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
         ["", "COSTO DIRECTO", "", "TOTAL DIRECTO", "=H9+H16+H20", "", "", "=E22", "=H22/$H$25", "=M9+M16+M20", "", "", "=J22", "=IF(M22=0,0,H22/M22-1)", "", "Materiales + MO + maquinaria"],
-        ["IND", "Costo indirecto declarado como % sobre COSTO DIRECTO", "%", "% SOBRE DIRECTO", "=H22", "%", indirect_rate, "=E23*G23", "=H23/$H$25", "=M22", "%", indirect_rate, "=J23*L23", "=IF(J23=0,0,E23/J23-1)", "OK", "Porcentaje financiero declarado por contratista"],
+        ["IND", "Costo indirecto declarado como % sobre COSTO DIRECTO", "%", "% SOBRE DIRECTO", "=H22", "%", indirect_rate, "=E23*G23", "=H23/$H$25", "=M22", "%", indirect_rate, "=J23*L23", "=IF(J23=0,0,E23/J23-1)", "OK", "Porcentaje financiero declarado por proveedor"],
         ["FIN", "Financiamiento declarado como % sobre directo + indirecto", "%", "% SOBRE DIRECTO+IND", "=H22+H23", "%", finance_rate, "=E24*G24", "=H24/$H$25", "=M22+M23", "%", finance_rate, "=J24*L24", "=IF(J24=0,0,E24/J24-1)", "OK", "Base = costo directo + indirecto"],
         ["", "TOTAL COSTO UNITARIO", "", "TOTAL", "=H22+H23+H24", "", "", "=E25", 1, "=M22+M23+M24", "", "", "=J25", "=IF(M25=0,0,H25/M25-1)", "", "Este total debe reconciliar con Comparativa"],
     ]
@@ -566,7 +636,7 @@ def _write_contractor_detail_sheet(ws, contractor_name: str, theme_color: str, v
     for r in range(23, 25): ws.row_dimensions[r].outlineLevel = 1
     ws["A28"] = "Regla canónica de generación"
     ws["A28"].font = Font(bold=True, color=BRAND["navy"])
-    ws["B28"] = "Esta hoja se genera desde el archivo matriz/APU propio del contratista seleccionado. No se fuerza estructura horizontal común entre proveedores y no usa construdata_matrices.xlsx."
+    ws["B28"] = "Esta hoja se genera desde el archivo matriz/APU propio del proveedor seleccionado. No se fuerza estructura horizontal común entre proveedores y no usa construdata_matrices.xlsx."
     ws.merge_cells(start_row=28, start_column=2, end_row=28, end_column=16)
     ws["B28"].alignment = Alignment(wrap_text=True)
 
@@ -574,14 +644,14 @@ def _write_contractor_detail_sheet(ws, contractor_name: str, theme_color: str, v
 def _write_partidas_criticas(ws):
     _setup_sheet(ws, "Partidas Críticas", "Priorización de partidas por impacto económico, desviación y riesgo de negociación.", 12)
     _set_widths(ws, {"A": 10, "B": 16, "C": 16, "D": 36, "E": 18, "F": 16, "G": 14, "H": 14, "I": 18, "J": 26, "K": 22, "L": 18})
-    headers = ["Prioridad", "Contratista", "Partida", "Descripción", "Familia", "Impacto", "Desv. %", "Peso %", "Motivo", "Acción sugerida", "Estado revisión", "Responsable"]
+    headers = ["Prioridad", "Proveedor", "Partida", "Descripción", "Familia", "Impacto", "Desv. %", "Peso %", "Motivo", "Acción sugerida", "Estado revisión", "Responsable"]
     for c, h in enumerate(headers, 1): ws.cell(5, c, h)
     _header_style(ws, 5, 1, len(headers))
     rows = [
-        [1, "Contratista C", "CIV-001", "Concreto f'c 250", "Concreto", 95000, 0.24, 0.18, "Alto impacto", "Solicitar desglose APU", "Pendiente", "Ingeniería"],
-        [2, "Contratista A", "CIV-002", "Acero de refuerzo", "Acero", 62000, 0.20, 0.12, "Precio sobre referencia", "Negociar precio unitario", "Pendiente", "Compras"],
-        [3, "Contratista C", "ELE-001", "Luminarias LED", "Instalaciones", 48000, 0.22, 0.09, "Ficha técnica no validada", "Solicitar aclaración", "Pendiente", "Ingeniería"],
-        [4, "Contratista B", "GEN-001", "Partida sin referencia directa", "Especial", 15000000, 0, 0.20, "Sin referencia", "Cotización externa", "Pendiente", "Costos"],
+        [1, "Proveedor C", "CIV-001", "Concreto f'c 250", "Concreto", 95000, 0.24, 0.18, "Alto impacto", "Solicitar desglose APU", "Pendiente", "Ingeniería"],
+        [2, "Proveedor A", "CIV-002", "Acero de refuerzo", "Acero", 62000, 0.20, 0.12, "Precio sobre referencia", "Negociar precio unitario", "Pendiente", "Compras"],
+        [3, "Proveedor C", "ELE-001", "Luminarias LED", "Instalaciones", 48000, 0.22, 0.09, "Ficha técnica no validada", "Solicitar aclaración", "Pendiente", "Ingeniería"],
+        [4, "Proveedor B", "GEN-001", "Partida sin referencia directa", "Especial", 15000000, 0, 0.20, "Sin referencia", "Cotización externa", "Pendiente", "Costos"],
     ]
     for r, row in enumerate(rows, 6):
         for c, v in enumerate(row, 1): ws.cell(r, c, v)
@@ -732,23 +802,25 @@ def _write_base_budget_report(wb):
     _add_table(detail,"A5:I7","BaseBudgetDetalleTable","TableStyleMedium4")
 
 
-def _write_comparison_report(wb):
+def _write_comparison_report(wb, provider_names: Optional[List[str]] = None):
+    names = _safe_provider_names(provider_names)
     ws = wb.active
     ws.title = "Resumen Ejecutivo"
-    _write_resumen_ejecutivo(ws, "comparison")
-    _write_comparativa_professional(wb.create_sheet("Comparativa"))
-    _write_contractor_detail_sheet(wb.create_sheet("Detalle - Proveedor A"), "Proveedor A", "1F4E79", "A")
-    _write_contractor_detail_sheet(wb.create_sheet("Detalle - Proveedor B"), "Proveedor B", "0E6B3D", "B")
+    _write_resumen_ejecutivo(ws, "comparison", names)
+    _write_comparativa_professional(wb.create_sheet("Comparativa"), names)
+    palette = ["1F4E79", "0E6B3D", "7C3AED", "B54708"]
+    for idx, name in enumerate(names):
+        _write_contractor_detail_sheet(wb.create_sheet(f"Detalle - {name}"), name, palette[idx % len(palette)], "A" if idx % 2 == 0 else "B")
     _write_partidas_criticas(wb.create_sheet("Partidas Críticas"))
     _write_insumos_criticos(wb.create_sheet("Insumos Críticos"))
     _write_validaciones(wb.create_sheet("Validaciones"))
     _write_analisis_ia(wb.create_sheet("Análisis IA"))
 
 
-def build_report(kind: str) -> Path:
+def build_report(kind: str, provider_names: Optional[List[str]] = None) -> Path:
     wb = Workbook()
     if kind == "comparison":
-        _write_comparison_report(wb)
+        _write_comparison_report(wb, provider_names)
     else:
         _write_base_budget_report(wb)
 
@@ -772,10 +844,11 @@ def build_report(kind: str) -> Path:
 
 
 @app.get("/api/reports/{kind}")
-def report(kind: str):
+def report(kind: str, providers: Optional[str] = Query(default=None)):
     if kind not in {"base", "comparison"}:
         raise HTTPException(status_code=400, detail="kind debe ser base o comparison")
-    path = build_report(kind)
+    provider_names = [p.strip() for p in providers.split(",") if p.strip()] if providers else None
+    path = build_report(kind, provider_names)
     return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
