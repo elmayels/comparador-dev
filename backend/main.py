@@ -546,35 +546,32 @@ def _write_comparativa_professional(ws, provider_names: Optional[List[str]] = No
             row += 1
         row += 1
 
-def _write_contractor_detail_sheet(ws, contractor_name: str, theme_color: str, variant: str = "A"):
-    """Write one contractor-specific APU detail sheet.
+def _canonical_detail_headers(include_market: bool) -> list[str]:
+    """Canonical APU detail columns used by both base budgets and provider comparisons.
 
-    Canonical rule: each contractor may declare a different matrix/APU, so the
-    Excel must not force all providers into one horizontal Detail sheet. The
-    Comparativa tab can be horizontal, but Detalle is generated as one sheet per
-    contractor. Each detail sheet keeps that contractor's own declared structure
-    and compares every declared component against granular market references.
+    The same canonical layout is reused for:
+    - BASE_BUDGET detail: generated from engineering concepts + Construdata matrices.
+      Market columns are omitted because this detail is already the market/base matrix.
+    - CONTRACTOR_APU detail: generated from each provider's own matrix/APU.
+      Market columns are included to compare against granular data references.
     """
-    ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A3"
-    _set_widths(ws, {
-        "A": 14, "B": 42, "C": 12, "D": 18, "E": 14, "F": 11,
-        "G": 12, "H": 16, "I": 12, "J": 16, "K": 11, "L": 12,
-        "M": 16, "N": 16, "O": 18, "P": 28,
-    })
-    _provider_group_header(ws, 1, 1, 16, f"Detalle APU - {contractor_name}", theme_color)
-    headers = [
+    base = [
         "Código", "Concepto / insumo", "Unidad", "Sección", "P. Unitario",
-        "Op.", "Cantidad", "Importe", "%", "Mercado P.U.", "Mercado Op.",
-        "Mercado Cant.", "Mercado Importe", "Diferencia %", "Estado", "Observación"
+        "Op.", "Cantidad", "Importe", "%"
     ]
-    for c, h in enumerate(headers, 1):
-        ws.cell(2, c, h)
-    _header_style(ws, 2, 1, len(headers), fill=theme_color)
+    market = ["Mercado P.U.", "Mercado Op.", "Mercado Cant.", "Mercado Importe", "Diferencia %"]
+    tail = ["Estado", "Observación"]
+    return base + (market if include_market else []) + tail
 
-    # Slightly different mock values so each contractor sheet proves it is not
-    # a copied common matrix. In V1 these rows come from each contractor's own
-    # matrix/APU file uploaded in the webapp.
+
+def _canonical_apu_rows(variant: str = "A") -> list[dict]:
+    """Return V0 canonical APU rows.
+
+    V0 still uses controlled mock values, but the row model mirrors the real
+    canonical structure that V1 must populate from either:
+    - a generated base-budget matrix, or
+    - the provider's uploaded matrix/APU.
+    """
     factor = 1 if variant == "A" else 0.88
     mat_rate = 0.08 if variant == "A" else 0.06
     mo_tool_rate = 0.09 if variant == "A" else 0.05
@@ -582,36 +579,82 @@ def _write_contractor_detail_sheet(ws, contractor_name: str, theme_color: str, v
     machine_rate = 0.05 if variant == "A" else 0.04
     indirect_rate = 0.25
     finance_rate = 0.0285 if variant == "A" else 0.00
-
-    rows = [
-        ["FLEX41.11", "INSTALACIÓN DE BOMBA CENTRÍFUGA FRISTAM MODELO FPR 3531-155", "PZA", "PARTIDA", "", "", 1, "", "", "", "", "", "", "", "", "Matriz propia declarada por el proveedor"],
-        ["", "MATERIALES", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
-        ["MAT-BOMBA", "Materiales menores para montaje de bomba", "LOTE", "MATERIALES", 4500*factor, "*", 1, "=E5*G5", "=H5/$H$25", 4500, "*", 1, "=J5*L5", "=IF(J5=0,0,E5/J5-1)", "OK", "Referencia: materiales data"],
-        ["ANCL-M10", "Anclaje mecánico acero inoxidable M10", "PZA", "MATERIALES", 120*factor, "*", 8, "=E6*G6", "=H6/$H$25", 120, "*", 8, "=J6*L6", "=IF(J6=0,0,E6/J6-1)", "OK", "Referencia: materiales data"],
-        ["SOL-INOX", "Consumible soldadura acero inoxidable", "KG", "MATERIALES", 285*factor, "*", 1.5, "=E7*G7", "=H7/$H$25", 300.8, "*", 1.5, "=J7*L7", "=IF(J7=0,0,E7/J7-1)", "Revisar" if variant == "A" else "OK", "Precio validado contra data/materiales"],
-        ["%CONS-MAT", "Consumibles declarados como % sobre subtotal de MATERIALES", "%", "% SOBRE MATERIALES", "=SUM(H5:H7)", "%", mat_rate, "=E8*G8", "=H8/$H$25", "=SUM(M5:M7)", "%", mat_rate, "=J8*L8", "=IF(J8=0,0,E8/J8-1)", "OK", "El % aplica solo sobre subtotal materiales"],
-        ["", "SUBTOTAL MATERIALES", "", "SUBTOTAL MATERIALES", "=SUM(H5:H7)", "", "", "=SUM(H5:H8)", "=H9/$H$25", "=SUM(M5:M7)", "", "", "=SUM(M5:M8)", "=IF(M9=0,0,H9/M9-1)", "", "Incluye insumos + % aplicables a materiales"],
-        ["", "MANO DE OBRA", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
-        ["SUP-O", "Supervisor Obra", "JOR", "MO", 2643.19*factor, "*", 0.1, "=E11*G11", "=H11/$H$25", 1757.33, "*", 0.1, "=J11*L11", "=IF(J11=0,0,E11/J11-1)", "Revisar", "Referencia: mano de obra data"],
-        ["OF-SOL", "Oficial soldador / argonero", "JOR", "MO", 2120.45*factor, "*", 1, "=E12*G12", "=H12/$H$25", 1326.14, "*", 1, "=J12*L12", "=IF(J12=0,0,E12/J12-1)", "Revisar", "Referencia: mano de obra data"],
-        ["AYU-GRAL", "Ayudante general", "JOR", "MO", 1074.96*factor, "*", 1, "=E13*G13", "=H13/$H$25", 777.88, "*", 1, "=J13*L13", "=IF(J13=0,0,E13/J13-1)", "OK", "Referencia: mano de obra data"],
-        ["%HERR", "Herramienta menor declarada como % sobre subtotal MO", "%", "% SOBRE MO", "=SUM(H11:H13)", "%", mo_tool_rate, "=E14*G14", "=H14/$H$25", "=SUM(M11:M13)", "%", mo_tool_rate, "=J14*L14", "=IF(J14=0,0,E14/J14-1)", "OK", "El % aplica solo sobre subtotal mano de obra"],
-        ["%EPP", "Equipo de protección personal declarado como % sobre subtotal MO", "%", "% SOBRE MO", "=SUM(H11:H13)", "%", epp_rate, "=E15*G15", "=H15/$H$25", "=SUM(M11:M13)", "%", epp_rate, "=J15*L15", "=IF(J15=0,0,E15/J15-1)", "OK", "El % aplica solo sobre subtotal mano de obra"],
-        ["", "SUBTOTAL MANO DE OBRA", "", "SUBTOTAL MO", "=SUM(H11:H13)", "", "", "=SUM(H11:H15)", "=H16/$H$25", "=SUM(M11:M13)", "", "", "=SUM(M11:M15)", "=IF(M16=0,0,H16/M16-1)", "", "Incluye MO + % aplicables a MO"],
-        ["", "MAQUINARIA / EQUIPO", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
-        ["EQ-MEZ", "Equipo menor / maquinaria auxiliar", "HR", "MAQUINARIA", 350*factor, "*", 2, "=E18*G18", "=H18/$H$25", 330, "*", 2, "=J18*L18", "=IF(J18=0,0,E18/J18-1)", "OK", "Referencia: maquinaria data"],
-        ["%EQ", "Porcentaje sobre subtotal de MAQUINARIA", "%", "% SOBRE MAQUINARIA", "=H18", "%", machine_rate, "=E19*G19", "=H19/$H$25", "=M18", "%", machine_rate, "=J19*L19", "=IF(J19=0,0,E19/J19-1)", "OK", "El % aplica solo sobre subtotal maquinaria"],
-        ["", "SUBTOTAL MAQUINARIA", "", "SUBTOTAL MAQUINARIA", "=SUM(H18:H19)", "", "", "=SUM(H18:H19)", "=H20/$H$25", "=SUM(M18:M19)", "", "", "=SUM(M18:M19)", "=IF(M20=0,0,H20/M20-1)", "", "Incluye maquinaria + % aplicables a maquinaria"],
-        ["", "SECCIÓN FINANCIERA", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
-        ["", "COSTO DIRECTO", "", "TOTAL DIRECTO", "=H9+H16+H20", "", "", "=E22", "=H22/$H$25", "=M9+M16+M20", "", "", "=J22", "=IF(M22=0,0,H22/M22-1)", "", "Materiales + MO + maquinaria"],
-        ["IND", "Costo indirecto declarado como % sobre COSTO DIRECTO", "%", "% SOBRE DIRECTO", "=H22", "%", indirect_rate, "=E23*G23", "=H23/$H$25", "=M22", "%", indirect_rate, "=J23*L23", "=IF(J23=0,0,E23/J23-1)", "OK", "Porcentaje financiero declarado por proveedor"],
-        ["FIN", "Financiamiento declarado como % sobre directo + indirecto", "%", "% SOBRE DIRECTO+IND", "=H22+H23", "%", finance_rate, "=E24*G24", "=H24/$H$25", "=M22+M23", "%", finance_rate, "=J24*L24", "=IF(J24=0,0,E24/J24-1)", "OK", "Base = costo directo + indirecto"],
-        ["", "TOTAL COSTO UNITARIO", "", "TOTAL", "=H22+H23+H24", "", "", "=E25", 1, "=M22+M23+M24", "", "", "=J25", "=IF(M25=0,0,H25/M25-1)", "", "Este total debe reconciliar con Comparativa"],
+    return [
+        {"code":"FLEX41.11", "concept":"INSTALACIÓN DE BOMBA CENTRÍFUGA FRISTAM MODELO FPR 3531-155", "unit":"PZA", "section":"PARTIDA", "pu":"", "op":"", "qty":1, "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"", "obs":"Matriz canónica generada/normalizada desde la fuente del proceso"},
+        {"code":"", "concept":"MATERIALES", "unit":"", "section":"TÍTULO", "pu":"", "op":"", "qty":"", "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"", "obs":""},
+        {"code":"MAT-BOMBA", "concept":"Materiales menores para montaje de bomba", "unit":"LOTE", "section":"MATERIALES", "pu":4500*factor, "op":"*", "qty":1, "amount":"=E5*G5", "pct":"=H5/$H$25", "mpu":4500, "mop":"*", "mqty":1, "mamount":"=J5*L5", "dev":"=IF(J5=0,0,E5/J5-1)", "state":"OK", "obs":"Referencia granular: materiales data"},
+        {"code":"ANCL-M10", "concept":"Anclaje mecánico acero inoxidable M10", "unit":"PZA", "section":"MATERIALES", "pu":120*factor, "op":"*", "qty":8, "amount":"=E6*G6", "pct":"=H6/$H$25", "mpu":120, "mop":"*", "mqty":8, "mamount":"=J6*L6", "dev":"=IF(J6=0,0,E6/J6-1)", "state":"OK", "obs":"Referencia granular: materiales data"},
+        {"code":"SOL-INOX", "concept":"Consumible soldadura acero inoxidable", "unit":"KG", "section":"MATERIALES", "pu":285*factor, "op":"*", "qty":1.5, "amount":"=E7*G7", "pct":"=H7/$H$25", "mpu":300.8, "mop":"*", "mqty":1.5, "mamount":"=J7*L7", "dev":"=IF(J7=0,0,E7/J7-1)", "state":"Revisar" if variant == "A" else "OK", "obs":"Precio validado contra data/materiales"},
+        {"code":"%CONS-MAT", "concept":"Consumibles declarados como % sobre subtotal de MATERIALES", "unit":"%", "section":"% SOBRE MATERIALES", "pu":"=SUM(H5:H7)", "op":"%", "qty":mat_rate, "amount":"=E8*G8", "pct":"=H8/$H$25", "mpu":"=SUM(M5:M7)", "mop":"%", "mqty":mat_rate, "mamount":"=J8*L8", "dev":"=IF(J8=0,0,E8/J8-1)", "state":"OK", "obs":"El % aplica solo sobre subtotal materiales"},
+        {"code":"", "concept":"SUBTOTAL MATERIALES", "unit":"", "section":"SUBTOTAL MATERIALES", "pu":"=SUM(H5:H7)", "op":"", "qty":"", "amount":"=SUM(H5:H8)", "pct":"=H9/$H$25", "mpu":"=SUM(M5:M7)", "mop":"", "mqty":"", "mamount":"=SUM(M5:M8)", "dev":"=IF(M9=0,0,H9/M9-1)", "state":"", "obs":"Incluye insumos + % aplicables a materiales"},
+        {"code":"", "concept":"MANO DE OBRA", "unit":"", "section":"TÍTULO", "pu":"", "op":"", "qty":"", "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"", "obs":""},
+        {"code":"SUP-O", "concept":"Supervisor Obra", "unit":"JOR", "section":"MO", "pu":2643.19*factor, "op":"*", "qty":0.1, "amount":"=E11*G11", "pct":"=H11/$H$25", "mpu":1757.33, "mop":"*", "mqty":0.1, "mamount":"=J11*L11", "dev":"=IF(J11=0,0,E11/J11-1)", "state":"Revisar", "obs":"Referencia granular: mano de obra data"},
+        {"code":"OF-SOL", "concept":"Oficial soldador / argonero", "unit":"JOR", "section":"MO", "pu":2120.45*factor, "op":"*", "qty":1, "amount":"=E12*G12", "pct":"=H12/$H$25", "mpu":1326.14, "mop":"*", "mqty":1, "mamount":"=J12*L12", "dev":"=IF(J12=0,0,E12/J12-1)", "state":"Revisar", "obs":"Referencia granular: mano de obra data"},
+        {"code":"AYU-GRAL", "concept":"Ayudante general", "unit":"JOR", "section":"MO", "pu":1074.96*factor, "op":"*", "qty":1, "amount":"=E13*G13", "pct":"=H13/$H$25", "mpu":777.88, "mop":"*", "mqty":1, "mamount":"=J13*L13", "dev":"=IF(J13=0,0,E13/J13-1)", "state":"OK", "obs":"Referencia granular: mano de obra data"},
+        {"code":"%HERR", "concept":"Herramienta menor declarada como % sobre subtotal MO", "unit":"%", "section":"% SOBRE MO", "pu":"=SUM(H11:H13)", "op":"%", "qty":mo_tool_rate, "amount":"=E14*G14", "pct":"=H14/$H$25", "mpu":"=SUM(M11:M13)", "mop":"%", "mqty":mo_tool_rate, "mamount":"=J14*L14", "dev":"=IF(J14=0,0,E14/J14-1)", "state":"OK", "obs":"El % aplica solo sobre subtotal mano de obra"},
+        {"code":"%EPP", "concept":"Equipo de protección personal declarado como % sobre subtotal MO", "unit":"%", "section":"% SOBRE MO", "pu":"=SUM(H11:H13)", "op":"%", "qty":epp_rate, "amount":"=E15*G15", "pct":"=H15/$H$25", "mpu":"=SUM(M11:M13)", "mop":"%", "mqty":epp_rate, "mamount":"=J15*L15", "dev":"=IF(J15=0,0,E15/J15-1)", "state":"OK", "obs":"El % aplica solo sobre subtotal mano de obra"},
+        {"code":"", "concept":"SUBTOTAL MANO DE OBRA", "unit":"", "section":"SUBTOTAL MO", "pu":"=SUM(H11:H13)", "op":"", "qty":"", "amount":"=SUM(H11:H15)", "pct":"=H16/$H$25", "mpu":"=SUM(M11:M13)", "mop":"", "mqty":"", "mamount":"=SUM(M11:M15)", "dev":"=IF(M16=0,0,H16/M16-1)", "state":"", "obs":"Incluye MO + % aplicables a MO"},
+        {"code":"", "concept":"MAQUINARIA / EQUIPO", "unit":"", "section":"TÍTULO", "pu":"", "op":"", "qty":"", "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"", "obs":""},
+        {"code":"EQ-MEZ", "concept":"Equipo menor / maquinaria auxiliar", "unit":"HR", "section":"MAQUINARIA", "pu":350*factor, "op":"*", "qty":2, "amount":"=E18*G18", "pct":"=H18/$H$25", "mpu":330, "mop":"*", "mqty":2, "mamount":"=J18*L18", "dev":"=IF(J18=0,0,E18/J18-1)", "state":"OK", "obs":"Referencia granular: maquinaria data"},
+        {"code":"%EQ", "concept":"Porcentaje sobre subtotal de MAQUINARIA", "unit":"%", "section":"% SOBRE MAQUINARIA", "pu":"=H18", "op":"%", "qty":machine_rate, "amount":"=E19*G19", "pct":"=H19/$H$25", "mpu":"=M18", "mop":"%", "mqty":machine_rate, "mamount":"=J19*L19", "dev":"=IF(J19=0,0,E19/J19-1)", "state":"OK", "obs":"El % aplica solo sobre subtotal maquinaria"},
+        {"code":"", "concept":"SUBTOTAL MAQUINARIA", "unit":"", "section":"SUBTOTAL MAQUINARIA", "pu":"=SUM(H18:H19)", "op":"", "qty":"", "amount":"=SUM(H18:H19)", "pct":"=H20/$H$25", "mpu":"=SUM(M18:M19)", "mop":"", "mqty":"", "mamount":"=SUM(M18:M19)", "dev":"=IF(M20=0,0,H20/M20-1)", "state":"", "obs":"Incluye maquinaria + % aplicables a maquinaria"},
+        {"code":"", "concept":"SECCIÓN FINANCIERA", "unit":"", "section":"TÍTULO", "pu":"", "op":"", "qty":"", "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"", "obs":""},
+        {"code":"", "concept":"COSTO DIRECTO", "unit":"", "section":"TOTAL DIRECTO", "pu":"=H9+H16+H20", "op":"", "qty":"", "amount":"=E22", "pct":"=H22/$H$25", "mpu":"=M9+M16+M20", "mop":"", "mqty":"", "mamount":"=J22", "dev":"=IF(M22=0,0,H22/M22-1)", "state":"", "obs":"Materiales + MO + maquinaria"},
+        {"code":"IND", "concept":"Costo indirecto declarado como % sobre COSTO DIRECTO", "unit":"%", "section":"% SOBRE DIRECTO", "pu":"=H22", "op":"%", "qty":indirect_rate, "amount":"=E23*G23", "pct":"=H23/$H$25", "mpu":"=M22", "mop":"%", "mqty":indirect_rate, "mamount":"=J23*L23", "dev":"=IF(J23=0,0,E23/J23-1)", "state":"OK", "obs":"Porcentaje financiero declarado por la fuente"},
+        {"code":"FIN", "concept":"Financiamiento declarado como % sobre directo + indirecto", "unit":"%", "section":"% SOBRE DIRECTO+IND", "pu":"=H22+H23", "op":"%", "qty":finance_rate, "amount":"=E24*G24", "pct":"=H24/$H$25", "mpu":"=M22+M23", "mop":"%", "mqty":finance_rate, "mamount":"=J24*L24", "dev":"=IF(J24=0,0,E24/J24-1)", "state":"OK", "obs":"Base = costo directo + indirecto"},
+        {"code":"", "concept":"TOTAL COSTO UNITARIO", "unit":"", "section":"TOTAL", "pu":"=H22+H23+H24", "op":"", "qty":"", "amount":"=E25", "pct":1, "mpu":"=M22+M23+M24", "mop":"", "mqty":"", "mamount":"=J25", "dev":"=IF(M25=0,0,H25/M25-1)", "state":"", "obs":"Este total debe reconciliar con Comparativa"},
     ]
-    for r, row in enumerate(rows, 3):
-        for c, v in enumerate(row, 1):
-            ws.cell(r, c, v)
-        section = row[3]
+
+
+def _strip_market_formula(value):
+    """Convert a market-based formula to blank when rendering base-budget detail."""
+    if isinstance(value, str) and any(token in value for token in ["J", "L", "M"]):
+        return ""
+    return value
+
+
+def _write_canonical_apu_detail_sheet(ws, display_name: str, theme_color: str, *, variant: str = "A", include_market: bool = True, source_type: str = "CONTRACTOR_APU"):
+    """Write a canonical APU detail sheet.
+
+    This is the single shared layout for details generated by:
+    - BaseBudgetEngine: include_market=False, source_type='BASE_BUDGET'
+    - ContractorMatrixDetailEngine: include_market=True, source_type='CONTRACTOR_APU'
+
+    Reusing this routine prevents base-budget and comparison details from
+    drifting apart. The base detail excludes only market columns because its
+    values already represent the generated market/base matrix.
+    """
+    headers = _canonical_detail_headers(include_market)
+    max_col = len(headers)
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A3"
+    base_widths = [14, 42, 12, 18, 14, 11, 12, 16, 12]
+    market_widths = [16, 11, 12, 16, 14] if include_market else []
+    tail_widths = [18, 32]
+    for idx, width in enumerate(base_widths + market_widths + tail_widths, 1):
+        ws.column_dimensions[get_column_letter(idx)].width = width
+
+    title = f"Detalle APU - {display_name}" if source_type == "CONTRACTOR_APU" else "Detalle Base - Matriz presupuestada"
+    _provider_group_header(ws, 1, 1, max_col, title, theme_color)
+    for c, h in enumerate(headers, 1):
+        ws.cell(2, c, h)
+    _header_style(ws, 2, 1, max_col, fill=theme_color)
+
+    keys = ["code", "concept", "unit", "section", "pu", "op", "qty", "amount", "pct"]
+    if include_market:
+        keys += ["mpu", "mop", "mqty", "mamount", "dev"]
+    keys += ["state", "obs"]
+
+    for r, row in enumerate(_canonical_apu_rows(variant), 3):
+        for c, key in enumerate(keys, 1):
+            value = row.get(key, "")
+            if not include_market and key in {"state", "obs"}:
+                # Keep regular values.
+                pass
+            elif not include_market:
+                value = _strip_market_formula(value)
+            ws.cell(r, c, value)
+        section = row["section"]
         fill = "FFFFFF"; bold = False
         if section in {"PARTIDA", "TÍTULO"}:
             fill = "EAF2FF" if section == "PARTIDA" else "F2F4F7"; bold = True
@@ -619,27 +662,47 @@ def _write_contractor_detail_sheet(ws, contractor_name: str, theme_color: str, v
             fill = "FFF2CC"; bold = True
         elif section.startswith("%"):
             fill = "F8FAFC"
-        for c in range(1, 17):
+        for c in range(1, max_col + 1):
             ws.cell(r, c).fill = PatternFill("solid", fgColor=fill)
             ws.cell(r, c).border = _thin_border("EAECF0")
             ws.cell(r, c).alignment = Alignment(vertical="top", wrap_text=True)
-            if bold: ws.cell(r, c).font = Font(bold=True, color=BRAND["text"])
-    _apply_formats(ws, money_cols=[5,8,10,13], pct_cols=[9,14], start_row=3, end_row=25)
-    for col in [7, 12]:
+            if bold:
+                ws.cell(r, c).font = Font(bold=True, color=BRAND["text"])
+
+    # Number formats. Base columns are stable; market columns only exist when requested.
+    money_cols = [5, 8]
+    pct_cols = [9]
+    if include_market:
+        money_cols += [10, 13]
+        pct_cols += [14]
+    _apply_formats(ws, money_cols=money_cols, pct_cols=pct_cols, start_row=3, end_row=25)
+    for col in [7, 12] if include_market else [7]:
         for row in range(3, 26):
-            if ws.cell(row, col-1).value == "%": ws.cell(row, col).number_format = PCT_FMT
-    ws.auto_filter.ref = "A2:P25"
-    ws.conditional_formatting.add("N3:N25", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+            if ws.cell(row, col-1).value == "%":
+                ws.cell(row, col).number_format = PCT_FMT
+    ws.auto_filter.ref = f"A2:{get_column_letter(max_col)}25"
+    if include_market:
+        dev_col = get_column_letter(14)
+        ws.conditional_formatting.add(f"{dev_col}3:{dev_col}25", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
     for r in range(5, 9): ws.row_dimensions[r].outlineLevel = 1
     for r in range(11, 16): ws.row_dimensions[r].outlineLevel = 1
     for r in range(18, 20): ws.row_dimensions[r].outlineLevel = 1
     for r in range(23, 25): ws.row_dimensions[r].outlineLevel = 1
-    ws["A28"] = "Regla canónica de generación"
-    ws["A28"].font = Font(bold=True, color=BRAND["navy"])
-    ws["B28"] = "Esta hoja se genera desde el archivo matriz/APU propio del proveedor seleccionado. No se fuerza estructura horizontal común entre proveedores y no usa construdata_matrices.xlsx."
-    ws.merge_cells(start_row=28, start_column=2, end_row=28, end_column=16)
-    ws["B28"].alignment = Alignment(wrap_text=True)
 
+    note_row = 28
+    ws.cell(note_row, 1, "Regla canónica de generación")
+    ws.cell(note_row, 1).font = Font(bold=True, color=BRAND["navy"])
+    if include_market:
+        note = "Esta hoja se genera desde el archivo matriz/APU propio del proveedor seleccionado y compara contra referencias granulares de data. No usa construdata_matrices.xlsx."
+    else:
+        note = "Esta hoja usa el mismo layout canónico del Detalle APU de comparativa, pero excluye columnas de mercado porque representa la matriz base/de mercado generada desde conceptos de ingeniería + matrices Construdata."
+    ws.cell(note_row, 2, note)
+    ws.merge_cells(start_row=note_row, start_column=2, end_row=note_row, end_column=max_col)
+    ws.cell(note_row, 2).alignment = Alignment(wrap_text=True)
+
+
+def _write_contractor_detail_sheet(ws, contractor_name: str, theme_color: str, variant: str = "A"):
+    _write_canonical_apu_detail_sheet(ws, contractor_name, theme_color, variant=variant, include_market=True, source_type="CONTRACTOR_APU")
 
 def _write_partidas_criticas(ws):
     _setup_sheet(ws, "Partidas Críticas", "Priorización de partidas por impacto económico, desviación y riesgo de negociación.", 12)
@@ -757,7 +820,13 @@ def _write_analisis_ia(ws):
 
 
 def _write_base_budget_report(wb):
-    # Professional base-budget version; kept separate from contractor comparison.
+    """Generate the independent base-budget workbook.
+
+    Important V0.7 correction: the base-budget detail uses the same canonical
+    APU detail writer as contractor comparisons. Only market columns are
+    removed, because the generated base matrix is itself the market/reference
+    matrix. This keeps both processes attached to the same canonical data model.
+    """
     ws = wb.active
     ws.title = "Resumen Ejecutivo"
     _setup_sheet(ws, "Presupuesto Base", "Presupuesto independiente generado desde conceptos de ingeniería + matrices Construdata.", 10)
@@ -768,6 +837,11 @@ def _write_base_budget_report(wb):
     _write_kpi(ws, 4, 7, "En revisión", 17, "Match medio", "FFF2CC")
     _write_kpi(ws, 4, 9, "Sin match", 7, "Cotizar", "FCE4D6")
     for cell in ["A5"]: ws[cell].number_format = MONEY_FMT
+    _section_label(ws, 9, "Regla de modelo canónico", 10)
+    ws["A10"] = "El presupuesto base es independiente del comparador, pero comparte el mismo modelo canónico de matriz/APU y el mismo escritor de detalle."
+    ws.merge_cells(start_row=10, start_column=1, end_row=10, end_column=10)
+    ws["A10"].alignment = Alignment(wrap_text=True)
+
     comp = wb.create_sheet("Comparativa")
     _setup_sheet(comp, "Comparativa presupuesto base", "Conceptos presupuestados contra matrices Construdata. No es flujo obligatorio de licitación.", 10)
     _set_widths(comp, {"A":14,"B":42,"C":12,"D":12,"E":42,"F":16,"G":18,"H":14,"I":16,"J":28})
@@ -785,22 +859,10 @@ def _write_base_budget_report(wb):
     _body_style(comp,6,9,1,10)
     _apply_formats(comp, money_cols=[6,7], start_row=6, end_row=9)
     _add_table(comp,"A5:J9","BaseBudgetComparativaTable","TableStyleMedium2")
-    detail = wb.create_sheet("Detalle Base")
-    _setup_sheet(detail, "Detalle presupuesto base", "Cruce conceptual entre conceptos de ingeniería y matrices Construdata.", 9)
-    _set_widths(detail,{"A":22,"B":44,"C":44,"D":12,"E":12,"F":16,"G":18,"H":18,"I":32})
-    headers = ["Concepto base", "Descripción ingeniería", "Matriz Construdata", "Unidad", "Cantidad", "P.U. ref.", "Importe", "Estado", "Nota"]
-    for c,h in enumerate(headers,1): detail.cell(5,c,h)
-    _header_style(detail,5,1,9)
-    rows = [
-        ["Excavación", "Excavación manual", "Excavación manual material común", "m3", 120, 88000, "=E6*F6", "Con precio", "Usado para presupuesto base independiente"],
-        ["Acero", "Acero de refuerzo", "Acero fy 4200", "kg", 1800, 6200, "=E7*F7", "Revisar", "Match medio por descripción"],
-    ]
-    for r,row in enumerate(rows,6):
-        for c,v in enumerate(row,1): detail.cell(r,c,v)
-    _body_style(detail,6,7,1,9)
-    _apply_formats(detail, money_cols=[6,7], start_row=6, end_row=7)
-    _add_table(detail,"A5:I7","BaseBudgetDetalleTable","TableStyleMedium4")
 
+    # Shared canonical detail writer. Same format as provider detail, excluding market columns.
+    detail = wb.create_sheet("Detalle Base")
+    _write_canonical_apu_detail_sheet(detail, "BASE", "1F4E79", variant="A", include_market=False, source_type="BASE_BUDGET")
 
 def _write_comparison_report(wb, provider_names: Optional[List[str]] = None):
     names = _safe_provider_names(provider_names)
