@@ -73,3 +73,12 @@ La V0 ahora incluye un generador de Excel profesional para `/api/reports/compari
 - Análisis IA
 
 El diseño es limpio y profesional. El archivo histórico se usa únicamente como referencia funcional, no visual. El tab `Detalle APU` queda modelado como reconstrucción desde la matriz/APU del contratista + referencias granulares de `data`.
+
+
+## V0.3 - Ajuste de carga y Excel
+
+- Para comparativas, cada contratista debe registrar nombre visible, archivo de conceptos `.xlsx` y archivo matriz/APU `.xlsx`.
+- La hoja `Comparativa` mantiene formato horizontal por proveedor.
+- El detalle ya no se genera en una única hoja horizontal; se genera un tab por contratista: `Detalle - Proveedor A`, `Detalle - Proveedor B`, etc.
+- Cada tab de detalle respeta la matriz/APU propia del contratista y aplica porcentajes sobre el subtotal correspondiente declarado por la matriz.
+- Se mantiene eliminado el tab `Parámetros`.

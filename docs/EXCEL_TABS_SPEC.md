@@ -46,3 +46,28 @@ La V1 debe leer esta base desde el archivo real del contratista. La V0 lo modela
 6. `Validaciones`
 7. `Análisis IA`
 
+
+
+## Corrección V0.3 - Detalle por contratista
+
+- La hoja `Comparativa` mantiene una vista horizontal por proveedor para facilitar comparación ejecutiva de partidas.
+- La hoja `Detalle APU` ya no debe existir como una sola hoja horizontal para todos los proveedores.
+- Cada contratista genera su propia hoja: `Detalle - <Contratista>`.
+- Motivo: cada contratista puede declarar una matriz/APU con estructura, insumos, subtotales, porcentajes y secciones diferentes.
+- La interfaz de carga debe solicitar por cada contratista:
+  - Nombre visible del contratista.
+  - Archivo de conceptos `.xlsx`.
+  - Archivo matriz/APU `.xlsx`.
+- El nombre visible se usa en dashboard, resumen, comparativa y nombres de hojas del Excel.
+- En cada tab de detalle se calculan subtotales por:
+  - Materiales.
+  - Mano de obra.
+  - Maquinaria/equipo.
+- Los insumos declarados como porcentaje se aplican sobre la base indicada por la matriz/APU del contratista:
+  - `% SOBRE MATERIALES` aplica únicamente al subtotal de materiales.
+  - `% SOBRE MO` aplica únicamente al subtotal de mano de obra.
+  - `% SOBRE MAQUINARIA` aplica únicamente al subtotal de maquinaria/equipo.
+  - `% SOBRE DIRECTO` aplica al costo directo.
+  - `% SOBRE DIRECTO+IND` aplica al costo directo más indirectos.
+- `construdata_matrices.xlsx` no participa en la generación del detalle de contratistas.
+- El detalle de contratistas se enriquece con referencias granulares desde `data`: materiales, mano de obra, maquinaria y porcentajes.

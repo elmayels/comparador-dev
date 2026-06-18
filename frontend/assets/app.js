@@ -9,6 +9,10 @@ const state = {
   baseUploadFiles: [],
   comparisonFiles: [],
   comparisonMode: 'MULTI',
+  comparisonContractors: [
+    { id: 1, name: 'Proveedor A', conceptsFile: null, matrixFile: null },
+    { id: 2, name: 'Proveedor B', conceptsFile: null, matrixFile: null },
+  ],
 };
 
 document.documentElement.dataset.theme = state.theme;
@@ -180,6 +184,85 @@ function bindPicker(id, target){
 }
 function renderFileList(list, files){ list.innerHTML = files.length ? files.map(f=>`<div class="file-item"><div><strong>${f.name}</strong><div class="small muted">${(f.size/1024).toFixed(1)} KB</div></div><span class="badge ${f.name.toLowerCase().endsWith('.xlsx')?'ok':'bad'}">${f.name.toLowerCase().endsWith('.xlsx')?'Válido':'No permitido'}</span></div>`).join('') : ''; }
 
+
+function ensureContractorCount(){
+  const min = state.comparisonMode === 'SINGLE' ? 1 : 2;
+  if (!state.comparisonContractors.length) state.comparisonContractors = [{ id: Date.now(), name: 'Proveedor A', conceptsFile: null, matrixFile: null }];
+  while (state.comparisonContractors.length < min) {
+    const idx = state.comparisonContractors.length + 1;
+    state.comparisonContractors.push({ id: Date.now() + idx, name: `Proveedor ${String.fromCharCode(64+idx)}`, conceptsFile: null, matrixFile: null });
+  }
+  if (state.comparisonMode === 'SINGLE' && state.comparisonContractors.length > 1) state.comparisonContractors = state.comparisonContractors.slice(0,1);
+}
+
+function xlsxStatus(file){
+  if (!file) return '<span class="badge warn">Pendiente</span>';
+  return `<span class="badge ${file.name.toLowerCase().endsWith('.xlsx')?'ok':'bad'}">${file.name.toLowerCase().endsWith('.xlsx')?'Válido':'No permitido'}</span>`;
+}
+
+function contractorCard(c, idx){
+  const canRemove = state.comparisonMode === 'MULTI' && state.comparisonContractors.length > 2;
+  return `<div class="contractor-card card" data-contractor="${c.id}">
+    <div class="contractor-card-head">
+      <div><h3>Contratista ${idx + 1}</h3><p>Nombre visible en dashboard, resúmenes y Excel.</p></div>
+      ${canRemove ? `<button class="btn btn-danger" data-remove-contractor="${c.id}">Eliminar</button>` : ''}
+    </div>
+    <div class="form-grid three">
+      <div>
+        <label class="label">Nombre del contratista</label>
+        <input class="input" data-contractor-name="${c.id}" value="${c.name || ''}" placeholder="Ej. Proveedor ABC / Contratista Norte">
+      </div>
+      <div>
+        <label class="label">Archivo de conceptos .xlsx</label>
+        <div class="mini-upload" data-pick-concepts="${c.id}">
+          <strong>${c.conceptsFile ? c.conceptsFile.name : 'Seleccionar conceptos'}</strong>
+          <span>Catálogo/lista de conceptos ofertados</span>
+        </div>
+        <input id="concepts-${c.id}" class="hidden" type="file" accept=".xlsx" data-concepts-input="${c.id}">
+        <div class="upload-status">${xlsxStatus(c.conceptsFile)}</div>
+      </div>
+      <div>
+        <label class="label">Archivo matriz/APU .xlsx</label>
+        <div class="mini-upload" data-pick-matrix="${c.id}">
+          <strong>${c.matrixFile ? c.matrixFile.name : 'Seleccionar matriz/APU'}</strong>
+          <span>Detalle de insumos, MO, maquinaria y porcentajes</span>
+        </div>
+        <input id="matrix-${c.id}" class="hidden" type="file" accept=".xlsx" data-matrix-input="${c.id}">
+        <div class="upload-status">${xlsxStatus(c.matrixFile)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindContractorInputs(){
+  $$('[data-contractor-name]').forEach(input => input.oninput = () => {
+    const c = state.comparisonContractors.find(x => String(x.id) === String(input.dataset.contractorName));
+    if (c) c.name = input.value;
+  });
+  $$('[data-pick-concepts]').forEach(el => el.onclick = () => $(`#concepts-${el.dataset.pickConcepts}`).click());
+  $$('[data-pick-matrix]').forEach(el => el.onclick = () => $(`#matrix-${el.dataset.pickMatrix}`).click());
+  $$('[data-concepts-input]').forEach(input => input.onchange = () => {
+    const c = state.comparisonContractors.find(x => String(x.id) === String(input.dataset.conceptsInput));
+    if (c) c.conceptsFile = input.files[0] || null;
+    render();
+  });
+  $$('[data-matrix-input]').forEach(input => input.onchange = () => {
+    const c = state.comparisonContractors.find(x => String(x.id) === String(input.dataset.matrixInput));
+    if (c) c.matrixFile = input.files[0] || null;
+    render();
+  });
+  $$('[data-remove-contractor]').forEach(btn => btn.onclick = () => {
+    state.comparisonContractors = state.comparisonContractors.filter(c => String(c.id) !== String(btn.dataset.removeContractor));
+    render();
+  });
+  const add = $('#addContractor');
+  if (add) add.onclick = () => {
+    const idx = state.comparisonContractors.length + 1;
+    state.comparisonContractors.push({ id: Date.now(), name: `Proveedor ${String.fromCharCode(64+idx)}`, conceptsFile: null, matrixFile: null });
+    render();
+  };
+}
+
 function baseBudgetsNew(){
   shell(`${pageHead('Nuevo presupuesto base', 'Crear presupuesto independiente desde archivo de conceptos de ingeniería y matrices Construdata en data.', `<button class="btn btn-secondary" data-nav="base-budgets">Volver</button>`)}<div class="stepper"><span class="step active">1 Datos</span><span class="step active">2 Carga .xlsx</span><span class="step">3 Match Construdata</span><span class="step">4 Resultado</span></div><div class="grid cols-2"><div class="card"><h3>Datos del presupuesto</h3><div class="form-grid"><div><label class="label">Nombre</label><input class="input" value="Presupuesto base Sucursal Norte"></div><div><label class="label">Cliente / Obra</label><input class="input" value="Cliente A / Obra Civil 2026"></div><div><label class="label">Fuente Construdata detectada</label><input class="input" value="data/construdata_matrices.xlsx" readonly></div></div></div><div class="card"><h3>Archivo de conceptos de ingeniería</h3><p>Este módulo no requiere contratistas ni licitación.</p>${filePicker('baseFiles', false)}<div class="actions" style="margin-top:16px"><button id="runBase" class="btn btn-primary">Generar presupuesto base mock</button></div></div></div><div class="callout" style="margin-top:16px"><strong>Separación clave:</strong> este flujo usa <span class="mono">construdata_matrices.xlsx</span>. El detalle APU de contratistas usa materiales/MO/maquinaria desde data y no busca matrices Construdata.</div>`, 'Nuevo presupuesto base');
   bindPicker('baseFiles','baseUploadFiles');
@@ -199,13 +282,31 @@ function comparisons(){
 }
 
 function comparisonNew(){
-  shell(`${pageHead('Nueva comparación', 'Carga solo .xlsx. Elige si analizarás una propuesta individual o múltiples contratistas.', `<button class="btn btn-secondary" data-nav="comparisons">Volver</button>`)}<div class="grid cols-2"><div class="card"><h3>Tipo de comparación</h3><div class="tabs"><button class="tab ${state.comparisonMode==='SINGLE'?'active':''}" data-mode="SINGLE">Un contratista</button><button class="tab ${state.comparisonMode==='MULTI'?'active':''}" data-mode="MULTI">Múltiples contratistas</button></div><p>${state.comparisonMode==='SINGLE'?'No se mostrará ranking económico; se analizarán desviaciones contra referencias disponibles.':'Se mostrará ranking económico, diferencias, mediana, promedio y semáforo por contratista.'}</p><div class="form-grid" style="margin-top:14px"><div><label class="label">Proyecto</label><input class="input" value="Comparativo Sucursal Norte"></div><div><label class="label">Presupuesto base opcional</label><select class="select"><option>No usar presupuesto base</option><option>BB-2026-0001 · Sucursal Norte</option></select></div></div></div><div class="card"><h3>Archivos de contratistas</h3>${filePicker('comparisonFiles', true)}<div class="actions" style="margin-top:16px"><button id="runComparison" class="btn btn-primary">Validar y procesar mock</button></div></div></div><div class="callout" style="margin-top:16px"><strong>Detalle APU:</strong> para cada contratista se usará su propia matriz/APU + referencias granulares desde data: materiales, mano de obra, maquinaria y porcentajes. No se usa <span class="mono">construdata_matrices.xlsx</span> para este detalle.</div>`, 'Nueva comparación');
-  $$('.tab').forEach(t=>t.onclick=()=>{state.comparisonMode=t.dataset.mode; render();});
-  bindPicker('comparisonFiles','comparisonFiles');
+  ensureContractorCount();
+  const min = state.comparisonMode === 'MULTI' ? 2 : 1;
+  const contractorCards = state.comparisonContractors.map((c,i)=>contractorCard(c,i)).join('');
+  shell(`${pageHead('Nueva comparación', 'Por cada contratista carga dos archivos .xlsx: conceptos y matriz/APU. El nombre ingresado será el nombre visible en web y Excel.', `<button class="btn btn-secondary" data-nav="comparisons">Volver</button>`)}
+  <div class="grid cols-2">
+    <div class="card"><h3>Tipo de comparación</h3>
+      <div class="tabs"><button class="tab ${state.comparisonMode==='SINGLE'?'active':''}" data-mode="SINGLE">Un contratista</button><button class="tab ${state.comparisonMode==='MULTI'?'active':''}" data-mode="MULTI">Múltiples contratistas</button></div>
+      <p>${state.comparisonMode==='SINGLE'?'No se mostrará ranking económico; se analizará un contratista contra referencias disponibles.':'Se mostrará ranking económico y comparativa horizontal por proveedor.'}</p>
+      <div class="form-grid" style="margin-top:14px"><div><label class="label">Proyecto</label><input class="input" value="Comparativo Sucursal Norte"></div><div><label class="label">Presupuesto base opcional</label><select class="select"><option>No usar presupuesto base</option><option>BB-2026-0001 · Sucursal Norte</option></select></div></div>
+    </div>
+    <div class="card"><h3>Regla de carga</h3><p>Cada contratista debe tener su <strong>archivo de conceptos</strong> y su <strong>archivo matriz/APU</strong>. La matriz/APU alimenta su propio tab de detalle en el Excel.</p><div class="callout" style="margin-top:12px"><strong>Importante:</strong> no todos los contratistas tienen la misma matriz. Por eso el Excel genera un tab de detalle separado por contratista.</div></div>
+  </div>
+  <div class="contractor-list" style="margin-top:16px">${contractorCards}</div>
+  ${state.comparisonMode==='MULTI'?'<div class="actions" style="margin-top:14px"><button id="addContractor" class="btn btn-secondary">+ Agregar contratista</button></div>':''}
+  <div class="actions" style="margin-top:18px"><button id="runComparison" class="btn btn-primary">Validar y procesar mock</button></div>
+  <div class="callout" style="margin-top:16px"><strong>Detalle APU:</strong> por cada contratista se generará un tab propio usando su matriz/APU declarada + referencias granulares desde data. Los porcentajes se aplican según la base declarada en su archivo: materiales, MO, maquinaria, directo o directo + indirecto.</div>`, 'Nueva comparación');
+  $$('.tab').forEach(t=>t.onclick=()=>{state.comparisonMode=t.dataset.mode; ensureContractorCount(); render();});
+  bindContractorInputs();
   $('#runComparison').onclick=()=>{
-    const min = state.comparisonMode==='MULTI'?2:1;
-    if(state.comparisonFiles.length<min){alert(`Carga mínimo ${min} archivo(s) .xlsx`); return;}
-    if(state.comparisonFiles.some(f=>!f.name.toLowerCase().endsWith('.xlsx'))){alert('Solo se aceptan archivos .xlsx'); return;}
+    ensureContractorCount();
+    const required = state.comparisonMode==='MULTI'?2:1;
+    const contractors = state.comparisonContractors.slice(0, required === 1 ? 1 : state.comparisonContractors.length);
+    if(contractors.length < required){alert(`Agrega mínimo ${required} contratista(s).`); return;}
+    const invalid = contractors.find(c => !c.name?.trim() || !c.conceptsFile || !c.matrixFile || !c.conceptsFile.name.toLowerCase().endsWith('.xlsx') || !c.matrixFile.name.toLowerCase().endsWith('.xlsx'));
+    if(invalid){alert('Cada contratista debe tener nombre, archivo de conceptos .xlsx y archivo matriz/APU .xlsx.'); return;}
     go('comparison-processing');
   };
 }
@@ -220,7 +321,15 @@ function comparisonResults(){
 }
 
 function matrixDetail(){
-  shell(`${pageHead('Detalle de matriz/APU por contratista', 'Tab Detalle conceptual del Excel. Se arma desde matriz del contratista + referencias granulares data.', `<a class="btn btn-primary" href="/api/reports/comparison">Descargar Excel resultado</a>`)}${kpis([{label:'Materiales',value:'data',text:'construdata-materiales'}, {label:'Mano de obra',value:'3',text:'archivos detectados'}, {label:'Maquinaria',value:'data',text:'construdata-maquinaria'}, {label:'Matrices',value:'No',text:'No usar para detalle'}])}<div class="callout" style="margin-bottom:16px"><strong>Regla:</strong> <span class="mono">construdata_matrices.xlsx</span> aplica al presupuesto base. El detalle de contratistas no busca matrices; usa insumos y porcentajes de referencia desde <span class="mono">data</span>.</div>${table(['Contratista','Concepto','Tipo','Insumo','Unidad','Cantidad','Precio contratista','Precio base data','Dif %','Alerta'], [['Contratista A','Concreto f\'c 250','Material','Cemento','kg','320',money(580),money(560),'+3.57%','<span class="badge ok">OK</span>'],['Contratista A','Concreto f\'c 250','MO','Oficial','hr','1.2',money(18000),money(17500),'+2.85%','<span class="badge ok">OK</span>'],['Contratista C','Concreto f\'c 250','Maquinaria','Mezcladora','hr','0.4',money(42000),money(34000),'+23.52%','<span class="badge warn">Revisar</span>'],['Contratista C','Acabados','%','Indirectos','%','1','18%','15%','+20%','<span class="badge warn">Porcentaje superior</span>']])}`, 'Detalle APU');
+  ensureContractorCount();
+  const rows = state.comparisonContractors.map((c,i)=>[
+    c.name || `Proveedor ${i+1}`,
+    c.conceptsFile ? c.conceptsFile.name : 'conceptos_'+(i+1)+'.xlsx',
+    c.matrixFile ? c.matrixFile.name : 'matriz_apu_'+(i+1)+'.xlsx',
+    `Detalle - ${(c.name || `Proveedor ${i+1}`).substring(0,22)}`,
+    '<span class="badge ok">Tab individual</span>'
+  ]);
+  shell(`${pageHead('Detalle de matriz/APU por contratista', 'Cada contratista genera su propio tab de detalle porque su matriz/APU puede tener estructura diferente.', `<a class="btn btn-primary" href="/api/reports/comparison">Descargar Excel resultado</a>`)}${kpis([{label:'Materiales',value:'data',text:'construdata-materiales'}, {label:'Mano de obra',value:'3',text:'archivos detectados'}, {label:'Maquinaria',value:'data',text:'construdata-maquinaria'}, {label:'Detalle',value:'1 tab',text:'por contratista'}])}<div class="callout" style="margin-bottom:16px"><strong>Regla:</strong> el Excel no fuerza un detalle horizontal común. La hoja <span class="mono">Comparativa</span> sí puede ser horizontal por proveedor; el detalle se separa como <span class="mono">Detalle - Proveedor A</span>, <span class="mono">Detalle - Proveedor B</span>, etc.</div>${table(['Contratista','Archivo conceptos','Archivo matriz/APU','Tab generado','Estado'], rows)}<div class="card" style="margin-top:16px"><h3>Subtotales y porcentajes</h3><p>En cada tab individual se calculan subtotales de Materiales, Mano de Obra y Maquinaria. Los insumos porcentuales se aplican sobre la sección declarada en la matriz del contratista: % sobre materiales, % sobre MO, % sobre maquinaria, % sobre costo directo o % sobre directo + indirecto.</p></div>`, 'Detalle APU');
 }
 
 function myRuns(){ shell(`${pageHead('Mis corridas', 'Historial personal del usuario autenticado.')} ${table(['Fecha','Proyecto','Tipo','Estado','Riesgo','Acciones'], mockRuns.filter(r=>state.user.role!=='ANALYST'||r.user==='Analista Demo').map(r=>[r.date,r.name,r.type,`<span class="badge ${r.status==='Fallida'?'bad':'ok'}">${r.status}</span>`,r.risk,'Ver · Descargar · Duplicar']))}`, 'Mis corridas'); }

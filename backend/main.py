@@ -382,7 +382,8 @@ def _write_resumen_ejecutivo(ws, mode: str):
     _section_label(ws, 23, "Navegación", 10)
     links = [
         ("Comparativa", "#'Comparativa'!A1"),
-        ("Detalle APU", "#'Detalle APU'!A1"),
+        ("Detalle Proveedor A", "#'Detalle - Proveedor A'!A1"),
+        ("Detalle Proveedor B", "#'Detalle - Proveedor B'!A1"),
         ("Partidas Críticas", "#'Partidas Críticas'!A1"),
         ("Insumos Críticos", "#'Insumos Críticos'!A1"),
         ("Validaciones", "#'Validaciones'!A1"),
@@ -475,94 +476,100 @@ def _write_comparativa_professional(ws):
             row += 1
         row += 1
 
-def _write_detalle_apu_professional(ws):
-    # Horizontal detail: shared APU structure + one block of own columns per provider.
-    # No "Contratista" column is used; provider identity lives in grouped column headers.
+def _write_contractor_detail_sheet(ws, contractor_name: str, theme_color: str, variant: str = "A"):
+    """Write one contractor-specific APU detail sheet.
+
+    Canonical rule: each contractor may declare a different matrix/APU, so the
+    Excel must not force all providers into one horizontal Detail sheet. The
+    Comparativa tab can be horizontal, but Detalle is generated as one sheet per
+    contractor. Each detail sheet keeps that contractor's own declared structure
+    and compares every declared component against granular market references.
+    """
     ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A3"
     _set_widths(ws, {
-        "A": 14, "B": 38, "C": 11, "D": 16,
-        "E": 14, "F": 11, "G": 12, "H": 16, "I": 12, "J": 16, "K": 11, "L": 12, "M": 16,
-        "N": 14, "O": 11, "P": 12, "Q": 16, "R": 12, "S": 16, "T": 11, "U": 12, "V": 16
+        "A": 14, "B": 42, "C": 12, "D": 18, "E": 14, "F": 11,
+        "G": 12, "H": 16, "I": 12, "J": 16, "K": 11, "L": 12,
+        "M": 16, "N": 16, "O": 18, "P": 28,
     })
-    ws.freeze_panes = "E3"
-    _provider_group_header(ws, 1, 1, 4, "Estructura APU", "475467")
-    _provider_group_header(ws, 1, 5, 13, "Proveedor A", "1F4E79")
-    _provider_group_header(ws, 1, 14, 22, "Proveedor B", "0E6B3D")
+    _provider_group_header(ws, 1, 1, 16, f"Detalle APU - {contractor_name}", theme_color)
     headers = [
-        "Código", "Concepto / insumo", "Unidad", "Sección",
-        "P. Unitario", "Op.", "Cantidad", "Importe", "%", "Mercado P.U.", "Mercado Op.", "Mercado Cant.", "Mercado Importe",
-        "P. Unitario", "Op.", "Cantidad", "Importe", "%", "Mercado P.U.", "Mercado Op.", "Mercado Cant.", "Mercado Importe",
+        "Código", "Concepto / insumo", "Unidad", "Sección", "P. Unitario",
+        "Op.", "Cantidad", "Importe", "%", "Mercado P.U.", "Mercado Op.",
+        "Mercado Cant.", "Mercado Importe", "Diferencia %", "Estado", "Observación"
     ]
     for c, h in enumerate(headers, 1):
         ws.cell(2, c, h)
-    _header_style(ws, 2, 1, 4, fill="475467")
-    _header_style(ws, 2, 5, 13, fill="1F4E79")
-    _header_style(ws, 2, 14, 22, fill="0E6B3D")
+    _header_style(ws, 2, 1, len(headers), fill=theme_color)
+
+    # Slightly different mock values so each contractor sheet proves it is not
+    # a copied common matrix. In V1 these rows come from each contractor's own
+    # matrix/APU file uploaded in the webapp.
+    factor = 1 if variant == "A" else 0.88
+    mat_rate = 0.08 if variant == "A" else 0.06
+    mo_tool_rate = 0.09 if variant == "A" else 0.05
+    epp_rate = 0.09 if variant == "A" else 0.07
+    machine_rate = 0.05 if variant == "A" else 0.04
+    indirect_rate = 0.25
+    finance_rate = 0.0285 if variant == "A" else 0.00
 
     rows = [
-        ["FLEX41.11", "INSTALACIÓN DE BOMBA CENTRÍFUGA FRISTAM MODELO FPR 3531-155", "PZA", "PARTIDA", 19187.17, "", 1, "=E3*G3", "=H3/$H$25", 7238.26, "*", 1, "=J3*L3", 15842.49, "", 1, "=N3*P3", "=Q3/$Q$25", 6618.23, "*", 1, "=S3*U3"],
-        ["", "MATERIALES", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
-        ["MAT-BOMBA", "Materiales menores para montaje de bomba", "LOTE", "MATERIALES", 4500, "*", 1, "=E5*G5", "=H5/$H$25", 4500, "*", 1, "=J5*L5", 4140, "*", 1, "=N5*P5", "=Q5/$Q$25", 4140, "*", 1, "=S5*U5"],
-        ["ANCL-M10", "Anclaje mecánico acero inoxidable M10", "PZA", "MATERIALES", 120, "*", 8, "=E6*G6", "=H6/$H$25", 120, "*", 8, "=J6*L6", 110.40, "*", 8, "=N6*P6", "=Q6/$Q$25", 110.40, "*", 8, "=S6*U6"],
-        ["SOL-INOX", "Consumible soldadura acero inoxidable", "KG", "MATERIALES", 285, "*", 1.5, "=E7*G7", "=H7/$H$25", 300.80, "*", 1.5, "=J7*L7", 262.20, "*", 1.5, "=N7*P7", "=Q7/$Q$25", 300.80, "*", 1.5, "=S7*U7"],
-        ["%CONS-MAT", "Consumibles declarados como % sobre subtotal de MATERIALES", "%", "% SOBRE MATERIALES", "=SUM(H5:H7)", "%", 0.08, "=E8*G8", "=H8/$H$25", "=SUM(M5:M7)", "%", 0.08, "=J8*L8", "=SUM(Q5:Q7)", "%", 0.06, "=N8*P8", "=Q8/$Q$25", "=SUM(V5:V7)", "%", 0.06, "=S8*U8"],
-        ["", "SUBTOTAL MATERIALES", "", "SUBTOTAL MATERIALES", "=SUM(H5:H7)", "", "", "=SUM(H5:H8)", "=H9/$H$25", "=SUM(M5:M7)", "", "", "=SUM(M5:M8)", "=SUM(Q5:Q7)", "", "", "=SUM(Q5:Q8)", "=Q9/$Q$25", "=SUM(V5:V7)", "", "", "=SUM(V5:V8)"],
-        ["", "MANO DE OBRA", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
-        ["SUP-O", "Supervisor Obra", "JOR", "MO", 2643.19, "*", 0.1, "=E11*G11", "=H11/$H$25", 1757.33, "*", 0.1, "=J11*L11", 2350, "*", 0.1, "=N11*P11", "=Q11/$Q$25", 1757.33, "*", 0.1, "=S11*U11"],
-        ["OF-SOL", "Oficial soldador / argonero", "JOR", "MO", 2120.45, "*", 1, "=E12*G12", "=H12/$H$25", 1326.14, "*", 1, "=J12*L12", 1980, "*", 1, "=N12*P12", "=Q12/$Q$25", 1326.14, "*", 1, "=S12*U12"],
-        ["AYU-GRAL", "Ayudante general", "JOR", "MO", 1074.96, "*", 1, "=E13*G13", "=H13/$H$25", 777.88, "*", 1, "=J13*L13", 980, "*", 1, "=N13*P13", "=Q13/$Q$25", 777.88, "*", 1, "=S13*U13"],
-        ["%HERR", "Herramienta menor declarada como % sobre subtotal MO", "%", "% SOBRE MO", "=SUM(H11:H13)", "%", 0.09, "=E14*G14", "=H14/$H$25", "=SUM(M11:M13)", "%", 0.09, "=J14*L14", "=SUM(Q11:Q13)", "%", 0.05, "=N14*P14", "=Q14/$Q$25", "=SUM(V11:V13)", "%", 0.05, "=S14*U14"],
-        ["%EPP", "Equipo de protección personal declarado como % sobre subtotal MO", "%", "% SOBRE MO", "=SUM(H11:H13)", "%", 0.09, "=E15*G15", "=H15/$H$25", "=SUM(M11:M13)", "%", 0.09, "=J15*L15", "=SUM(Q11:Q13)", "%", 0.07, "=N15*P15", "=Q15/$Q$25", "=SUM(V11:V13)", "%", 0.07, "=S15*U15"],
-        ["", "SUBTOTAL MANO DE OBRA", "", "SUBTOTAL MO", "=SUM(H11:H13)", "", "", "=SUM(H11:H15)", "=H16/$H$25", "=SUM(M11:M13)", "", "", "=SUM(M11:M15)", "=SUM(Q11:Q13)", "", "", "=SUM(Q11:Q15)", "=Q16/$Q$25", "=SUM(V11:V13)", "", "", "=SUM(V11:V15)"],
-        ["", "MAQUINARIA / EQUIPO", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
-        ["EQ-MEZ", "Equipo menor / maquinaria auxiliar", "HR", "MAQUINARIA", 350, "*", 2, "=E18*G18", "=H18/$H$25", 330, "*", 2, "=J18*L18", 320, "*", 2, "=N18*P18", "=Q18/$Q$25", 330, "*", 2, "=S18*U18"],
-        ["%EQ", "Porcentaje sobre subtotal de MAQUINARIA", "%", "% SOBRE MAQUINARIA", "=H18", "%", 0.05, "=E19*G19", "=H19/$H$25", "=M18", "%", 0.05, "=J19*L19", "=Q18", "%", 0.04, "=N19*P19", "=Q19/$Q$25", "=V18", "%", 0.04, "=S19*U19"],
-        ["", "SUBTOTAL MAQUINARIA", "", "SUBTOTAL MAQUINARIA", "=SUM(H18:H19)", "", "", "=SUM(H18:H19)", "=H20/$H$25", "=SUM(M18:M19)", "", "", "=SUM(M18:M19)", "=SUM(Q18:Q19)", "", "", "=SUM(Q18:Q19)", "=Q20/$Q$25", "=SUM(V18:V19)", "", "", "=SUM(V18:V19)"],
-        ["", "SECCIÓN FINANCIERA", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
-        ["", "COSTO DIRECTO", "", "TOTAL DIRECTO", "=H9+H16+H20", "", "", "=E22", "=H22/$H$25", "=M9+M16+M20", "", "", "=J22", "=Q9+Q16+Q20", "", "", "=N22", "=Q22/$Q$25", "=V9+V16+V20", "", "", "=S22"],
-        ["IND", "Costo indirecto declarado como % sobre COSTO DIRECTO", "%", "% SOBRE DIRECTO", "=H22", "%", 0.25, "=E23*G23", "=H23/$H$25", "=M22", "%", 0.25, "=J23*L23", "=Q22", "%", 0.25, "=N23*P23", "=Q23/$Q$25", "=V22", "%", 0.25, "=S23*U23"],
-        ["FIN", "Financiamiento declarado como % sobre directo + indirecto", "%", "% SOBRE DIRECTO+IND", "=H22+H23", "%", 0.0285, "=E24*G24", "=H24/$H$25", "=M22+M23", "%", 0.0285, "=J24*L24", "=Q22+Q23", "%", 0.00, "=N24*P24", "=Q24/$Q$25", "=V22+V23", "%", 0.00, "=S24*U24"],
-        ["", "TOTAL COSTO UNITARIO", "", "TOTAL", "=H22+H23+H24", "", "", "=E25", 1, "=M22+M23+M24", "", "", "=J25", "=Q22+Q23+Q24", "", "", "=N25", 1, "=V22+V23+V24", "", "", "=S25"],
+        ["FLEX41.11", "INSTALACIÓN DE BOMBA CENTRÍFUGA FRISTAM MODELO FPR 3531-155", "PZA", "PARTIDA", "", "", 1, "", "", "", "", "", "", "", "", "Matriz propia declarada por el contratista"],
+        ["", "MATERIALES", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["MAT-BOMBA", "Materiales menores para montaje de bomba", "LOTE", "MATERIALES", 4500*factor, "*", 1, "=E5*G5", "=H5/$H$25", 4500, "*", 1, "=J5*L5", "=IF(J5=0,0,E5/J5-1)", "OK", "Referencia: materiales data"],
+        ["ANCL-M10", "Anclaje mecánico acero inoxidable M10", "PZA", "MATERIALES", 120*factor, "*", 8, "=E6*G6", "=H6/$H$25", 120, "*", 8, "=J6*L6", "=IF(J6=0,0,E6/J6-1)", "OK", "Referencia: materiales data"],
+        ["SOL-INOX", "Consumible soldadura acero inoxidable", "KG", "MATERIALES", 285*factor, "*", 1.5, "=E7*G7", "=H7/$H$25", 300.8, "*", 1.5, "=J7*L7", "=IF(J7=0,0,E7/J7-1)", "Revisar" if variant == "A" else "OK", "Precio validado contra data/materiales"],
+        ["%CONS-MAT", "Consumibles declarados como % sobre subtotal de MATERIALES", "%", "% SOBRE MATERIALES", "=SUM(H5:H7)", "%", mat_rate, "=E8*G8", "=H8/$H$25", "=SUM(M5:M7)", "%", mat_rate, "=J8*L8", "=IF(J8=0,0,E8/J8-1)", "OK", "El % aplica solo sobre subtotal materiales"],
+        ["", "SUBTOTAL MATERIALES", "", "SUBTOTAL MATERIALES", "=SUM(H5:H7)", "", "", "=SUM(H5:H8)", "=H9/$H$25", "=SUM(M5:M7)", "", "", "=SUM(M5:M8)", "=IF(M9=0,0,H9/M9-1)", "", "Incluye insumos + % aplicables a materiales"],
+        ["", "MANO DE OBRA", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["SUP-O", "Supervisor Obra", "JOR", "MO", 2643.19*factor, "*", 0.1, "=E11*G11", "=H11/$H$25", 1757.33, "*", 0.1, "=J11*L11", "=IF(J11=0,0,E11/J11-1)", "Revisar", "Referencia: mano de obra data"],
+        ["OF-SOL", "Oficial soldador / argonero", "JOR", "MO", 2120.45*factor, "*", 1, "=E12*G12", "=H12/$H$25", 1326.14, "*", 1, "=J12*L12", "=IF(J12=0,0,E12/J12-1)", "Revisar", "Referencia: mano de obra data"],
+        ["AYU-GRAL", "Ayudante general", "JOR", "MO", 1074.96*factor, "*", 1, "=E13*G13", "=H13/$H$25", 777.88, "*", 1, "=J13*L13", "=IF(J13=0,0,E13/J13-1)", "OK", "Referencia: mano de obra data"],
+        ["%HERR", "Herramienta menor declarada como % sobre subtotal MO", "%", "% SOBRE MO", "=SUM(H11:H13)", "%", mo_tool_rate, "=E14*G14", "=H14/$H$25", "=SUM(M11:M13)", "%", mo_tool_rate, "=J14*L14", "=IF(J14=0,0,E14/J14-1)", "OK", "El % aplica solo sobre subtotal mano de obra"],
+        ["%EPP", "Equipo de protección personal declarado como % sobre subtotal MO", "%", "% SOBRE MO", "=SUM(H11:H13)", "%", epp_rate, "=E15*G15", "=H15/$H$25", "=SUM(M11:M13)", "%", epp_rate, "=J15*L15", "=IF(J15=0,0,E15/J15-1)", "OK", "El % aplica solo sobre subtotal mano de obra"],
+        ["", "SUBTOTAL MANO DE OBRA", "", "SUBTOTAL MO", "=SUM(H11:H13)", "", "", "=SUM(H11:H15)", "=H16/$H$25", "=SUM(M11:M13)", "", "", "=SUM(M11:M15)", "=IF(M16=0,0,H16/M16-1)", "", "Incluye MO + % aplicables a MO"],
+        ["", "MAQUINARIA / EQUIPO", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["EQ-MEZ", "Equipo menor / maquinaria auxiliar", "HR", "MAQUINARIA", 350*factor, "*", 2, "=E18*G18", "=H18/$H$25", 330, "*", 2, "=J18*L18", "=IF(J18=0,0,E18/J18-1)", "OK", "Referencia: maquinaria data"],
+        ["%EQ", "Porcentaje sobre subtotal de MAQUINARIA", "%", "% SOBRE MAQUINARIA", "=H18", "%", machine_rate, "=E19*G19", "=H19/$H$25", "=M18", "%", machine_rate, "=J19*L19", "=IF(J19=0,0,E19/J19-1)", "OK", "El % aplica solo sobre subtotal maquinaria"],
+        ["", "SUBTOTAL MAQUINARIA", "", "SUBTOTAL MAQUINARIA", "=SUM(H18:H19)", "", "", "=SUM(H18:H19)", "=H20/$H$25", "=SUM(M18:M19)", "", "", "=SUM(M18:M19)", "=IF(M20=0,0,H20/M20-1)", "", "Incluye maquinaria + % aplicables a maquinaria"],
+        ["", "SECCIÓN FINANCIERA", "", "TÍTULO", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["", "COSTO DIRECTO", "", "TOTAL DIRECTO", "=H9+H16+H20", "", "", "=E22", "=H22/$H$25", "=M9+M16+M20", "", "", "=J22", "=IF(M22=0,0,H22/M22-1)", "", "Materiales + MO + maquinaria"],
+        ["IND", "Costo indirecto declarado como % sobre COSTO DIRECTO", "%", "% SOBRE DIRECTO", "=H22", "%", indirect_rate, "=E23*G23", "=H23/$H$25", "=M22", "%", indirect_rate, "=J23*L23", "=IF(J23=0,0,E23/J23-1)", "OK", "Porcentaje financiero declarado por contratista"],
+        ["FIN", "Financiamiento declarado como % sobre directo + indirecto", "%", "% SOBRE DIRECTO+IND", "=H22+H23", "%", finance_rate, "=E24*G24", "=H24/$H$25", "=M22+M23", "%", finance_rate, "=J24*L24", "=IF(J24=0,0,E24/J24-1)", "OK", "Base = costo directo + indirecto"],
+        ["", "TOTAL COSTO UNITARIO", "", "TOTAL", "=H22+H23+H24", "", "", "=E25", 1, "=M22+M23+M24", "", "", "=J25", "=IF(M25=0,0,H25/M25-1)", "", "Este total debe reconciliar con Comparativa"],
     ]
     for r, row in enumerate(rows, 3):
         for c, v in enumerate(row, 1):
             ws.cell(r, c, v)
         section = row[3]
-        fill = "FFFFFF"
-        bold = False
+        fill = "FFFFFF"; bold = False
         if section in {"PARTIDA", "TÍTULO"}:
-            fill = "EAF2FF" if section == "PARTIDA" else "F2F4F7"
-            bold = True
+            fill = "EAF2FF" if section == "PARTIDA" else "F2F4F7"; bold = True
         elif section.startswith("SUBTOTAL") or section in {"TOTAL", "TOTAL DIRECTO"}:
-            fill = "FFF2CC"
-            bold = True
+            fill = "FFF2CC"; bold = True
         elif section.startswith("%"):
             fill = "F8FAFC"
-        for c in range(1, 23):
+        for c in range(1, 17):
             ws.cell(r, c).fill = PatternFill("solid", fgColor=fill)
             ws.cell(r, c).border = _thin_border("EAECF0")
             ws.cell(r, c).alignment = Alignment(vertical="top", wrap_text=True)
-            if bold:
-                ws.cell(r, c).font = Font(bold=True, color=BRAND["text"])
-    _apply_formats(ws, money_cols=[5, 8, 10, 13, 14, 17, 19, 22], pct_cols=[9, 18], start_row=3, end_row=25)
-    for col in [7, 12, 16, 21]:
+            if bold: ws.cell(r, c).font = Font(bold=True, color=BRAND["text"])
+    _apply_formats(ws, money_cols=[5,8,10,13], pct_cols=[9,14], start_row=3, end_row=25)
+    for col in [7, 12]:
         for row in range(3, 26):
-            if ws.cell(row, col-1).value == "%":
-                ws.cell(row, col).number_format = PCT_FMT
-    ws.auto_filter.ref = "A2:V25"
-    ws.conditional_formatting.add("I3:I25", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
-    ws.conditional_formatting.add("R3:R25", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+            if ws.cell(row, col-1).value == "%": ws.cell(row, col).number_format = PCT_FMT
+    ws.auto_filter.ref = "A2:P25"
+    ws.conditional_formatting.add("N3:N25", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
     for r in range(5, 9): ws.row_dimensions[r].outlineLevel = 1
     for r in range(11, 16): ws.row_dimensions[r].outlineLevel = 1
     for r in range(18, 20): ws.row_dimensions[r].outlineLevel = 1
     for r in range(23, 25): ws.row_dimensions[r].outlineLevel = 1
-
     ws["A28"] = "Regla canónica de generación"
     ws["A28"].font = Font(bold=True, color=BRAND["navy"])
-    ws["A29"] = "Esta hoja no tiene columna Contratista porque cada proveedor vive en su propio bloque de columnas. V1 debe leer el APU/matriz declarada por cada proveedor, detectar secciones, calcular subtotales por Materiales, MO y Maquinaria, y aplicar insumos porcentuales sobre la base declarada en el archivo del contratista."
-    ws.merge_cells("A29:V29")
-    ws["A29"].alignment = Alignment(wrap_text=True, vertical="top")
-    ws.row_dimensions[29].height = 42
+    ws["B28"] = "Esta hoja se genera desde el archivo matriz/APU propio del contratista seleccionado. No se fuerza estructura horizontal común entre proveedores y no usa construdata_matrices.xlsx."
+    ws.merge_cells(start_row=28, start_column=2, end_row=28, end_column=16)
+    ws["B28"].alignment = Alignment(wrap_text=True)
+
 
 def _write_partidas_criticas(ws):
     _setup_sheet(ws, "Partidas Críticas", "Priorización de partidas por impacto económico, desviación y riesgo de negociación.", 12)
@@ -730,7 +737,8 @@ def _write_comparison_report(wb):
     ws.title = "Resumen Ejecutivo"
     _write_resumen_ejecutivo(ws, "comparison")
     _write_comparativa_professional(wb.create_sheet("Comparativa"))
-    _write_detalle_apu_professional(wb.create_sheet("Detalle APU"))
+    _write_contractor_detail_sheet(wb.create_sheet("Detalle - Proveedor A"), "Proveedor A", "1F4E79", "A")
+    _write_contractor_detail_sheet(wb.create_sheet("Detalle - Proveedor B"), "Proveedor B", "0E6B3D", "B")
     _write_partidas_criticas(wb.create_sheet("Partidas Críticas"))
     _write_insumos_criticos(wb.create_sheet("Insumos Críticos"))
     _write_validaciones(wb.create_sheet("Validaciones"))
