@@ -10,9 +10,10 @@ const state = {
   comparisonFiles: [],
   comparisonMode: 'MULTI',
   comparisonContractors: [
-    { id: 1, name: 'Proveedor A', conceptsFile: null, matrixFile: null },
-    { id: 2, name: 'Proveedor B', conceptsFile: null, matrixFile: null },
+    { id: 1, name: 'PROV-A', conceptsFile: null, matrixFile: null },
+    { id: 2, name: 'PROV-B', conceptsFile: null, matrixFile: null },
   ],
+  lastComparisonRun: null,
 };
 
 document.documentElement.dataset.theme = state.theme;
@@ -293,7 +294,7 @@ function providerNamesParam(){
   const active = state.comparisonContractors.slice(0, state.comparisonMode === 'SINGLE' ? 1 : state.comparisonContractors.length);
   return encodeURIComponent(active.map((c,i)=> shortProviderName(c.name) || `Prov ${i+1}`).join(','));
 }
-function reportUrl(){ return `/api/reports/comparison?providers=${providerNamesParam()}`; }
+function reportUrl(){ return state.lastComparisonRun?.downloadUrl || `/api/reports/comparison?providers=${providerNamesParam()}`; }
 
 function contractorCard(c, idx){
   const canRemove = state.comparisonMode === 'MULTI' && state.comparisonContractors.length > 2;
@@ -392,31 +393,53 @@ function comparisonNew(){
   </div>
   <div class="contractor-list" style="margin-top:16px">${contractorCards}</div>
   ${state.comparisonMode==='MULTI'?'<div class="actions" style="margin-top:14px"><button id="addContractor" class="btn btn-secondary">+ Agregar proveedor</button></div>':''}
-  <div class="actions" style="margin-top:18px"><button id="runComparison" class="btn btn-primary">Validar y procesar mock</button></div>
+  <div class="actions" style="margin-top:18px"><button id="runComparison" class="btn btn-primary">Procesar con data real alpha</button></div>
   <div class="callout" style="margin-top:16px"><strong>Detalle APU:</strong> por cada proveedor se generará un tab propio usando su matriz/APU declarada + referencias granulares desde data. Los porcentajes se aplican según la base declarada en su archivo: materiales, MO, maquinaria, directo o directo + indirecto.</div>`, 'Nueva comparación');
   $$('.tab').forEach(t=>t.onclick=()=>{state.comparisonMode=t.dataset.mode; ensureContractorCount(); render();});
   bindContractorInputs();
-  $('#runComparison').onclick=()=>{
+  $('#runComparison').onclick=async()=>{
     ensureContractorCount();
     const required = state.comparisonMode==='MULTI'?2:1;
     const contractors = state.comparisonContractors.slice(0, required === 1 ? 1 : state.comparisonContractors.length);
     if(contractors.length < required){alert(`Agrega mínimo ${required} proveedor(s).`); return;}
     const invalid = contractors.find(c => !shortProviderName(c.name) || shortProviderName(c.name).length > 10 || !c.conceptsFile || !c.matrixFile || !c.conceptsFile.name.toLowerCase().endsWith('.xlsx') || !c.matrixFile.name.toLowerCase().endsWith('.xlsx'));
     if(invalid){alert('Cada proveedor debe tener nombre corto de máximo 10 caracteres, archivo de conceptos .xlsx y archivo matriz/APU .xlsx.'); return;}
-    state.comparisonContractors = state.comparisonContractors.map(c => ({...c, name: shortProviderName(c.name)}));
-    go('comparison-processing');
+    state.comparisonContractors = contractors.map(c => ({...c, name: shortProviderName(c.name)}));
+    const btn = $('#runComparison');
+    btn.disabled = true; btn.textContent = 'Procesando archivos reales...';
+    try{
+      const fd = new FormData();
+      fd.append('projectName', 'Comparativo real alpha');
+      state.comparisonContractors.forEach(c => {
+        fd.append('provider_names', shortProviderName(c.name));
+        fd.append('concept_files', c.conceptsFile);
+        fd.append('matrix_files', c.matrixFile);
+      });
+      const res = await fetch('/api/comparisons/real-run', {method:'POST', body:fd});
+      if(!res.ok){ const err = await res.json().catch(()=>({detail:'Error al procesar'})); throw new Error(err.detail || 'Error al procesar'); }
+      state.lastComparisonRun = await res.json();
+      go('comparison-results');
+    }catch(err){ alert(err.message); btn.disabled = false; btn.textContent = 'Procesar con data real alpha'; }
   };
 }
 
 function comparisonProcessing(){
-  shell(`${pageHead('Procesamiento IA / análisis', 'Procesamiento simulado para validar UX y etapas canónicas.')}<div class="card"><div class="progress"><span></span></div><div class="grid cols-2" style="margin-top:18px"><div><h3>Etapas</h3><p>✓ Lectura de .xlsx<br>✓ Normalización de columnas<br>✓ Homologación de conceptos<br>✓ Comparación económica<br>→ Detalle APU con referencias data<br>→ IA mock de hallazgos<br>○ Generación de Excel</p></div><div><h3>Mensaje actual</h3><p>Identificando componentes que explican diferencias: materiales, mano de obra, maquinaria, porcentajes e indirectos.</p><button class="btn btn-primary" data-nav="comparison-results">Ver resultados mock</button></div></div></div>`, 'Procesamiento');
+  shell(`${pageHead('Procesamiento IA / análisis', 'Procesamiento de archivos XLSX y conversión al modelo canónico.')}<div class="card"><div class="progress"><span></span></div><div class="grid cols-2" style="margin-top:18px"><div><h3>Etapas</h3><p>✓ Recepción de archivos .xlsx<br>✓ Parser de conceptos<br>✓ Parser de matriz/APU<br>✓ Modelo canónico<br>✓ Comparación económica inicial<br>✓ Generación de Excel</p></div><div><h3>Mensaje actual</h3><p>Identificando componentes que explican diferencias: materiales, mano de obra, maquinaria, porcentajes e indirectos.</p><button class="btn btn-primary" data-nav="comparison-results">Ver resultados</button></div></div></div>`, 'Procesamiento');
 }
 
 function comparisonResults(){
+  const real = state.lastComparisonRun;
   const multi = state.comparisonMode !== 'SINGLE';
   const names = state.comparisonContractors.map((c,i)=>shortProviderName(c.name)||`Prov ${i+1}`);
   const n1 = names[0] || 'PROV-A', n2 = names[1] || 'PROV-B', n3 = names[2] || 'PROV-C';
-  shell(`${pageHead('Resultados de comparación', multi?'Ranking económico y tablero ejecutivo mock.':'Análisis individual sin ranking económico.', `<a class="btn btn-primary" href="${reportUrl()}">Descargar Excel resultado</a><button class="btn btn-secondary" data-nav="matrix-detail">Ver detalle APU</button>`)}${kpis(multi?[{label:'Mejor oferta',value:money(1180000),text:(state.comparisonContractors[1]?.name || state.comparisonContractors[0]?.name || 'Proveedor')}, {label:'Riesgo global',value:'Amarillo',text:'Con advertencias'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Sin referencia',value:'14',text:'Catálogos granulares'}]:[{label:'Monto ofertado',value:money(1250000),text:(state.comparisonContractors[0]?.name || 'Proveedor')}, {label:'Desv. referencia',value:'+12.3%',text:'Sin ranking'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Semáforo',value:'Amarillo',text:'Riesgo medio'}])}<div class="grid cols-2" style="margin-top:16px"><div class="card"><h3>Hallazgos IA mock</h3><p>El sobrecosto se concentra en concreto, acero e instalaciones. Se recomienda revisar primero partidas con mayor impacto monetario, no solo las de mayor desviación porcentual.</p></div><div class="card"><h3>Recomendaciones</h3><p>Solicitar desglose APU, validar rendimientos, revisar precios de maquinaria fuera de referencia y negociar porcentajes superiores al rango esperado.</p></div></div><div style="margin-top:16px">${multi?table(['Ranking','Proveedor','Monto','Dif vs menor','Desv. promedio','Semáforo','Acciones'], [['1',n2,money(1180000),'0.0%','-7.8%','<span class="badge ok">Verde</span>','Ver detalle'],['2',n1,money(1250000),'+5.9%','+2.4%','<span class="badge warn">Amarillo</span>','Ver detalle'],['3',n3,money(1410000),'+19.5%','+14.3%','<span class="badge bad">Rojo</span>','Ver detalle']]):table(['Proveedor','Monto','Desv. referencia','Partidas críticas','Semáforo','Observación'], [[n1,money(1250000),'+12.3%','18','<span class="badge warn">Amarillo</span>','Sin ranking por ser análisis individual']])}</div><div style="margin-top:16px">${table(['Partida crítica','Proveedor','PU ofertado','PU ref. data','Dif %','Impacto','Prioridad'], [['Concreto f\'c 250','Proveedor C',money(2850000),money(2300000),'+24%',money(95000),'Alta'],['Acero refuerzo',n1,money(42000),money(35000),'+20%',money(62000),'Alta'],['Luminarias LED',n3,money(1200000),money(980000),'+22%',money(48000),'Media']])}</div>`, 'Resultados');
+  if(real){
+    const providers = real.providers || [];
+    const download = real.downloadUrl || reportUrl();
+    const rows = providers.map((p,i)=>[i+1, p.name, p.concepts, p.apuItems, p.conceptsFile, p.matrixFile, '<span class="badge warn">V1 alpha</span>']);
+    shell(`${pageHead('Resultados de comparación', 'Reporte V1 alpha generado desde archivos reales y modelo canónico.', `<a class="btn btn-primary" href="${download}">Descargar Excel real</a><button class="btn btn-secondary" data-nav="matrix-detail">Ver detalle APU</button>`)}${kpis([{label:'Corrida',value:real.id,text:'Real alpha'}, {label:'Proveedores',value:providers.length,text:'Con nombre corto'}, {label:'Conceptos leídos',value:providers.reduce((a,p)=>a+(p.concepts||0),0),text:'Catálogos'}, {label:'Filas APU',value:providers.reduce((a,p)=>a+(p.apuItems||0),0),text:'Matrices'}])}<div class="callout" style="margin-top:16px"><strong>Alcance V1 alpha:</strong> los archivos ya se leen y se convierten al modelo canónico. La homologación avanzada de conceptos y el matching semántico fino contra mercado quedan como siguiente iteración.</div><div style="margin-top:16px">${table(['#','Proveedor','Conceptos','Filas APU','Archivo conceptos','Archivo matriz/APU','Estado'], rows)}</div>`, 'Resultados');
+    return;
+  }
+  shell(`${pageHead('Resultados de comparación', multi?'Ranking económico y tablero ejecutivo mock.':'Análisis individual sin ranking económico.', `<a class="btn btn-primary" href="${reportUrl()}">Descargar Excel resultado</a><button class="btn btn-secondary" data-nav="matrix-detail">Ver detalle APU</button>`)}${kpis(multi?[{label:'Mejor oferta',value:money(1180000),text:(state.comparisonContractors[1]?.name || state.comparisonContractors[0]?.name || 'Proveedor')}, {label:'Riesgo global',value:'Amarillo',text:'Con advertencias'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Sin referencia',value:'14',text:'Catálogos granulares'}]:[{label:'Monto ofertado',value:money(1250000),text:(state.comparisonContractors[0]?.name || 'Proveedor')}, {label:'Desv. referencia',value:'+12.3%',text:'Sin ranking'}, {label:'Críticas',value:'18',text:'A revisar'}, {label:'Semáforo',value:'Amarillo',text:'Riesgo medio'}])}<div class="grid cols-2" style="margin-top:16px"><div class="card"><h3>Hallazgos IA mock</h3><p>El sobrecosto se concentra en concreto, acero e instalaciones. Se recomienda revisar primero partidas con mayor impacto monetario, no solo las de mayor desviación porcentual.</p></div><div class="card"><h3>Recomendaciones</h3><p>Solicitar desglose APU, validar rendimientos, revisar precios de maquinaria fuera de referencia y negociar porcentajes superiores al rango esperado.</p></div></div><div style="margin-top:16px">${multi?table(['Ranking','Proveedor','Monto','Dif vs menor','Desv. promedio','Semáforo','Acciones'], [['1',n2,money(1180000),'0.0%','-7.8%','<span class="badge ok">Verde</span>','Ver detalle'],['2',n1,money(1250000),'+5.9%','+2.4%','<span class="badge warn">Amarillo</span>','Ver detalle'],['3',n3,money(1410000),'+19.5%','+14.3%','<span class="badge bad">Rojo</span>','Ver detalle']]):table(['Proveedor','Monto','Desv. referencia','Partidas críticas','Semáforo','Observación'], [[n1,money(1250000),'+12.3%','18','<span class="badge warn">Amarillo</span>','Sin ranking por ser análisis individual']])}</div>`, 'Resultados');
 }
 
 function matrixDetail(){

@@ -82,3 +82,15 @@ El diseño es limpio y profesional. El archivo histórico se usa únicamente com
 - El detalle ya no se genera en una única hoja horizontal; se genera un tab por contratista: `Detalle - Proveedor A`, `Detalle - Proveedor B`, etc.
 - Cada tab de detalle respeta la matriz/APU propia del contratista y aplica porcentajes sobre el subtotal correspondiente declarado por la matriz.
 - Se mantiene eliminado el tab `Parámetros`.
+
+## V1 alpha real-data
+
+Esta entrega agrega lectura real inicial de XLSX:
+
+- Carga por proveedor: nombre corto, catálogo de conceptos y matriz/APU.
+- Parser inicial de conceptos y matriz/APU usando `openpyxl`.
+- Modelo canónico en `backend/real_data.py`.
+- Generación de Excel desde objetos canónicos reales.
+- Endpoint de descarga por corrida real: `/api/real-runs/{run_id}/report`.
+
+Limitación intencional: el parser es heurístico y tolerante. La siguiente iteración debe robustecer homologación de conceptos, detección de secciones y matching semántico contra referencias.

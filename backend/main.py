@@ -5,7 +5,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +19,11 @@ from openpyxl.formatting.rule import ColorScaleRule, DataBarRule, CellIsRule, Fo
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.comments import Comment
 
+from .real_data import (
+    CanonicalProvider, CanonicalRun, ReferenceCatalog,
+    canonical_rows_from_items, parse_concepts, parse_matrix, run_id,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 FRONTEND_DIR = ROOT / "frontend"
@@ -26,7 +31,7 @@ RUNTIME_DIR = ROOT / "backend" / "runtime"
 REPORTS_DIR = RUNTIME_DIR / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="APU Canonical Platform V0", version="0.0.1")
+app = FastAPI(title="APU Canonical Platform V1 Alpha", version="1.0.0-alpha")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -913,6 +918,346 @@ def report(kind: str, providers: Optional[str] = Query(default=None)):
     path = build_report(kind, provider_names)
     return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+
+
+# -----------------------------------------------------------------------------
+# V1 alpha: real-data ingestion through the canonical model
+# -----------------------------------------------------------------------------
+# These endpoints keep the V0 professional UI/Excel shell, but start replacing
+# static mocks with parsed XLSX content. The first version is intentionally
+# tolerant: it detects headers by synonyms and maps rows into the canonical
+# model. Unsupported structures are surfaced as validations instead of being
+# silently forced into a fake format.
+
+UPLOADS_DIR = RUNTIME_DIR / "uploads"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+REAL_RUNS: dict[str, CanonicalRun] = {}
+REAL_REPORTS: dict[str, Path] = {}
+
+
+def _safe_filename(name: str) -> str:
+    keep = []
+    for ch in (name or "archivo.xlsx"):
+        if ch.isalnum() or ch in {".", "-", "_"}:
+            keep.append(ch)
+        else:
+            keep.append("_")
+    return "".join(keep)[:140] or "archivo.xlsx"
+
+
+async def _save_upload(upload: UploadFile, target_dir: Path) -> Path:
+    if not upload.filename or not upload.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail=f"Archivo no permitido: {upload.filename}. Solo se acepta .xlsx")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / _safe_filename(upload.filename)
+    content = await upload.read()
+    path.write_bytes(content)
+    return path
+
+
+def _canonical_amount_from_concepts(concepts: list[Any]) -> float:
+    total = 0.0
+    for c in concepts:
+        if getattr(c, "amount", None) is not None:
+            total += float(c.amount or 0)
+        elif getattr(c, "quantity", None) is not None and getattr(c, "unit_price", None) is not None:
+            total += float(c.quantity or 0) * float(c.unit_price or 0)
+    return total
+
+
+def _canonical_concept_union(providers: list[CanonicalProvider]) -> list[Any]:
+    if not providers:
+        return []
+    # Use the largest concept list as the comparison spine. This is an alpha rule;
+    # V1 proper should homologate concepts across providers by code/description.
+    return max((p.concepts for p in providers), key=lambda rows: len(rows), default=[])
+
+
+def _write_real_comparativa(ws, providers: list[CanonicalProvider]):
+    names = [p.name for p in providers]
+    spine = _canonical_concept_union(providers)
+    ws.sheet_view.showGridLines = False
+    base_cols = 4
+    provider_cols = 5
+    total_cols = base_cols + provider_cols * max(1, len(providers))
+    _provider_group_header(ws, 1, 1, 4, "Servicios / Cotización", "475467")
+    palette = ["1F4E79", "0E6B3D", "7C3AED", "B54708", "344054"]
+    for idx, p in enumerate(providers):
+        start = base_cols + idx * provider_cols + 1
+        _provider_group_header(ws, 1, start, start + provider_cols - 1, p.name, palette[idx % len(palette)])
+    headers = ["Partida", "Descripción", "Unidad", "Cantidad"]
+    for _p in providers:
+        headers += ["P.U.", "Importe", "% Part.", "Estado", "Observación"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(2, c, h)
+    _header_style(ws, 2, 1, len(headers), fill="1F4E79")
+    ws.freeze_panes = "E3"
+    widths = {"A": 14, "B": 56, "C": 12, "D": 12}
+    for c in range(5, len(headers) + 1):
+        widths[get_column_letter(c)] = 16
+    _set_widths(ws, widths)
+
+    totals = [_canonical_amount_from_concepts(p.concepts) or 1 for p in providers]
+    max_rows = min(max(len(spine), 1), 120)
+    if not spine:
+        ws.cell(3, 1, "SIN-DATA")
+        ws.cell(3, 2, "No se detectaron conceptos en los archivos cargados")
+        max_rows = 1
+    for i in range(max_rows):
+        row_idx = 3 + i
+        base = spine[i] if spine and i < len(spine) else None
+        ws.cell(row_idx, 1, getattr(base, "code", "") if base else "")
+        ws.cell(row_idx, 2, getattr(base, "description", "") if base else "")
+        ws.cell(row_idx, 3, getattr(base, "unit", "") if base else "")
+        ws.cell(row_idx, 4, getattr(base, "quantity", "") if base else "")
+        for pidx, p in enumerate(providers):
+            c = p.concepts[i] if i < len(p.concepts) else None
+            start = base_cols + pidx * provider_cols + 1
+            pu = getattr(c, "unit_price", None) if c else None
+            amount = getattr(c, "amount", None) if c else None
+            qty = getattr(c, "quantity", None) if c else None
+            if amount is None and pu is not None and qty is not None:
+                amount = pu * qty
+            ws.cell(row_idx, start, pu if pu is not None else "")
+            ws.cell(row_idx, start + 1, amount if amount is not None else "")
+            ws.cell(row_idx, start + 2, (amount / totals[pidx]) if amount is not None and totals[pidx] else "")
+            ws.cell(row_idx, start + 3, "Leído" if c else "Sin concepto")
+            ws.cell(row_idx, start + 4, f"Fila origen {getattr(c, 'source_row', '')}" if c else "No existe en catálogo del proveedor")
+    last = 2 + max_rows
+    _body_style(ws, 3, last, 1, len(headers))
+    money_cols = []
+    pct_cols = []
+    for pidx, _ in enumerate(providers):
+        start = base_cols + pidx * provider_cols + 1
+        money_cols += [start, start + 1]
+        pct_cols += [start + 2]
+    _apply_formats(ws, money_cols=money_cols, pct_cols=pct_cols, start_row=3, end_row=last)
+    if last >= 3:
+        _add_table(ws, f"A2:{get_column_letter(len(headers))}{last}", "RealComparativaTable", "TableStyleMedium2")
+
+
+def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, include_market: bool, theme_color: str = "1F4E79"):
+    headers = _canonical_detail_headers(include_market)
+    max_col = len(headers)
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A3"
+    for idx, width in enumerate(([14, 46, 12, 20, 14, 10, 12, 16, 12] + ([16, 10, 12, 16, 14] if include_market else []) + [18, 38]), 1):
+        ws.column_dimensions[get_column_letter(idx)].width = width
+    _provider_group_header(ws, 1, 1, max_col, title, theme_color)
+    for c, h in enumerate(headers, 1):
+        ws.cell(2, c, h)
+    _header_style(ws, 2, 1, max_col, fill=theme_color)
+    keys = ["code", "concept", "unit", "section", "pu", "op", "qty", "amount", "pct"]
+    if include_market:
+        keys += ["mpu", "mop", "mqty", "mamount", "dev"]
+    keys += ["state", "obs"]
+    if not rows:
+        rows = [{"code":"", "concept":"No se detectaron filas de matriz/APU", "unit":"", "section":"VALIDACIÓN", "pu":"", "op":"", "qty":"", "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"Sin datos", "obs":"Revisar estructura del archivo cargado"}]
+    for ridx, row in enumerate(rows[:900], 3):
+        for cidx, key in enumerate(keys, 1):
+            ws.cell(ridx, cidx, row.get(key, ""))
+        section = str(row.get("section", ""))
+        fill = "FFFFFF"; bold = False
+        if section in {"PARTIDA", "TÍTULO"}:
+            fill = "EAF2FF" if section == "PARTIDA" else "F2F4F7"; bold = True
+        elif section.startswith("SUBTOTAL") or "TOTAL" in section:
+            fill = "FFF2CC"; bold = True
+        elif section.startswith("%"):
+            fill = "F8FAFC"
+        for c in range(1, max_col + 1):
+            ws.cell(ridx, c).fill = PatternFill("solid", fgColor=fill)
+            ws.cell(ridx, c).border = _thin_border("EAECF0")
+            ws.cell(ridx, c).alignment = Alignment(vertical="top", wrap_text=True)
+            if bold:
+                ws.cell(ridx, c).font = Font(bold=True, color=BRAND["text"])
+    last = min(2 + len(rows), 902)
+    money_cols = [5, 8]
+    pct_cols = [9]
+    if include_market:
+        money_cols += [10, 13]
+        pct_cols += [14]
+    _apply_formats(ws, money_cols=money_cols, pct_cols=pct_cols, start_row=3, end_row=last)
+    ws.auto_filter.ref = f"A2:{get_column_letter(max_col)}{last}"
+    if include_market and last >= 3:
+        dev_col = get_column_letter(14)
+        ws.conditional_formatting.add(f"{dev_col}3:{dev_col}{last}", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+    note_row = last + 3
+    ws.cell(note_row, 1, "Modelo canónico")
+    ws.cell(note_row, 1).font = Font(bold=True, color=BRAND["navy"])
+    ws.cell(note_row, 2, "Esta hoja se renderiza desde objetos canónicos derivados del XLSX cargado, no desde filas mock ni desde una copia visual del archivo de referencia.")
+    ws.merge_cells(start_row=note_row, start_column=2, end_row=note_row, end_column=max_col)
+    ws.cell(note_row, 2).alignment = Alignment(wrap_text=True)
+
+
+def _write_real_validaciones(ws, run: CanonicalRun):
+    _setup_sheet(ws, "Validaciones", "Advertencias reales del proceso de carga y parseo inicial.", 10)
+    headers = ["Severidad", "Tipo", "Proveedor", "Archivo", "Campo", "Valor", "Problema", "Acción sugerida", "Estado", "Origen"]
+    for c, h in enumerate(headers, 1): ws.cell(5, c, h)
+    _header_style(ws, 5, 1, 10)
+    rows = []
+    for p in run.providers:
+        if not p.concepts:
+            rows.append(["Alta", "Parser conceptos", p.name, p.concepts_file, "conceptos", "0", "No se detectaron conceptos", "Validar encabezados del archivo", "Pendiente", "V1 alpha"])
+        if not p.apu_items:
+            rows.append(["Alta", "Parser matriz", p.name, p.matrix_file, "matriz", "0", "No se detectaron insumos APU", "Validar estructura de matriz/APU", "Pendiente", "V1 alpha"])
+        no_match = len([i for i in p.apu_items if i.state == "Sin referencia"])
+        if no_match:
+            rows.append(["Media", "Mercado", p.name, p.matrix_file, "referencia", no_match, "Insumos sin match granular en data", "Revisar descripción/unidad o cargar referencia complementaria", "Pendiente", "V1 alpha"])
+    if not rows:
+        rows.append(["Baja", "Carga", "—", "—", "general", "OK", "No se generaron validaciones críticas", "Continuar revisión técnica", "Revisado", "V1 alpha"])
+    for r, row in enumerate(rows, 6):
+        for c, v in enumerate(row, 1): ws.cell(r, c, v)
+        ws.cell(r, 1).fill = PatternFill("solid", fgColor=_status_fill(row[0]))
+    _body_style(ws, 6, 5 + len(rows), 1, 10)
+    _add_table(ws, f"A5:J{5+len(rows)}", "RealValidacionesTable", "TableStyleMedium2")
+    _set_widths(ws, {"A":14,"B":22,"C":16,"D":28,"E":18,"F":12,"G":48,"H":42,"I":18,"J":18})
+
+
+def build_real_comparison_report(run: CanonicalRun) -> Path:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Resumen Ejecutivo"
+    _setup_sheet(ws, "Resumen Ejecutivo", "Reporte generado con V1 alpha desde archivos XLSX cargados y modelo canónico.", 10)
+    names = [p.name for p in run.providers]
+    totals = [_canonical_amount_from_concepts(p.concepts) for p in run.providers]
+    best_idx = min(range(len(totals)), key=lambda i: totals[i]) if totals else 0
+    _write_kpi(ws, 4, 1, "Proveedores", len(run.providers), "Carga real", "F8FAFC")
+    _write_kpi(ws, 4, 3, "Mejor oferta", totals[best_idx] if totals else 0, names[best_idx] if names else "—", "E2F0D9")
+    _write_kpi(ws, 4, 5, "Conceptos leídos", sum(len(p.concepts) for p in run.providers), "Catálogos", "F8FAFC")
+    _write_kpi(ws, 4, 7, "Filas APU", sum(len(p.apu_items) for p in run.providers), "Matrices", "F8FAFC")
+    _write_kpi(ws, 4, 9, "Motor", "V1 alpha", "Data real inicial", "FFF2CC")
+    for cell in ["C5"]: ws[cell].number_format = MONEY_FMT
+    _section_label(ws, 9, "Ranking por importes detectados en catálogo de conceptos", 10)
+    headers = ["Posición", "Proveedor", "Conceptos", "Filas matriz", "Monto detectado", "Observación"]
+    for c, h in enumerate(headers, 1): ws.cell(10, c, h)
+    _header_style(ws, 10, 1, len(headers))
+    ranking = sorted([(totals[i], p) for i, p in enumerate(run.providers)], key=lambda x: x[0])
+    for idx, (total, p) in enumerate(ranking, 11):
+        ws.cell(idx, 1, idx-10); ws.cell(idx, 2, p.name); ws.cell(idx, 3, len(p.concepts)); ws.cell(idx, 4, len(p.apu_items)); ws.cell(idx, 5, total); ws.cell(idx, 6, "Monto calculado desde columnas detectadas")
+    _body_style(ws, 11, 10 + len(ranking), 1, len(headers))
+    _apply_formats(ws, money_cols=[5], start_row=11, end_row=10 + len(ranking))
+    if ranking:
+        _add_table(ws, f"A10:F{10+len(ranking)}", "RealExecutiveRanking", "TableStyleMedium2")
+    _section_label(ws, 15 + len(ranking), "Nota de alcance V1 alpha", 10)
+    ws.cell(16 + len(ranking), 1, "Esta versión ya procesa archivos reales, pero la homologación perfecta de conceptos y el matching semántico avanzado quedan para la siguiente iteración.")
+    ws.merge_cells(start_row=16+len(ranking), start_column=1, end_row=16+len(ranking), end_column=10)
+
+    _write_real_comparativa(wb.create_sheet("Comparativa"), run.providers)
+    palette = ["1F4E79", "0E6B3D", "7C3AED", "B54708", "344054"]
+    for idx, p in enumerate(run.providers):
+        sheet_name = f"Detalle - {p.name}"[:31]
+        rows = canonical_rows_from_items(p.apu_items, include_market=True)
+        _write_real_canonical_detail(wb.create_sheet(sheet_name), f"Detalle APU - {p.name}", rows, include_market=True, theme_color=palette[idx % len(palette)])
+    _write_real_validaciones(wb.create_sheet("Validaciones"), run)
+    _write_analisis_ia(wb.create_sheet("Análisis IA"))
+    for sheet in wb.worksheets:
+        sheet.sheet_view.showGridLines = False
+    out = REPORTS_DIR / f"apu_v1_real_comparison_{run.run_id}.xlsx"
+    wb.save(out)
+    return out
+
+
+def build_real_base_report(run: CanonicalRun) -> Path:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Resumen Ejecutivo"
+    _setup_sheet(ws, "Presupuesto Base", "Presupuesto generado desde conceptos reales y expresado en el modelo canónico.", 10)
+    total = _canonical_amount_from_concepts(run.base_concepts)
+    _write_kpi(ws, 4, 1, "Monto detectado", total, "Conceptos base", "F8FAFC")
+    _write_kpi(ws, 4, 3, "Conceptos", len(run.base_concepts), "Archivo ingeniería", "F8FAFC")
+    _write_kpi(ws, 4, 5, "Detalle", len(run.base_apu_items), "Matriz base", "E2F0D9")
+    _write_kpi(ws, 4, 7, "Fuente", "Construdata", "Matrices/ref.", "F8FAFC")
+    _write_kpi(ws, 4, 9, "Motor", "V1 alpha", "Data real inicial", "FFF2CC")
+    ws["A5"].number_format = MONEY_FMT
+    comp = wb.create_sheet("Comparativa")
+    _setup_sheet(comp, "Comparativa presupuesto base", "Conceptos reales leídos desde el catálogo base de ingeniería.", 8)
+    headers = ["Código", "Concepto", "Unidad", "Cantidad", "P.U.", "Importe", "Estado", "Observación"]
+    for c, h in enumerate(headers, 1): comp.cell(5, c, h)
+    _header_style(comp, 5, 1, 8)
+    for r, cpt in enumerate(run.base_concepts[:250], 6):
+        vals = [cpt.code, cpt.description, cpt.unit, cpt.quantity or "", cpt.unit_price or "", cpt.amount or "", "Leído", f"Fila origen {cpt.source_row}"]
+        for c, v in enumerate(vals, 1): comp.cell(r, c, v)
+    if run.base_concepts:
+        _body_style(comp, 6, 5 + min(len(run.base_concepts), 250), 1, 8)
+        _apply_formats(comp, money_cols=[5,6], start_row=6, end_row=5+min(len(run.base_concepts),250))
+        _add_table(comp, f"A5:H{5+min(len(run.base_concepts),250)}", "RealBaseComparativaTable", "TableStyleMedium2")
+    _set_widths(comp, {"A":16,"B":58,"C":12,"D":12,"E":16,"F":18,"G":16,"H":28})
+    detail_rows = canonical_rows_from_items(run.base_apu_items, include_market=False)
+    _write_real_canonical_detail(wb.create_sheet("Detalle Base"), "Detalle Base - matriz canónica", detail_rows, include_market=False, theme_color="1F4E79")
+    _write_analisis_ia(wb.create_sheet("Análisis IA"))
+    out = REPORTS_DIR / f"apu_v1_real_base_{run.run_id}.xlsx"
+    wb.save(out)
+    return out
+
+
+@app.post("/api/comparisons/real-run")
+async def comparison_real_run(
+    projectName: str = Form("Comparación real"),
+    provider_names: List[str] = Form(...),
+    concept_files: List[UploadFile] = File(...),
+    matrix_files: List[UploadFile] = File(...),
+):
+    if not (len(provider_names) == len(concept_files) == len(matrix_files)):
+        raise HTTPException(status_code=400, detail="Cada proveedor debe tener nombre, archivo de conceptos y archivo matriz/APU")
+    if len(provider_names) < 1:
+        raise HTTPException(status_code=400, detail="Debe cargar al menos un proveedor")
+    names = _safe_provider_names(provider_names)
+    rid = run_id("REAL-CMP")
+    run_dir = UPLOADS_DIR / rid
+    catalog = ReferenceCatalog(DATA_DIR)
+    providers: list[CanonicalProvider] = []
+    for idx, name in enumerate(names):
+        concepts_path = await _save_upload(concept_files[idx], run_dir / name)
+        matrix_path = await _save_upload(matrix_files[idx], run_dir / name)
+        provider = CanonicalProvider(name=name, concepts_file=concept_files[idx].filename or "", matrix_file=matrix_files[idx].filename or "")
+        try:
+            provider.concepts = parse_concepts(concepts_path)
+        except Exception as exc:
+            provider.validations.append({"severity":"Alta", "type":"Parser conceptos", "message":f"{type(exc).__name__}: {exc}"})
+        try:
+            provider.apu_items = parse_matrix(matrix_path, catalog)
+        except Exception as exc:
+            provider.validations.append({"severity":"Alta", "type":"Parser matriz", "message":f"{type(exc).__name__}: {exc}"})
+        providers.append(provider)
+    run = CanonicalRun(run_id=rid, kind="comparison", project_name=projectName, providers=providers)
+    REAL_RUNS[rid] = run
+    report_path = build_real_comparison_report(run)
+    REAL_REPORTS[rid] = report_path
+    return {
+        "id": rid,
+        "status": "COMPLETED_WITH_WARNINGS",
+        "projectName": projectName,
+        "providers": [{"name": p.name, "concepts": len(p.concepts), "apuItems": len(p.apu_items), "conceptsFile": p.concepts_file, "matrixFile": p.matrix_file} for p in providers],
+        "downloadUrl": f"/api/real-runs/{rid}/report",
+        "note": "V1 alpha: datos reales parseados con heurística inicial; homologación avanzada pendiente."
+    }
+
+
+@app.post("/api/base-budgets/real-run")
+async def base_budget_real_run(projectName: str = Form("Presupuesto base real"), concepts_file: UploadFile = File(...), matrix_file: UploadFile | None = File(default=None)):
+    rid = run_id("REAL-BASE")
+    run_dir = UPLOADS_DIR / rid
+    concepts_path = await _save_upload(concepts_file, run_dir)
+    catalog = ReferenceCatalog(DATA_DIR)
+    base_concepts = parse_concepts(concepts_path)
+    # Optional uploaded base matrix; if omitted, try using construdata_matrices as source placeholder.
+    base_apu_items = []
+    if matrix_file and matrix_file.filename:
+        matrix_path = await _save_upload(matrix_file, run_dir)
+        base_apu_items = parse_matrix(matrix_path, catalog)
+    run = CanonicalRun(run_id=rid, kind="base", project_name=projectName, base_concepts=base_concepts, base_apu_items=base_apu_items)
+    REAL_RUNS[rid] = run
+    report_path = build_real_base_report(run)
+    REAL_REPORTS[rid] = report_path
+    return {"id": rid, "status": "COMPLETED_WITH_WARNINGS", "concepts": len(base_concepts), "apuItems": len(base_apu_items), "downloadUrl": f"/api/real-runs/{rid}/report"}
+
+
+@app.get("/api/real-runs/{run_id}/report")
+def real_run_report(run_id: str):
+    path = REAL_REPORTS.get(run_id)
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="Reporte no encontrado")
+    return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # Static frontend must be mounted last.
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

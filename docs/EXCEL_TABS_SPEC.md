@@ -95,3 +95,20 @@ Regla final:
 ```text
 Matriz base y matrices de proveedores pueden venir de fuentes distintas, pero deben expresarse en el mismo modelo canónico de detalle APU.
 ```
+
+## V1 Alpha - Reportes con archivos reales
+
+Se agregan endpoints reales:
+
+- `POST /api/comparisons/real-run`
+  - `provider_names[]`
+  - `concept_files[]`
+  - `matrix_files[]`
+
+- `POST /api/base-budgets/real-run`
+  - `concepts_file`
+  - `matrix_file` opcional
+
+La comparativa conserva formato horizontal por proveedor. El detalle conserva una hoja por proveedor. La hoja `Detalle Base` y las hojas `Detalle - <Proveedor>` usan el mismo layout canónico; para base se omiten columnas de mercado.
+
+Los nombres visibles de proveedor vienen de la UI y se limitan a 10 caracteres para preservar legibilidad en Excel.

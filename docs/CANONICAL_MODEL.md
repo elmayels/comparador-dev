@@ -65,3 +65,25 @@ La diferencia no está en la estructura del detalle, sino en la fuente y en las 
 - `Detalle - <Proveedor>` incluye columnas de mercado porque compara la matriz declarada por el proveedor contra referencias granulares.
 
 Esto obliga a reutilizar el mismo escritor de detalle y la mayor cantidad posible de clases/rutinas comunes. La implementación V0.7 introduce un escritor compartido de detalle canónico para evitar que presupuesto base y comparativa evolucionen como procesos desconectados.
+
+## V1 Alpha - Inicio de data real
+
+A partir de esta versión se agrega una primera capa de lectura real de archivos XLSX conectada al modelo canónico:
+
+- `CanonicalRun`: corrida de presupuesto base o comparativa.
+- `CanonicalProvider`: proveedor con nombre corto, archivo de conceptos y archivo matriz/APU.
+- `CanonicalConcept`: concepto comercial usado para comparativa.
+- `CanonicalApuItem`: insumo, sección, operador, cantidad, precio, importe y match de mercado.
+- `ReferenceCatalog`: catálogo granular construido desde archivos `data` de materiales, mano de obra y maquinaria.
+
+El flujo correcto queda:
+
+```text
+XLSX cargados
+  -> parsers tolerantes
+  -> modelo canónico
+  -> motor de cálculo/render
+  -> Excel profesional
+```
+
+La V1 alpha no pretende resolver todavía la homologación perfecta de conceptos ni el matching semántico avanzado. Su objetivo es romper la dependencia de mocks estáticos y empezar a poblar los reportes desde archivos reales.
