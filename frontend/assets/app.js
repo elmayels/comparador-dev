@@ -132,10 +132,87 @@ function shell(content, title='Plataforma APU'){
 }
 
 function landing(){
-  $('#app').innerHTML = `<div class="public">
-    <nav class="nav"><div class="brand"><div class="logo">Q</div><div><h1>Quantia APU</h1><p>Presupuesto base y comparador canónico</p></div></div><div class="actions"><button class="btn btn-secondary" data-theme-toggle>${state.theme==='dark'?'Tema claro':'Tema oscuro'}</button><button class="btn btn-primary" data-nav="login">Iniciar sesión</button></div></nav>
-    <section class="hero"><div><div class="badge info">Versión 0 navegable</div><h2>Análisis profesional de APU sin mezclar procesos.</h2><p>Genera presupuestos base independientes con matrices Construdata, compara propuestas de uno o varios contratistas y revisa el detalle APU con referencias granulares de materiales, mano de obra y maquinaria.</p><div class="actions" style="margin-top:24px"><button class="btn btn-primary" data-nav="login">Entrar a la plataforma</button><button class="btn btn-secondary" data-nav="references">Ver referencias</button></div></div><div class="hero-card"><div class="orb"></div><div class="floating f1"><strong>Comparativa + Detalle</strong><div class="small muted">Excel de salida preparado</div></div><div class="floating f2"><strong>Light / Dark</strong><div class="small muted">Guía visual rescatada</div></div></div></section>
-    <section class="feature-row"><div class="feature"><strong>Presupuesto base</strong><span>Módulo independiente con conceptos de ingeniería + construdata_matrices.xlsx.</span></div><div class="feature"><strong>Comparador</strong><span>Funciona con un contratista o múltiples contratistas, con o sin matriz base.</span></div><div class="feature"><strong>Detalle APU</strong><span>Usa matriz del contratista + materiales/MO/maquinaria desde data.</span></div><div class="feature"><strong>Roles e historial</strong><span>Super Admin, Admin y Analista con trazabilidad de corridas.</span></div></section>
+  $('#app').innerHTML = `<div class="public marketing">
+    <nav class="nav landing-nav">
+      <div class="brand"><div class="logo">Q</div><div><h1>Quantia APU</h1><p>Inteligencia aplicada a presupuestos y precios unitarios</p></div></div>
+      <div class="landing-links"><a href="#capabilities">Capacidades</a><a href="#workflow">Flujo</a><a href="#deliverables">Entregables</a></div>
+      <div class="actions"><button class="btn btn-secondary" data-theme-toggle>${state.theme==='dark'?'Tema claro':'Tema oscuro'}</button><button class="btn btn-primary" data-nav="login">Iniciar sesión</button></div>
+    </nav>
+
+    <section class="landing-hero">
+      <div class="hero-copy">
+        <div class="eyebrow"><span></span> Plataforma profesional para análisis APU con IA</div>
+        <h2>Convierte propuestas de obra en decisiones económicas trazables.</h2>
+        <p class="lead">Quantia APU estructura conceptos, matrices, insumos y referencias de mercado para entregar comparativos claros, detalles auditables y hallazgos ejecutivos apoyados por inteligencia artificial.</p>
+        <div class="hero-actions"><button class="btn btn-primary" data-nav="login">Explorar plataforma</button><button class="btn btn-secondary" onclick="document.getElementById('workflow').scrollIntoView({behavior:'smooth'})">Ver cómo funciona</button></div>
+        <div class="trust-strip"><span>Presupuesto base independiente</span><span>Comparativo multi-proveedor</span><span>Detalle APU por contratista</span><span>Excel ejecutivo</span></div>
+      </div>
+      <div class="product-showcase" aria-label="Vista previa del sistema">
+        <div class="showcase-top"><span></span><span></span><span></span></div>
+        <div class="score-card large"><label>Riesgo global</label><strong>Amarillo</strong><small>5 partidas concentran el mayor impacto económico</small></div>
+        <div class="mini-dashboard">
+          <div><label>Mejor oferta</label><strong>$1.180M</strong></div>
+          <div><label>Desviación ref.</label><strong>+8.7%</strong></div>
+          <div><label>Matches data</label><strong>86%</strong></div>
+        </div>
+        <div class="chart-card"><div class="bar b1"></div><div class="bar b2"></div><div class="bar b3"></div><div class="bar b4"></div></div>
+        <div class="ai-note"><strong>IA de análisis</strong><p>Detecta patrones, explica desviaciones y prioriza negociación sin reemplazar los cálculos determinísticos.</p></div>
+      </div>
+    </section>
+
+    <section class="landing-section problem-section">
+      <div class="section-head"><span class="section-kicker">El problema</span><h3>Los comparativos tradicionales esconden riesgo en hojas difíciles de leer.</h3><p>Cuando cada contratista presenta conceptos y matrices con estructuras distintas, el análisis manual termina siendo lento, poco trazable y difícil de defender ante gerencia, compras o ingeniería.</p></div>
+      <div class="pain-grid">
+        <div class="pain-card"><strong>Propuestas no homogéneas</strong><p>Conceptos, unidades y matrices llegan con formatos distintos y criterios no siempre comparables.</p></div>
+        <div class="pain-card"><strong>Sobrecostos difíciles de explicar</strong><p>El monto total no basta: se necesita entender qué partida, insumo o porcentaje genera la desviación.</p></div>
+        <div class="pain-card"><strong>Excel sin narrativa</strong><p>La información técnica debe convertirse en recomendaciones claras, priorizadas y auditables.</p></div>
+      </div>
+    </section>
+
+    <section id="capabilities" class="landing-section">
+      <div class="section-head"><span class="section-kicker">Capacidades</span><h3>Un sistema diseñado para separar procesos, no mezclarlos.</h3><p>Cada módulo responde a un objetivo distinto y conserva la trazabilidad de los archivos, referencias y resultados usados.</p></div>
+      <div class="capability-grid">
+        <article class="capability-card accent-blue"><div class="cap-icon">01</div><h4>Presupuesto base</h4><p>Módulo independiente para generar presupuestos desde conceptos de ingeniería y matrices Construdata disponibles en data.</p><ul><li>Conceptos base</li><li>Match contra referencia</li><li>Estimación previa a licitar</li></ul></article>
+        <article class="capability-card accent-green"><div class="cap-icon">02</div><h4>Comparador de propuestas</h4><p>Evalúa una propuesta individual o múltiples proveedores sin exigir presupuesto base previo.</p><ul><li>Ranking económico</li><li>Desviaciones por partida</li><li>Semáforos de riesgo</li></ul></article>
+        <article class="capability-card accent-purple"><div class="cap-icon">03</div><h4>Detalle APU por contratista</h4><p>Reconstruye el detalle desde la matriz propia del contratista y cruza insumos contra referencias granulares.</p><ul><li>Materiales</li><li>Mano de obra</li><li>Maquinaria y porcentajes</li></ul></article>
+        <article class="capability-card accent-orange"><div class="cap-icon">04</div><h4>IA ejecutiva</h4><p>Transforma cálculos y validaciones en hallazgos, causas probables y preguntas de negociación.</p><ul><li>Hallazgos</li><li>Recomendaciones</li><li>Prioridades de revisión</li></ul></article>
+      </div>
+    </section>
+
+    <section id="workflow" class="landing-section split-section">
+      <div>
+        <span class="section-kicker">Flujo operativo</span>
+        <h3>De archivos XLSX a un análisis económico listo para decisión.</h3>
+        <p>El usuario registra cada proveedor con nombre visible, archivo de conceptos y archivo matriz/APU. El sistema valida, normaliza, compara y genera reportes profesionales sin perder el origen de cada dato.</p>
+        <div class="flow-list"><div><b>1</b><span>Cargar conceptos y matriz/APU por proveedor</span></div><div><b>2</b><span>Validar estructura, unidades, importes y referencias</span></div><div><b>3</b><span>Calcular KPIs, impactos, desviaciones y alertas</span></div><div><b>4</b><span>Generar Excel ejecutivo con detalle técnico por contratista</span></div></div>
+      </div>
+      <div class="workflow-panel">
+        <div class="workflow-row active"><span>Proveedor A</span><strong>Conceptos.xlsx + Matriz_APU.xlsx</strong></div>
+        <div class="workflow-row"><span>Proveedor B</span><strong>Conceptos.xlsx + Matriz_APU.xlsx</strong></div>
+        <div class="workflow-row"><span>Referencias data</span><strong>Materiales · MO · Maquinaria</strong></div>
+        <div class="workflow-result"><strong>Resultado</strong><p>Comparativa horizontal + detalle independiente por contratista.</p></div>
+      </div>
+    </section>
+
+    <section class="landing-section ai-section">
+      <div class="ai-gradient"><span class="section-kicker">Capa IA</span><h3>Inteligencia artificial con límites claros y resultados auditables.</h3><p>La IA no inventa precios ni reemplaza fórmulas. Opera sobre datos calculados para explicar desviaciones, resumir riesgos, priorizar partidas e identificar preguntas concretas para el contratista.</p><div class="ai-pill-row"><span>Explicación de sobrecostos</span><span>Priorización de negociación</span><span>Lectura ejecutiva</span><span>Alertas de consistencia</span></div></div>
+    </section>
+
+    <section id="deliverables" class="landing-section deliverables-section">
+      <div class="section-head"><span class="section-kicker">Entregables</span><h3>Excel profesional, tablero web e historial trazable.</h3><p>El sistema explota Excel como una interfaz de análisis, no como un simple archivo de descarga.</p></div>
+      <div class="deliverable-grid">
+        <div class="deliverable-card"><strong>Resumen Ejecutivo</strong><p>KPIs, semáforos, ranking y hallazgos principales en una vista clara.</p></div>
+        <div class="deliverable-card"><strong>Comparativa</strong><p>Vista horizontal por proveedor para comparar precio unitario, importe, participación y mercado.</p></div>
+        <div class="deliverable-card"><strong>Detalle por contratista</strong><p>Una hoja independiente por matriz/APU, respetando que cada proveedor puede declarar estructuras distintas.</p></div>
+        <div class="deliverable-card"><strong>Validaciones</strong><p>Inconsistencias, unidades dudosas, insumos sin referencia y alertas de cálculo.</p></div>
+      </div>
+    </section>
+
+    <section class="landing-section governance-section">
+      <div class="governance-card"><span class="section-kicker">Gobierno y seguridad</span><h3>Roles, historial y trazabilidad desde la primera versión.</h3><p>Super Administrador, Administrador y Analista trabajan con visibilidad diferenciada. Cada corrida queda asociada a usuario, archivos, fecha, tipo de análisis y resultado generado.</p><div class="governance-list"><span>Usuarios y roles</span><span>Historial por perfil</span><span>Historial global</span><span>Referencias data</span></div></div>
+    </section>
+
+    <section class="landing-cta"><h3>Menos tiempo armando hojas. Más claridad para decidir.</h3><p>Una plataforma para convertir propuestas técnicas y matrices APU en información económica comparable, explicable y lista para negociación.</p><button class="btn btn-primary" data-nav="login">Iniciar análisis</button></section>
   </div>`;
 }
 
