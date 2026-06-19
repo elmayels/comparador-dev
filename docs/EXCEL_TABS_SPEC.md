@@ -112,3 +112,93 @@ Se agregan endpoints reales:
 La comparativa conserva formato horizontal por proveedor. El detalle conserva una hoja por proveedor. La hoja `Detalle Base` y las hojas `Detalle - <Proveedor>` usan el mismo layout canónico; para base se omiten columnas de mercado.
 
 Los nombres visibles de proveedor vienen de la UI y se limitan a 10 caracteres para preservar legibilidad en Excel.
+
+## V1.2 Canonical Output Contract - baseline aceptable
+
+Esta corrección restaura como contrato visual mínimo aceptable el formato de `Comparativo_cotizacion_2_proveedores.xlsx`, manteniendo por debajo el modelo canónico y los parsers reales.
+
+### Comparativa
+
+La hoja `Comparativa` se renderiza como comparativo horizontal por proveedor:
+
+- `A:D` son columnas base del catálogo/concepto y quedan congeladas.
+- Fila 1 contiene agrupadores: `Servicios / Cotización` y un bloque por proveedor.
+- Fila 2 contiene encabezados operativos.
+- Cada proveedor aporta exactamente seis columnas:
+  - `P.U.`
+  - `Importe`
+  - `% Part.`
+  - `% ajuste`
+  - `Mercado P.U.`
+  - `Mercado Importe`
+- El mercado vive dentro del bloque de cada proveedor, no como un bloque global separado.
+- El orden visual respeta el catálogo declarado.
+- El Pareto 80/20 se calcula internamente por proveedor y se pinta en azul claro sin reordenar el catálogo.
+
+### Detalle por proveedor
+
+Cada proveedor genera su propia hoja: `Detalle - <Proveedor>`.
+
+No se genera un detalle horizontal multi-proveedor porque cada contratista puede declarar una matriz/APU distinta.
+
+Contrato visual:
+
+- `A:H`: matriz/APU del proveedor.
+- `I`: separador visual.
+- `J:M`: comparación contra mercado.
+
+Columnas:
+
+- `Código`
+- `Concepto`
+- `Unidad`
+- `P. Unitario`
+- `Op.`
+- `Cantidad`
+- `Importe`
+- `%`
+- Separador
+- `Mercado P. Unitario`
+- `Mercado Op.`
+- `Mercado Cantidad`
+- `Mercado Importe`
+
+### Detalle Base
+
+`Detalle Base` utiliza el mismo writer canónico que `Detalle - <Proveedor>`, pero sin el bloque de mercado (`J:M`) porque la matriz base ya representa la matriz presupuestada/mercado generada desde conceptos base + matrices Construdata.
+
+### Regla canónica
+
+El modelo canónico no debe obligar al Excel a verse como tabla plana. La lógica correcta es:
+
+```text
+Archivos XLSX reales
+  -> parsers
+  -> modelo canónico
+  -> cálculo / mercado / validaciones
+  -> writer Excel con contrato visual aceptable
+```
+
+## Corrección V1.3 - contrato de Comparativa sin detalle de matriz
+
+La hoja `Comparativa` no debe renderizar insumos, materiales, mano de obra, maquinaria ni filas internas de la matriz/APU. Su objetivo es comparar los conceptos del catálogo/oferta a nivel de partida usando únicamente los totales por precio unitario.
+
+Contrato final:
+
+- `Comparativa` se alimenta desde `CanonicalConcept` proveniente del catálogo de conceptos.
+- `Comparativa` muestra una fila por partida/concepto de catálogo, en el orden declarado.
+- `Comparativa` no consume ni renderiza `CanonicalApuItem`.
+- Los insumos de matriz/APU se muestran exclusivamente en `Detalle - <Proveedor>`.
+- A:D permanecen congeladas como base del catálogo.
+- Cada proveedor agrega su bloque hacia la derecha: `P.U.`, `Importe`, `% Part.`, `% ajuste`, `Mercado P.U.`, `Mercado Importe`.
+- El sombreado 80/20 se calcula sobre el importe total por concepto, no sobre insumos.
+
+Si el parser de catálogo recibe accidentalmente una hoja de matriz/APU, debe filtrar filas típicas de detalle como `MATERIALES`, `MANO DE OBRA`, `SUBTOTAL`, `COSTO DIRECTO`, `UTILIDAD`, porcentajes y otros insumos. Esas filas pertenecen al detalle técnico, no al comparativo.
+
+## V1.5 - Columnas de mercado en Comparativa y Detalle
+
+Las columnas `Mercado P.U.` y `Mercado Importe` del tab `Comparativa` deben poblarse desde `CanonicalConcept.market_unit_price` y `CanonicalConcept.market_amount`.
+
+Las columnas de mercado de `Detalle - <Proveedor>` deben poblarse desde `CanonicalApuItem.market_*`.
+
+El Excel writer no debe calcular ni inventar valores de mercado. Solo debe renderizar los valores que ya existan en el modelo canónico.

@@ -94,3 +94,30 @@ Esta entrega agrega lectura real inicial de XLSX:
 - Endpoint de descarga por corrida real: `/api/real-runs/{run_id}/report`.
 
 Limitación intencional: el parser es heurístico y tolerante. La siguiente iteración debe robustecer homologación de conceptos, detección de secciones y matching semántico contra referencias.
+
+## V1.2 - Canonical Excel baseline restored
+
+This version restores the minimum accepted Excel visual contract while keeping the V1 real-data canonical model.
+
+Key points:
+
+- `Comparativa` follows the accepted horizontal provider format: A:D frozen base columns plus one six-column block per provider.
+- Provider blocks contain `P.U.`, `Importe`, `% Part.`, `% ajuste`, `Mercado P.U.`, `Mercado Importe`.
+- Pareto 80/20 is calculated from the canonical concept spine and highlighted in blue without changing the declared catalog order.
+- `Detalle - <Proveedor>` uses one sheet per provider. Each sheet is A:H provider matrix, I separator, J:M market block.
+- `Detalle Base` uses the same canonical writer without market columns.
+- This preserves the canonical model internally without forcing the Excel to become a flat technical table.
+
+### V1.3 - Corrección de objetivo del tab Comparativa
+
+Se corrige el contrato del Excel para que `Comparativa` muestre solamente conceptos del catálogo y totales de P.U. por proveedor. El detalle de matriz/APU queda exclusivamente en `Detalle - <Proveedor>`.
+
+
+## V1.5 - Corrección mercado canónico
+
+Se corrigió la propagación de valores de mercado para que no queden como columnas visuales vacías:
+
+- `Comparativa` toma mercado desde `CanonicalConcept.market_*`.
+- `Detalle - <Proveedor>` toma mercado desde `CanonicalApuItem.market_*`.
+- El parser de matriz/APU puede leer columnas de mercado declaradas en la matriz.
+- El modelo conserva `concept_key` para asociar insumos y totales APU con el concepto del catálogo.

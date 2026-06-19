@@ -45,6 +45,15 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s)
 
 
+
+def canonical_key(code: str = "", description: str = "") -> str:
+    code = str(code or "").strip().lower()
+    if code:
+        return f"code:{code}"
+    desc = str(description or "").strip().lower()
+    return "desc:" + " ".join(desc.split())[:120]
+
+
 def _tokens(s: str) -> set[str]:
     stop = {"de", "del", "la", "el", "los", "las", "y", "en", "con", "para", "por", "a", "un", "una", "m", "ml", "kg", "pza", "und"}
     return {t for t in _norm(s).split() if len(t) > 2 and t not in stop}
@@ -58,13 +67,24 @@ class CanonicalConcept:
     quantity: float | None = None
     unit_price: float | None = None
     amount: float | None = None
+    market_unit_price: float | None = None
+    market_amount: float | None = None
+    market_source: str = ""
+    market_state: str = ""
     family: str = ""
+    hierarchy_level: int = 0
+    original_order: int = 0
+    is_executable: bool = False
+    weight_pct: float | None = None
+    cumulative_pct: float | None = None
+    is_pareto_80: bool = False
     source_row: int | None = None
 
 
 @dataclass
 class CanonicalApuItem:
     code: str = ""
+    concept_key: str = ""
     description: str = ""
     unit: str = ""
     section: str = ""
@@ -90,6 +110,11 @@ class CanonicalProvider:
     matrix_file: str = ""
     concepts: list[CanonicalConcept] = field(default_factory=list)
     apu_items: list[CanonicalApuItem] = field(default_factory=list)
+    # Provider-scoped 80/20. These keys represent the concepts that explain
+    # the first 80% of this provider's own catalog amount (P.U. total *
+    # quantity). They are intentionally not stored on the shared catalog spine
+    # because every provider can have a different Pareto set.
+    pareto_concept_keys: list[str] = field(default_factory=list)
     validations: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -168,10 +193,82 @@ def _sheet_score(ws) -> int:
     return min(ws.max_row or 0, 5000) * min(ws.max_column or 0, 50)
 
 
-def _best_sheet(path: Path):
+def _best_sheet(path: Path, preferred_names: Iterable[str] | None = None):
     wb = load_workbook(path, read_only=True, data_only=True)
+    if preferred_names:
+        wanted = {_norm(x) for x in preferred_names}
+        for ws in wb.worksheets:
+            if _norm(ws.title) in wanted:
+                return wb, ws
     ws = max(wb.worksheets, key=_sheet_score)
     return wb, ws
+
+
+def _hierarchy_level(code: str, executable: bool = False) -> int:
+    c = _txt(code)
+    if not c:
+        return 0
+    # 1 -> level 1, 1.1 -> level 2, 1.1.1 -> level 3.
+    parts = [p for p in re.split(r"[.]", c) if p != ""]
+    return max(1, len(parts)) if parts else (3 if executable else 1)
+
+
+def _apply_pareto_80(concepts: list[CanonicalConcept]) -> None:
+    execs = [c for c in concepts if c.is_executable and (c.amount or 0) > 0]
+    total = sum(float(c.amount or 0) for c in execs)
+    if total <= 0:
+        return
+    ordered = sorted(execs, key=lambda c: float(c.amount or 0), reverse=True)
+    cumulative = 0.0
+    for c in ordered:
+        c.weight_pct = float(c.amount or 0) / total
+        cumulative += c.weight_pct
+        c.cumulative_pct = cumulative
+        # Include the concept that crosses the 80% threshold. This is the
+        # professional 80/20 selection for negotiation priority.
+        if cumulative <= 0.80 or (cumulative - (c.weight_pct or 0)) < 0.80:
+            c.is_pareto_80 = True
+
+
+
+APU_SECTION_TERMS = {
+    "materiales", "mano de obra", "equipo y herramienta", "equipo", "maquinaria",
+    "basicos", "básicos", "seccion financiera", "sección financiera",
+    "subtotal materiales", "subtotal mano de obra", "subtotal maquinaria",
+    "subtotal equipo", "subtotal basicos", "subtotal básicos", "costo directo",
+    "costo indirecto", "indirectos", "utilidad", "financiamiento",
+    "precio unitario", "total costo unitario", "total por servicio",
+}
+
+
+def _looks_like_apu_matrix_row(code: str, desc: str, unit: str = "", op: str = "") -> bool:
+    """Guardrail for Comparativa: catalog parsing must not leak PU/matrix rows.
+
+    Comparativa compares catalog concepts and total P.U. by provider. It must
+    never show material/labor/equipment detail rows from the matrix/APU. Those
+    rows belong exclusively to Detalle - <Proveedor>.
+    """
+    ndesc = _norm(desc)
+    ncode = _norm(code)
+    nunit = _norm(unit)
+    nop = _norm(op)
+    if not ndesc:
+        return False
+    if ndesc in APU_SECTION_TERMS or any(term == ndesc for term in APU_SECTION_TERMS):
+        return True
+    if any(term in ndesc for term in [
+        "subtotal materiales", "subtotal mano", "subtotal maquinaria", "subtotal equipo",
+        "costo directo", "costo indirecto", "precio unitario", "total costo",
+        "seccion financiera", "sección financiera"
+    ]):
+        return True
+    # Common PU detail signals: percentage rows, operators, and section-only rows.
+    if ncode.startswith("%") or "%" in code or nop in {"*", "/", "%"} and not re.match(r"^\d+(\.\d+)*$", str(code).strip()):
+        if nunit in {"%", "jorn", "hr", "hora", "kg", "m3", "m2", "m", "pza", "l", "lt"} or ncode:
+            return True
+    if ndesc in {"materiales", "mano de obra", "maquinaria", "equipo", "basicos", "básicos"}:
+        return True
+    return False
 
 
 def _detect_header(rows: list[list[Any]], synonyms: dict[str, list[str]]) -> tuple[int, dict[str, int]]:
@@ -213,33 +310,97 @@ MATRIX_SYNONYMS = {
     "quantity": ["cantidad", "rendimiento", "cant"],
     "amount": ["importe", "total", "valor"],
     "percent": ["%", "porcentaje"],
+    "market_unit_price": ["mercado p unitario", "mercado precio unitario", "mercado p u", "mercado pu", "referencia p unitario"],
+    "market_operator": ["mercado op", "referencia op"],
+    "market_quantity": ["mercado cantidad", "mercado cant", "referencia cantidad"],
+    "market_amount": ["mercado importe", "mercado total", "referencia importe"],
 }
 
 
 def parse_concepts(path: Path) -> list[CanonicalConcept]:
-    wb, ws = _best_sheet(path)
+    """Parse a contractor/base concept catalog preserving original order and hierarchy.
+
+    Preferred source shape is the CATALOGO sheet used by PU workbooks:
+    CODIGO | DESCRIPCION | UNIDAD | CANTIDAD | P U | SUBTOTAL.
+
+    The output intentionally keeps non-executable hierarchy rows so the
+    Comparativa can show the catalog exactly as declared, while Pareto 80/20
+    is calculated only over executable rows with amount.
+    """
+    wb, ws = _best_sheet(path, preferred_names=["CATALOGO", "CATÁLOGO", "Catalogo", "CATALOGO DE CONCEPTOS", "Catálogo de conceptos", "Comparativa"])
     try:
-        rows = [list(r) for r in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 1000), values_only=True)]
+        rows = [list(r) for r in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 1500), values_only=True)]
         hidx, cmap = _detect_header(rows, CONCEPT_SYNONYMS)
-        data = []
+        # If we have the canonical CATALOGO layout but fuzzy detection missed it,
+        # scan explicit header names.
+        if len(cmap) < 3:
+            for idx, row in enumerate(rows[:40]):
+                normed = [_norm(_txt(v)) for v in row]
+                if any("codigo" == x for x in normed) and any("descripcion" in x for x in normed):
+                    hidx = idx
+                    cmap = {}
+                    for c, text in enumerate(normed):
+                        if text == "codigo": cmap["code"] = c
+                        elif "descripcion" in text: cmap["description"] = c
+                        elif "unidad" in text: cmap["unit"] = c
+                        elif "cantidad" in text: cmap["quantity"] = c
+                        elif text in {"p u", "pu", "precio unitario"}: cmap["unit_price"] = c
+                        elif "subtotal" in text or "importe" in text: cmap["amount"] = c
+                    break
+        data: list[CanonicalConcept] = []
+        current_family = ""
+        order = 0
         for ridx, row in enumerate(rows[hidx + 1:], hidx + 2):
-            desc = _txt(row[cmap.get("description", 1)] if cmap.get("description", 1) < len(row) else "")
-            code = _txt(row[cmap.get("code", 0)] if cmap.get("code", 0) < len(row) else "")
+            def val(field: str, default_idx: int | None = None):
+                idx = cmap.get(field, default_idx)
+                return row[idx] if idx is not None and idx < len(row) else None
+            code = _txt(val("code", 0))
+            desc = _txt(val("description", 1))
             if not desc and not code:
-                # fallback: select longest text as description
                 texts = [_txt(v) for v in row if _txt(v)]
-                desc = max(texts, key=len) if texts else ""
-            if not desc or len(desc) < 4:
+                # Ignore empty exported padding rows.
+                if not texts:
+                    continue
+                desc = max(texts, key=len)
+            if not desc or len(desc) < 3:
                 continue
-            qty = _num(row[cmap["quantity"]]) if "quantity" in cmap and cmap["quantity"] < len(row) else None
-            pu = _num(row[cmap["unit_price"]]) if "unit_price" in cmap and cmap["unit_price"] < len(row) else None
-            amount = _num(row[cmap["amount"]]) if "amount" in cmap and cmap["amount"] < len(row) else None
-            unit = _txt(row[cmap["unit"]]) if "unit" in cmap and cmap["unit"] < len(row) else ""
-            # If amount is missing but qty and pu exist, calculate.
+            # Ignore catalog grand-total rows. They are financial summary rows,
+            # not catalog concepts to be compared or painted in Pareto 80/20.
+            if not code and (_norm(desc) in {"subtotal", "i v a", "iva", "total"} or _num(desc) is not None):
+                continue
+            unit = _txt(val("unit"))
+            op_guess = _txt(row[cmap.get("operator", -1)]) if "operator" in cmap and cmap.get("operator", -1) < len(row) else ""
+            if _looks_like_apu_matrix_row(code, desc, unit, op_guess):
+                continue
+            qty = _num(val("quantity"))
+            pu = _num(val("unit_price"))
+            amount = _num(val("amount"))
             if amount is None and qty is not None and pu is not None:
                 amount = qty * pu
-            data.append(CanonicalConcept(code=code, description=desc, unit=unit, quantity=qty, unit_price=pu, amount=amount, source_row=ridx))
-        return data[:300]
+            executable = bool(unit or qty is not None or pu is not None or amount is not None)
+            level = _hierarchy_level(code, executable)
+            if not executable:
+                current_family = desc
+            order += 1
+            data.append(CanonicalConcept(
+                code=code,
+                description=desc,
+                unit=unit,
+                quantity=qty,
+                unit_price=pu,
+                amount=amount,
+                family=current_family,
+                hierarchy_level=level,
+                original_order=order,
+                is_executable=executable,
+                source_row=ridx,
+            ))
+        # Final contract guardrail: this is a concept catalog, not PU detail.
+        # Keep hierarchy/concept rows, drop any matrix/APU detail that may have
+        # leaked in from a wrong sheet or ambiguous workbook.
+        data = [c for c in data if not _looks_like_apu_matrix_row(c.code, c.description, c.unit)]
+        _apply_pareto_80(data)
+        return data[:500]
     finally:
         wb.close()
 
@@ -275,43 +436,128 @@ def _percent_base(description: str, section: str) -> str:
 
 
 def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[CanonicalApuItem]:
-    wb, ws = _best_sheet(path)
+    wb, ws = _best_sheet(path, preferred_names=["PU", "APU", "MATRIZ", "MATRICES", "Detalle - P1", "Detalle - P2"])
     try:
         rows = [list(r) for r in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 3000), values_only=True)]
         hidx, cmap = _detect_header(rows, MATRIX_SYNONYMS)
         current_section = ""
+        current_concept_key = ""
         out: list[CanonicalApuItem] = []
+
+        def cell(row: list[Any], field: str):
+            idx = cmap.get(field)
+            return row[idx] if idx is not None and idx < len(row) else None
+
         for ridx, row in enumerate(rows[hidx + 1:], hidx + 2):
             texts = [_txt(v) for v in row if _txt(v)]
             longest = max(texts, key=len) if texts else ""
             current_section = _classify_section(" ".join(texts[:4]), current_section)
-            # Detect title/subtotal rows.
             whole = _norm(" ".join(texts))
-            if any(k in whole for k in ["subtotal materiales", "subtotal mano", "subtotal maquinaria", "costo directo", "total costo", "materiales", "mano de obra", "maquinaria", "seccion financiera"]):
-                if len(texts) <= 3 or whole in {"materiales", "mano de obra", "maquinaria", "equipo", "seccion financiera"} or "subtotal" in whole or "total" in whole:
-                    section = current_section if "subtotal" not in whole and "total" not in whole else whole.upper()[:28]
-                    out.append(CanonicalApuItem(description=longest.upper(), section=section or "TÍTULO", state="", observation="Fila estructural detectada", source_row=ridx))
+
+            if texts and (_norm(texts[0]) in {"partida", "analisis"} or str(texts[0]).strip().lower().startswith(("partida", "análisis", "analisis"))):
+                out.append(CanonicalApuItem(concept_key=current_concept_key, description=" ".join(texts), section="PARTIDA", state="", observation="Encabezado de análisis detectado", source_row=ridx))
+                continue
+
+            if any(k in whole for k in ["subtotal materiales", "subtotal mano", "subtotal maquinaria", "subtotal equipo", "subtotal basicos", "costo directo", "total costo", "precio unitario", "materiales", "mano de obra", "maquinaria", "equipo y herramienta", "basicos", "seccion financiera", "indirectos", "utilidad"]):
+                if len(texts) <= 4 or whole in {"materiales", "mano de obra", "maquinaria", "equipo", "equipo y herramienta", "basicos", "seccion financiera"} or "subtotal" in whole or "total" in whole or "costo directo" in whole or "utilidad" in whole or "precio unitario" in whole:
+                    amount_guess = _num(cell(row, "amount"))
+                    pct_guess = _num(cell(row, "percent"))
+                    nums = [_num(v) for v in row if _num(v) is not None]
+                    if amount_guess is None and nums:
+                        # Fallback only when the sheet does not expose a mapped Importe column.
+                        # Prefer not to take market columns as contractor amount.
+                        amount_guess = nums[-2] if len(nums) >= 2 and ("precio" in whole or "total" in whole) else nums[-1]
+                    if pct_guess is None and nums:
+                        pct_guess = nums[-1] if len(nums) >= 2 and abs(nums[-1]) <= 1 else None
+                    section = whole.upper()[:28] if ("subtotal" in whole or "total" in whole or "costo" in whole or "utilidad" in whole or "precio" in whole) else "TÍTULO"
+                    desc_label = longest.upper()
+                    if "subtotal" in whole:
+                        target = next((t for t in texts if _norm(t) not in {"subtotal", "subtotal:"} and _num(t) is None), "")
+                        target_norm = _norm(target)
+                        desc_label = (target if target_norm.startswith("subtotal") else "SUBTOTAL " + target).strip().upper()
+                    elif "costo directo" in whole:
+                        desc_label = "COSTO DIRECTO"
+                    elif "precio unitario" in whole or "total costo" in whole:
+                        desc_label = "PRECIO UNITARIO" if "precio" in whole else "TOTAL COSTO UNITARIO"
+                    elif "utilidad" in whole:
+                        desc_label = "UTILIDAD"
+                    mpu = _num(cell(row, "market_unit_price"))
+                    mop = _txt(cell(row, "market_operator")) or ""
+                    mqty = _num(cell(row, "market_quantity"))
+                    mamount = _num(cell(row, "market_amount"))
+                    if mamount is None and mpu is not None and mqty is not None:
+                        mamount = mpu * mqty if mop != "/" else (mpu / mqty if mqty else None)
+                    out.append(CanonicalApuItem(
+                        concept_key=current_concept_key,
+                        description=desc_label,
+                        section=section or "TÍTULO",
+                        amount=amount_guess,
+                        percent=pct_guess,
+                        market_unit_price=mpu,
+                        market_operator=mop or "",
+                        market_quantity=mqty,
+                        market_amount=mamount,
+                        state="Mercado declarado en matriz" if mamount is not None or mpu is not None else "",
+                        observation="Fila estructural detectada" + (" con mercado declarado" if mamount is not None or mpu is not None else ""),
+                        source_row=ridx,
+                    ))
                     continue
+
             desc_idx = cmap.get("description")
             desc = _txt(row[desc_idx]) if desc_idx is not None and desc_idx < len(row) else longest
             if not desc or len(desc) < 3:
                 continue
-            code = _txt(row[cmap["code"]]) if "code" in cmap and cmap["code"] < len(row) else ""
-            unit = _txt(row[cmap["unit"]]) if "unit" in cmap and cmap["unit"] < len(row) else ""
-            pu = _num(row[cmap["unit_price"]]) if "unit_price" in cmap and cmap["unit_price"] < len(row) else None
-            op = _txt(row[cmap["operator"]]) if "operator" in cmap and cmap["operator"] < len(row) else "*"
-            qty = _num(row[cmap["quantity"]]) if "quantity" in cmap and cmap["quantity"] < len(row) else None
-            amount = _num(row[cmap["amount"]]) if "amount" in cmap and cmap["amount"] < len(row) else None
-            pct = _num(row[cmap["percent"]]) if "percent" in cmap and cmap["percent"] < len(row) else None
+            code = _txt(cell(row, "code"))
+            unit = _txt(cell(row, "unit"))
+            pu = _num(cell(row, "unit_price"))
+            op = _txt(cell(row, "operator")) or "*"
+            qty = _num(cell(row, "quantity"))
+            amount = _num(cell(row, "amount"))
+            pct = _num(cell(row, "percent"))
+            mpu = _num(cell(row, "market_unit_price"))
+            mop = _txt(cell(row, "market_operator")) or "*"
+            mqty = _num(cell(row, "market_quantity"))
+            mamount = _num(cell(row, "market_amount"))
+
             if amount is None and pu is not None and qty is not None:
                 amount = pu * qty if op != "/" else (pu / qty if qty else None)
+            if mamount is None and mpu is not None and mqty is not None:
+                mamount = mpu * mqty if mop != "/" else (mpu / mqty if mqty else None)
+
+            # Concept header rows in a PU matrix define the current concept bucket.
+            # All following insumos/subtotals inherit this key until the next header.
+            looks_like_concept_header = bool(code and unit and amount is not None and not code.strip().startswith("%") and current_section in {"", "SIN SECCIÓN"})
+            if looks_like_concept_header:
+                current_concept_key = canonical_key(code, desc)
+
             section = current_section or "SIN SECCIÓN"
-            if op == "%" or (pct is not None) or "%" in desc:
+            is_declared_percent = (op == "%") or unit.strip() == "%" or code.strip().startswith("%") or "%" in desc
+            if is_declared_percent:
                 section = _percent_base(desc, section)
                 if qty is None and pct is not None:
                     qty = pct / 100 if pct > 1 else pct
-            item = CanonicalApuItem(code=code, description=desc, unit=unit, section=section, unit_price=pu, operator=op or "*", quantity=qty, amount=amount, percent=pct, state="Pendiente mercado", observation="Leído desde matriz/APU", source_row=ridx)
-            if catalog:
+
+            item = CanonicalApuItem(
+                code=code,
+                concept_key=current_concept_key,
+                description=desc,
+                unit=unit,
+                section=section,
+                unit_price=pu,
+                operator=op or "*",
+                quantity=qty,
+                amount=amount,
+                percent=pct,
+                market_unit_price=mpu,
+                market_operator=mop or "*",
+                market_quantity=mqty,
+                market_amount=mamount,
+                market_deviation=(pu / mpu - 1) if pu is not None and mpu else None,
+                state="Mercado declarado en matriz" if (mpu is not None or mamount is not None) else "Pendiente mercado",
+                observation="Leído desde matriz/APU" + (" · mercado declarado" if (mpu is not None or mamount is not None) else ""),
+                source_row=ridx,
+            )
+            if (item.market_unit_price is None and item.market_amount is None) and catalog:
                 match = catalog.match(desc, section)
                 if match:
                     item.market_unit_price = float(match["price"])
@@ -329,30 +575,35 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
     finally:
         wb.close()
 
-
 def canonical_rows_from_items(items: list[CanonicalApuItem], include_market: bool = True) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    # If parser did not detect subtotal rows, add lightweight section subtotal separators.
+    # If the parser already preserved PU structural rows (PARTIDA, TÍTULO,
+    # SUBTOTAL, TOTAL), do not synthesize extra section titles. This keeps the
+    # output close to the contractor's PU definition.
+    has_structural = any(
+        (i.section in {"PARTIDA", "TÍTULO"}) or i.section.startswith("SUBTOTAL") or "TOTAL" in i.section or "COSTO" in i.section
+        for i in items
+    )
     last_section = None
     for item in items:
-        if item.section != last_section and item.section and not item.section.startswith("%") and "SUBTOTAL" not in item.section and "TOTAL" not in item.section:
+        structural = (item.section in {"PARTIDA", "TÍTULO"}) or item.section.startswith("SUBTOTAL") or "TOTAL" in item.section or "COSTO" in item.section or "UTILIDAD" in item.section or "PRECIO" in item.section
+        if (not has_structural) and item.section != last_section and item.section and not item.section.startswith("%"):
             rows.append({"code":"", "concept": item.section, "unit":"", "section":"TÍTULO", "pu":"", "op":"", "qty":"", "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"", "obs":""})
             last_section = item.section
         amount = item.amount if item.amount is not None else ""
         market_amount = item.market_amount if item.market_amount is not None else ""
-        total_base = None
         rows.append({
             "code": item.code,
             "concept": item.description,
             "unit": item.unit,
             "section": item.section,
-            "pu": item.unit_price if item.unit_price is not None else "",
-            "op": item.operator,
-            "qty": item.quantity if item.quantity is not None else "",
+            "pu": "" if structural else item.unit_price if item.unit_price is not None else "",
+            "op": "" if structural else item.operator,
+            "qty": "" if structural else item.quantity if item.quantity is not None else "",
             "amount": amount,
             "pct": item.percent / 100 if item.percent and item.percent > 1 else item.percent if item.percent is not None else "",
             "mpu": item.market_unit_price if include_market and item.market_unit_price is not None else "",
-            "mop": item.market_operator if include_market else "",
+            "mop": item.market_operator if include_market and (item.market_unit_price is not None or item.market_amount is not None) else "",
             "mqty": item.market_quantity if include_market and item.market_quantity is not None else "",
             "mamount": market_amount if include_market else "",
             "dev": item.market_deviation if include_market and item.market_deviation is not None else "",
@@ -360,6 +611,54 @@ def canonical_rows_from_items(items: list[CanonicalApuItem], include_market: boo
             "obs": item.observation,
         })
     return rows
+
+
+
+def apply_provider_market_to_concepts(provider: CanonicalProvider) -> None:
+    """Attach market totals to provider concepts from its canonical APU detail.
+
+    This is a canonical model step, not an Excel styling patch. Comparativa
+    compares concept-level P.U. totals; Detalle explains the APU. Therefore the
+    provider must expose concept-level market values derived from the APU market
+    rows or from granular reference matches.
+    """
+    if not provider.concepts or not provider.apu_items:
+        return
+    concept_map = {canonical_key(c.code, c.description): c for c in provider.concepts}
+    direct: dict[str, CanonicalApuItem] = {}
+    aggregates: dict[str, float] = {}
+    for item in provider.apu_items:
+        key = item.concept_key or canonical_key(item.code, item.description)
+        if not key or key not in concept_map:
+            continue
+        # Prefer concept header rows: their code normally equals the catalog code
+        # and their market amount is the total market P.U. for the service.
+        if item.code and canonical_key(item.code, item.description) == key and (item.market_amount is not None or item.market_unit_price is not None):
+            direct[key] = item
+        # Aggregate only line-level market amounts as fallback, excluding titles.
+        structural = item.section in {"PARTIDA", "TÍTULO"} or "TOTAL" in item.section or "COSTO" in item.section or "PRECIO" in item.section or "UTILIDAD" in item.section
+        if not structural and item.market_amount is not None:
+            aggregates[key] = aggregates.get(key, 0.0) + float(item.market_amount or 0)
+    for key, concept in concept_map.items():
+        qty = concept.quantity or 1
+        if key in direct:
+            item = direct[key]
+            mamount = item.market_amount
+            mpu = item.market_unit_price
+            if mpu is None and mamount is not None and qty:
+                mpu = float(mamount) / float(qty)
+            if mamount is None and mpu is not None and qty:
+                mamount = float(mpu) * float(qty)
+            concept.market_unit_price = mpu
+            concept.market_amount = mamount
+            concept.market_source = "Matriz/APU"
+            concept.market_state = "Mercado declarado"
+        elif key in aggregates:
+            mamount = aggregates[key]
+            concept.market_amount = mamount
+            concept.market_unit_price = (mamount / float(qty)) if qty else mamount
+            concept.market_source = "APU granular"
+            concept.market_state = "Mercado agregado desde detalle"
 
 
 def run_id(prefix: str) -> str:

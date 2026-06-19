@@ -87,3 +87,76 @@ XLSX cargados
 ```
 
 La V1 alpha no pretende resolver todavía la homologación perfecta de conceptos ni el matching semántico avanzado. Su objetivo es romper la dependencia de mocks estáticos y empezar a poblar los reportes desde archivos reales.
+
+## V1.2 - Render canónico con contrato visual mínimo aceptable
+
+Se formaliza que el modelo canónico es la capa interna de datos, no el formato visual obligado del Excel. El Excel debe expresar el modelo de forma útil para negocio e ingeniería.
+
+### Comparativa canónica
+
+La comparativa se basa en un `CanonicalCatalogSpine` derivado del catálogo/conceptos declarado. Este spine conserva:
+
+- código/partida;
+- descripción;
+- unidad;
+- cantidad;
+- orden original;
+- jerarquía;
+- marca de concepto ejecutable;
+- flags Pareto 80/20 por proveedor.
+
+El render final conserva `A:D` como base congelada y agrega bloques de seis columnas por proveedor.
+
+### Detalle APU canónico
+
+La matriz/APU se guarda internamente como `CanonicalApuItem`, pero se renderiza como matriz PU auditable:
+
+- proveedor/base a la izquierda;
+- mercado a la derecha solo cuando aplica;
+- secciones, subtotales y totales preservados;
+- porcentajes en la posición donde fueron declarados;
+- sin forzar una estructura horizontal común entre contratistas.
+
+### Reutilización obligatoria
+
+`Detalle Base` y `Detalle - <Proveedor>` deben compartir el mismo writer. La diferencia debe ser solo `include_market=True/False`.
+
+## Corrección V1.3 - separación semántica entre Comparativa y Detalle
+
+La separación canónica entre catálogo y matriz/APU queda definida así:
+
+- `CanonicalConcept` representa partidas/conceptos del catálogo económico. Alimenta `Comparativa`, ranking, Pareto 80/20 y KPIs de monto.
+- `CanonicalApuItem` representa insumos, secciones, porcentajes, subtotales y totales internos de la matriz/APU. Alimenta únicamente `Detalle - <Proveedor>` y validaciones técnicas.
+
+La hoja `Comparativa` nunca debe mostrar detalle de matriz. Debe mostrar el P.U. total ofertado por concepto y el importe total calculado/declarado para cada proveedor. La trazabilidad del P.U. se audita en el tab de detalle individual del proveedor.
+
+## V1.5 - Mercado dentro del modelo canónico
+
+La comparativa de mercado no se resuelve como formato de Excel. Se modela en dos niveles:
+
+1. **Nivel concepto/proveedor**
+   - `CanonicalConcept.market_unit_price`
+   - `CanonicalConcept.market_amount`
+   - `CanonicalConcept.market_source`
+   - `CanonicalConcept.market_state`
+
+   Estos campos alimentan exclusivamente el tab `Comparativa`, donde se comparan precios unitarios totales por concepto.
+
+2. **Nivel matriz/APU**
+   - `CanonicalApuItem.market_unit_price`
+   - `CanonicalApuItem.market_operator`
+   - `CanonicalApuItem.market_quantity`
+   - `CanonicalApuItem.market_amount`
+   - `CanonicalApuItem.market_deviation`
+   - `CanonicalApuItem.concept_key`
+
+   Estos campos alimentan los tabs `Detalle - <Proveedor>`.
+
+La regla canónica es:
+
+```text
+Comparativa = conceptos del catálogo + totales del proveedor + totales de mercado por concepto.
+Detalle = matriz/APU del proveedor + comparación granular contra mercado.
+```
+
+El mercado por concepto se deriva desde la matriz/APU cuando viene declarado o desde la agregación de los matches granulares de mercado. No se inventa en el writer de Excel.

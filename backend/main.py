@@ -21,7 +21,7 @@ from openpyxl.comments import Comment
 
 from .real_data import (
     CanonicalProvider, CanonicalRun, ReferenceCatalog,
-    canonical_rows_from_items, parse_concepts, parse_matrix, run_id,
+    canonical_rows_from_items, parse_concepts, parse_matrix, run_id, apply_provider_market_to_concepts,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -973,121 +973,335 @@ def _canonical_concept_union(providers: list[CanonicalProvider]) -> list[Any]:
     return max((p.concepts for p in providers), key=lambda rows: len(rows), default=[])
 
 
+def _concept_key(c: Any) -> str:
+    code = str(getattr(c, "code", "") or "").strip().lower()
+    if code:
+        return f"code:{code}"
+    desc = str(getattr(c, "description", "") or "").strip().lower()
+    return "desc:" + " ".join(desc.split())[:120]
+
+
+def _concept_amount(c: Any) -> float:
+    amount = getattr(c, "amount", None)
+    if amount is not None:
+        try:
+            return float(amount or 0)
+        except Exception:
+            return 0.0
+    pu = getattr(c, "unit_price", None)
+    qty = getattr(c, "quantity", None)
+    if pu is not None and qty is not None:
+        try:
+            return float(pu or 0) * float(qty or 0)
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _provider_pareto_keys(provider: CanonicalProvider) -> set[str]:
+    """Return concept keys that explain the first 80% of a provider amount.
+
+    Canonical rule: Pareto 80/20 belongs to each provider because it is
+    calculated from that provider's own catalog amount (P.U. total * quantity).
+    It must never be promoted to the shared catalog/base columns in
+    Comparativa; the writer may only shade the provider's own block.
+    """
+    rows = [c for c in provider.concepts if getattr(c, "is_executable", False) and _concept_amount(c) > 0]
+    total = sum(_concept_amount(c) for c in rows)
+    if total <= 0:
+        return set()
+    selected: set[str] = set()
+    cumulative = 0.0
+    for c in sorted(rows, key=_concept_amount, reverse=True):
+        previous = cumulative
+        cumulative += _concept_amount(c) / total
+        if cumulative <= 0.80 or previous < 0.80:
+            selected.add(_concept_key(c))
+    # Persist the provider-scoped Pareto keys in the canonical provider object
+    # so downstream writers, KPIs and IA all consume the same semantic result.
+    try:
+        provider.pareto_concept_keys = sorted(selected)
+    except Exception:
+        pass
+    return selected
+
+
 def _write_real_comparativa(ws, providers: list[CanonicalProvider]):
-    names = [p.name for p in providers]
+    """Render the canonical comparison using the minimum accepted workbook contract.
+
+    Output contract restored from Comparativo_cotizacion_2_proveedores.xlsx:
+    - A:D = frozen base catalog/concept columns.
+    - One 6-column block per provider to the right.
+    - Market values live inside each provider block, not in a separate global block.
+    - Row order follows the declared catalog spine.
+    - Pareto 80/20 is provider-scoped. It is calculated from each provider's
+      own concept amount and highlighted only inside that provider block.
+      The shared Servicios/Cotización columns A:D are never shaded by Pareto.
+    """
     spine = _canonical_concept_union(providers)
+    names = [p.name for p in providers] or ["Proveedor"]
     ws.sheet_view.showGridLines = False
+
     base_cols = 4
-    provider_cols = 5
-    total_cols = base_cols + provider_cols * max(1, len(providers))
-    _provider_group_header(ws, 1, 1, 4, "Servicios / Cotización", "475467")
-    palette = ["1F4E79", "0E6B3D", "7C3AED", "B54708", "344054"]
-    for idx, p in enumerate(providers):
+    provider_cols = 6
+    total_cols = base_cols + provider_cols * len(names)
+    ws.freeze_panes = "E3"  # freeze row headers and A:D base catalog columns
+
+    widths = {"A": 16, "B": 72, "C": 12, "D": 12}
+    for idx, _ in enumerate(names):
         start = base_cols + idx * provider_cols + 1
-        _provider_group_header(ws, 1, start, start + provider_cols - 1, p.name, palette[idx % len(palette)])
-    headers = ["Partida", "Descripción", "Unidad", "Cantidad"]
-    for _p in providers:
-        headers += ["P.U.", "Importe", "% Part.", "Estado", "Observación"]
-    for c, h in enumerate(headers, 1):
-        ws.cell(2, c, h)
-    _header_style(ws, 2, 1, len(headers), fill="1F4E79")
-    ws.freeze_panes = "E3"
-    widths = {"A": 14, "B": 56, "C": 12, "D": 12}
-    for c in range(5, len(headers) + 1):
-        widths[get_column_letter(c)] = 16
+        for offset, width in enumerate([15, 16, 12, 12, 16, 18]):
+            widths[get_column_letter(start + offset)] = width
     _set_widths(ws, widths)
 
-    totals = [_canonical_amount_from_concepts(p.concepts) or 1 for p in providers]
-    max_rows = min(max(len(spine), 1), 120)
+    _provider_group_header(ws, 1, 1, base_cols, "Servicios / Cotización", "475467")
+    palette = ["1F4E79", "0E6B3D", "7C3AED", "B54708", "344054", "6941C6"]
+    for idx, name in enumerate(names):
+        start_col = base_cols + idx * provider_cols + 1
+        _provider_group_header(ws, 1, start_col, start_col + provider_cols - 1, name, palette[idx % len(palette)])
+
+    headers = ["Partida", "Descripción", "Unidad", "Cantidad"]
+    for _ in names:
+        headers += ["P.U.", "Importe", "% Part.", "% ajuste", "Mercado P.U.", "Mercado Importe"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(2, c, h)
+    _header_style(ws, 2, 1, base_cols, fill="475467")
+    for idx, _ in enumerate(names):
+        start_col = base_cols + idx * provider_cols + 1
+        _header_style(ws, 2, start_col, start_col + provider_cols - 1, fill=palette[idx % len(palette)])
+
+    concept_maps: list[dict[str, Any]] = []
+    pareto_maps: list[set[str]] = []
+    totals: list[float] = []
+    for p in providers:
+        m = {_concept_key(c): c for c in p.concepts}
+        concept_maps.append(m)
+        pareto_maps.append(_provider_pareto_keys(p))
+        totals.append(sum(_concept_amount(c) for c in p.concepts if getattr(c, "is_executable", False)))
+
     if not spine:
         ws.cell(3, 1, "SIN-DATA")
         ws.cell(3, 2, "No se detectaron conceptos en los archivos cargados")
+        spine = []
         max_rows = 1
+    else:
+        max_rows = min(len(spine), 500)
+
     for i in range(max_rows):
         row_idx = 3 + i
         base = spine[i] if spine and i < len(spine) else None
-        ws.cell(row_idx, 1, getattr(base, "code", "") if base else "")
-        ws.cell(row_idx, 2, getattr(base, "description", "") if base else "")
-        ws.cell(row_idx, 3, getattr(base, "unit", "") if base else "")
-        ws.cell(row_idx, 4, getattr(base, "quantity", "") if base else "")
-        for pidx, p in enumerate(providers):
-            c = p.concepts[i] if i < len(p.concepts) else None
-            start = base_cols + pidx * provider_cols + 1
-            pu = getattr(c, "unit_price", None) if c else None
-            amount = getattr(c, "amount", None) if c else None
-            qty = getattr(c, "quantity", None) if c else None
-            if amount is None and pu is not None and qty is not None:
-                amount = pu * qty
-            ws.cell(row_idx, start, pu if pu is not None else "")
-            ws.cell(row_idx, start + 1, amount if amount is not None else "")
-            ws.cell(row_idx, start + 2, (amount / totals[pidx]) if amount is not None and totals[pidx] else "")
-            ws.cell(row_idx, start + 3, "Leído" if c else "Sin concepto")
-            ws.cell(row_idx, start + 4, f"Fila origen {getattr(c, 'source_row', '')}" if c else "No existe en catálogo del proveedor")
-    last = 2 + max_rows
-    _body_style(ws, 3, last, 1, len(headers))
-    money_cols = []
-    pct_cols = []
-    for pidx, _ in enumerate(providers):
-        start = base_cols + pidx * provider_cols + 1
-        money_cols += [start, start + 1]
-        pct_cols += [start + 2]
-    _apply_formats(ws, money_cols=money_cols, pct_cols=pct_cols, start_row=3, end_row=last)
-    if last >= 3:
-        _add_table(ws, f"A2:{get_column_letter(len(headers))}{last}", "RealComparativaTable", "TableStyleMedium2")
+        code = getattr(base, "code", "") if base else ""
+        desc = getattr(base, "description", "") if base else ""
+        unit = getattr(base, "unit", "") if base else ""
+        qty = getattr(base, "quantity", "") if base else ""
+        executable = bool(getattr(base, "is_executable", False)) if base else False
+        level = int(getattr(base, "hierarchy_level", 0) or 0) if base else 0
+        indent = "   " * max(level - 1, 0)
+        key = _concept_key(base) if base else ""
 
+        ws.cell(row_idx, 1, code)
+        ws.cell(row_idx, 2, f"{indent}{desc}")
+        ws.cell(row_idx, 3, unit)
+        ws.cell(row_idx, 4, qty)
+
+        for pidx, _ in enumerate(names):
+            start = base_cols + pidx * provider_cols + 1
+            c = concept_maps[pidx].get(key) if pidx < len(concept_maps) and key else None
+            pu = getattr(c, "unit_price", None) if c else None
+            amount = _concept_amount(c) if c else None
+            market_pu = getattr(c, "market_unit_price", None) if c else None
+            market_amount = getattr(c, "market_amount", None) if c else None
+            ws.cell(row_idx, start, pu if pu is not None else "")
+            ws.cell(row_idx, start + 1, amount if amount not in (None, 0.0) else "")
+            ws.cell(row_idx, start + 2, f"={get_column_letter(start+1)}{row_idx}/${get_column_letter(start+1)}${3+max_rows}" if executable else "")
+            ws.cell(row_idx, start + 3, f"=IF({get_column_letter(start+4)}{row_idx}=0,0,{get_column_letter(start)}{row_idx}/{get_column_letter(start+4)}{row_idx}-1)" if executable else "")
+            ws.cell(row_idx, start + 4, market_pu if market_pu is not None else "")
+            ws.cell(row_idx, start + 5, market_amount if market_amount is not None else "")
+            if key in (pareto_maps[pidx] if pidx < len(pareto_maps) else set()):
+                # Pareto 80/20 is scoped to this provider. Only this provider's
+                # six-column block is shaded. The base catalog columns A:D
+                # remain neutral because they are shared Servicios/Cotización.
+                for col in range(start, start + provider_cols):
+                    ws.cell(row_idx, col).fill = PatternFill("solid", fgColor="DCEBFF")
+
+        if not executable:
+            base_fill = "F2F4F7"
+            font = Font(bold=True, color=BRAND["text"])
+        else:
+            base_fill = "FFFFFF"
+            font = Font(color=BRAND["text"])
+        for col in range(1, base_cols + 1):
+            ws.cell(row_idx, col).fill = PatternFill("solid", fgColor=base_fill)
+            ws.cell(row_idx, col).font = font
+        for col in range(1, total_cols + 1):
+            cell = ws.cell(row_idx, col)
+            if cell.fill.fgColor.rgb in ("00000000", "000000") or cell.fill.fill_type is None:
+                cell.fill = PatternFill("solid", fgColor=("F2F4F7" if not executable else "FFFFFF"))
+            cell.border = _thin_border("EAECF0")
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if not executable:
+                cell.font = Font(bold=True, color=BRAND["text"])
+
+    total_row = 3 + max_rows
+    ws.cell(total_row, 1, "TOTAL")
+    ws.cell(total_row, 2, "")
+    for pidx, _ in enumerate(names):
+        start = base_cols + pidx * provider_cols + 1
+        first_data = 3
+        last_data = total_row - 1
+        ws.cell(total_row, start, f"=AVERAGE({get_column_letter(start)}{first_data}:{get_column_letter(start)}{last_data})")
+        ws.cell(total_row, start + 1, f"=SUM({get_column_letter(start+1)}{first_data}:{get_column_letter(start+1)}{last_data})")
+        ws.cell(total_row, start + 4, f"=AVERAGE({get_column_letter(start+4)}{first_data}:{get_column_letter(start+4)}{last_data})")
+        ws.cell(total_row, start + 5, f"=SUM({get_column_letter(start+5)}{first_data}:{get_column_letter(start+5)}{last_data})")
+    for c in range(1, total_cols + 1):
+        cell = ws.cell(total_row, c)
+        cell.font = Font(bold=True, color=BRAND["navy"])
+        cell.fill = PatternFill("solid", fgColor="F8FAFC")
+        cell.border = Border(top=Side(style="medium", color="1F4E79"), bottom=Side(style="thin", color="D9E2EC"))
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+
+    money_cols, pct_cols = [], []
+    for idx, _ in enumerate(names):
+        start = base_cols + idx * provider_cols + 1
+        money_cols += [start, start + 1, start + 4, start + 5]
+        pct_cols += [start + 2, start + 3]
+        if total_row > 3:
+            ws.conditional_formatting.add(f"{get_column_letter(start+3)}3:{get_column_letter(start+3)}{total_row-1}", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+    _apply_formats(ws, money_cols=money_cols, pct_cols=pct_cols, start_row=3, end_row=total_row)
+    ws.auto_filter.ref = f"A2:{get_column_letter(total_cols)}{total_row}"
+
+    # Executive notes below, matching the accepted workbook spirit while making
+    # the canonical contract explicit.
+    note_row = total_row + 3
+    _section_label(ws, note_row, "Resumen individual por proveedor", total_cols)
+    row = note_row + 1
+    for idx, name in enumerate(names):
+        ws.cell(row, 1, name).font = Font(bold=True, color=BRAND["navy"], size=12)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=total_cols)
+        row += 1
+        bullets = [
+            "Comparativa renderizada desde el catálogo canónico: se conserva el orden declarado y se congelan A:D.",
+            "El bloque del proveedor contiene P.U., Importe, % Part., % ajuste, Mercado P.U. y Mercado Importe.",
+            "El sombreado azul es independiente por proveedor y solo aparece dentro del bloque de ese proveedor; A:D permanece neutral.",
+        ]
+        for bullet in bullets:
+            ws.cell(row, 1, "• " + bullet)
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=total_cols)
+            ws.cell(row, 1).alignment = Alignment(wrap_text=True, vertical="top")
+            ws.row_dimensions[row].height = 28
+            row += 1
+        row += 1
 
 def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, include_market: bool, theme_color: str = "1F4E79"):
-    headers = _canonical_detail_headers(include_market)
+    """Render a PU-style detail sheet using the accepted Excel contract.
+
+    Contract:
+    - Contractor detail: A:H provider matrix, I separator, J:M market comparison.
+    - Base detail: same A:H provider/base matrix, no market block.
+    - No horizontal multi-provider detail; each provider has its own sheet.
+    - Structural PU rows are preserved as section titles/subtotals/totals.
+    """
+    base_headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%"]
+    market_headers = ["Mercado P. Unitario", "Mercado Op.", "Mercado Cantidad", "Mercado Importe"]
+    headers = base_headers + ([""] + market_headers if include_market else [])
     max_col = len(headers)
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A3"
-    for idx, width in enumerate(([14, 46, 12, 20, 14, 10, 12, 16, 12] + ([16, 10, 12, 16, 14] if include_market else []) + [18, 38]), 1):
+
+    widths = [16, 64, 12, 16, 9, 12, 16, 11]
+    if include_market:
+        widths += [4, 18, 12, 16, 18]
+    for idx, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(idx)].width = width
-    _provider_group_header(ws, 1, 1, max_col, title, theme_color)
+
+    _provider_group_header(ws, 1, 1, 8, title, theme_color)
+    if include_market:
+        ws.cell(1, 9, "")
+        ws.cell(1, 9).fill = PatternFill("solid", fgColor="FFFFFF")
+        _provider_group_header(ws, 1, 10, 13, "Mercado / Referencia", "475467")
     for c, h in enumerate(headers, 1):
         ws.cell(2, c, h)
-    _header_style(ws, 2, 1, max_col, fill=theme_color)
-    keys = ["code", "concept", "unit", "section", "pu", "op", "qty", "amount", "pct"]
+    _header_style(ws, 2, 1, 8, fill=theme_color)
     if include_market:
-        keys += ["mpu", "mop", "mqty", "mamount", "dev"]
-    keys += ["state", "obs"]
+        ws.cell(2, 9).fill = PatternFill("solid", fgColor="FFFFFF")
+        ws.cell(2, 9).border = _thin_border("FFFFFF")
+        _header_style(ws, 2, 10, 13, fill="475467")
+
     if not rows:
         rows = [{"code":"", "concept":"No se detectaron filas de matriz/APU", "unit":"", "section":"VALIDACIÓN", "pu":"", "op":"", "qty":"", "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"Sin datos", "obs":"Revisar estructura del archivo cargado"}]
-    for ridx, row in enumerate(rows[:900], 3):
-        for cidx, key in enumerate(keys, 1):
-            ws.cell(ridx, cidx, row.get(key, ""))
+
+    for ridx, row in enumerate(rows[:1300], 3):
         section = str(row.get("section", ""))
-        fill = "FFFFFF"; bold = False
-        if section in {"PARTIDA", "TÍTULO"}:
-            fill = "EAF2FF" if section == "PARTIDA" else "F2F4F7"; bold = True
-        elif section.startswith("SUBTOTAL") or "TOTAL" in section:
+        concept_text = str(row.get("concept", "") or "")
+        upper = concept_text.upper()
+        is_partida = section == "PARTIDA"
+        is_title = section == "TÍTULO"
+        is_subtotal = section.startswith("SUBTOTAL") or upper.startswith("SUBTOTAL")
+        is_financial = any(k in upper or k in section for k in ["TOTAL", "COSTO", "UTILIDAD", "FINANCIAMIENTO", "PRECIO"])
+
+        values = [
+            row.get("code", ""),
+            row.get("concept", ""),
+            row.get("unit", ""),
+            row.get("pu", ""),
+            row.get("op", ""),
+            row.get("qty", ""),
+            row.get("amount", ""),
+            row.get("pct", ""),
+        ]
+        if include_market:
+            values += [
+                "",
+                row.get("mpu", ""),
+                row.get("mop", ""),
+                row.get("mqty", ""),
+                row.get("mamount", ""),
+            ]
+        for cidx, value in enumerate(values, 1):
+            ws.cell(ridx, cidx, value)
+
+        if is_partida:
+            fill = "EAF2FF"; bold = True
+        elif is_title:
+            fill = "F2F4F7"; bold = True
+        elif is_subtotal:
             fill = "FFF2CC"; bold = True
-        elif section.startswith("%"):
-            fill = "F8FAFC"
+        elif is_financial:
+            fill = "E2F0D9"; bold = True
+        elif str(row.get("op", "")) == "%" or str(row.get("unit", "")) == "%" or str(row.get("code", "")).startswith("%"):
+            fill = "F8FAFC"; bold = False
+        else:
+            fill = "FFFFFF"; bold = False
+
         for c in range(1, max_col + 1):
-            ws.cell(ridx, c).fill = PatternFill("solid", fgColor=fill)
-            ws.cell(ridx, c).border = _thin_border("EAECF0")
-            ws.cell(ridx, c).alignment = Alignment(vertical="top", wrap_text=True)
-            if bold:
-                ws.cell(ridx, c).font = Font(bold=True, color=BRAND["text"])
-    last = min(2 + len(rows), 902)
-    money_cols = [5, 8]
-    pct_cols = [9]
+            cell = ws.cell(ridx, c)
+            if include_market and c == 9:
+                cell.fill = PatternFill("solid", fgColor="FFFFFF")
+                cell.border = _thin_border("FFFFFF")
+            else:
+                cell.fill = PatternFill("solid", fgColor=fill)
+                cell.border = _thin_border("EAECF0")
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.font = Font(bold=bold, color=BRAND["text"])
+
+    last = min(2 + len(rows), 1302)
+    money_cols = [4, 7]
+    pct_cols = [8]
     if include_market:
         money_cols += [10, 13]
-        pct_cols += [14]
     _apply_formats(ws, money_cols=money_cols, pct_cols=pct_cols, start_row=3, end_row=last)
     ws.auto_filter.ref = f"A2:{get_column_letter(max_col)}{last}"
-    if include_market and last >= 3:
-        dev_col = get_column_letter(14)
-        ws.conditional_formatting.add(f"{dev_col}3:{dev_col}{last}", ColorScaleRule(start_type="min", start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFF2CC", end_type="max", end_color="FCE4D6"))
+
+    # Fine visual cue: keep market block separated without adding extra audit
+    # columns to the accepted detail layout. Validations remain in Validaciones.
     note_row = last + 3
     ws.cell(note_row, 1, "Modelo canónico")
     ws.cell(note_row, 1).font = Font(bold=True, color=BRAND["navy"])
-    ws.cell(note_row, 2, "Esta hoja se renderiza desde objetos canónicos derivados del XLSX cargado, no desde filas mock ni desde una copia visual del archivo de referencia.")
-    ws.merge_cells(start_row=note_row, start_column=2, end_row=note_row, end_column=max_col)
+    msg = "Este detalle se renderiza desde el mismo modelo canónico APU. En proveedor se agrega bloque J:M de mercado; en base se omite porque la matriz ya es mercado/base."
+    ws.cell(note_row, 2, msg)
+    end_note_col = max_col
+    ws.merge_cells(start_row=note_row, start_column=2, end_row=note_row, end_column=end_note_col)
     ws.cell(note_row, 2).alignment = Alignment(wrap_text=True)
-
 
 def _write_real_validaciones(ws, run: CanonicalRun):
     _setup_sheet(ws, "Validaciones", "Advertencias reales del proceso de carga y parseo inicial.", 10)
@@ -1216,6 +1430,7 @@ async def comparison_real_run(
             provider.validations.append({"severity":"Alta", "type":"Parser conceptos", "message":f"{type(exc).__name__}: {exc}"})
         try:
             provider.apu_items = parse_matrix(matrix_path, catalog)
+            apply_provider_market_to_concepts(provider)
         except Exception as exc:
             provider.validations.append({"severity":"Alta", "type":"Parser matriz", "message":f"{type(exc).__name__}: {exc}"})
         providers.append(provider)
