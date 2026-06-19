@@ -273,3 +273,23 @@ Cada proveedor tiene su propia hoja:
 ### Performance
 
 El writer reutiliza objetos de estilo para soportar matrices grandes tipo PMD sin inflar el archivo ni ralentizar el guardado.
+
+## V1.8 - Contrato corregido de Comparativa y Detalle
+
+### Comparativa
+
+La hoja `Comparativa` debe mostrar únicamente conceptos válidos del catálogo/conceptos de cada proveedor:
+
+- `Unidad` obligatoria.
+- `Cantidad > 0` obligatoria.
+- No se muestran insumos de matriz/APU.
+- No se muestran filas de `Importe`, `Volumen`, `Subtotal`, `Costo directo`, `Indirectos`, `Utilidad` ni `Precio unitario` provenientes del detalle.
+
+### Detalle - <Proveedor>
+
+La hoja de detalle pinta la matriz/APU estructurada con base en `CanonicalApuItem`:
+
+- Secciones y subtotales se conservan como estructura técnica.
+- El bloque de mercado se llena desde match Construdata cuando existe.
+- Si no hay match, el bloque de mercado usa el precio/costo del contratista y lo marca como fallback.
+- Las filas financieras calculan mercado desde el modelo canónico, no desde fórmulas inventadas en el writer.

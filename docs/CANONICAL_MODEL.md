@@ -224,3 +224,13 @@ El parser de matriz ya no depende solo de columnas fijas. Detecta dos familias d
    - código, descripción, unidad, cantidad, P.U. e importe en columnas desplazadas
    - mercado en columnas finales equivalentes
 
+
+## V1.8 - Regla canónica de conceptos, matriz y mercado fallback
+
+- La hoja `Comparativa` se alimenta exclusivamente de `CanonicalConcept` proveniente del archivo de conceptos/catálogo del contratista.
+- Un concepto participa en `Comparativa` solo si declara `unidad` y `cantidad > 0`.
+- Las filas de matriz/APU, insumos, subtotales, importes, volúmenes y sección financiera nunca se promueven a `Comparativa`.
+- El sistema clasifica el rol real de cada archivo por estructura, no por nombre ni por el campo de carga. Si un proveedor carga el PU/APU en el slot de conceptos y el resumen por conceptos en el slot de matriz, el pipeline usa el archivo correcto para cada rol.
+- La matriz/APU se expresa en `CanonicalApuItem` y se renderiza únicamente en `Detalle - <Proveedor>`.
+- Cuando no existe match granular contra Construdata, el mercado del insumo usa el valor declarado por el contratista y marca estado `Sin referencia - usa contratista`. Esto evita columnas de mercado vacías y conserva trazabilidad.
+- Los cálculos financieros de mercado se derivan dentro del modelo canónico: subtotales de sección, costo directo, indirectos, financiamiento, utilidad, subtotal financiero y precio unitario.

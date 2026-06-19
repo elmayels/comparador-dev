@@ -419,6 +419,42 @@ MATRIX_SYNONYMS = {
 }
 
 
+
+
+def classify_xlsx_role(path: Path) -> str:
+    """Classify the workbook's business role by structure, not filename.
+
+    This avoids a common upload problem: a user may upload a PU/APU workbook in
+    the concepts slot or a totals-by-concept workbook in the matrix slot. The
+    canonical pipeline must decide based on sheet semantics.
+    """
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            rows: list[list[Any]] = []
+            for ws in wb.worksheets[:2]:
+                for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 80), values_only=True):
+                    rows.append(list(row))
+            joined = " ".join(_norm(" ".join(_txt(v) for v in r if _txt(v))) for r in rows)
+            has_analysis = "analisis" in joined or "analisis de basicos" in joined or "analisis de precios" in joined
+            has_sections = any(t in joined for t in ["materiales", "mano de obra", "equipo y herramienta", "precio unitario"])
+            has_op = any(_norm(_txt(v)) in {"op", "operador"} for r in rows for v in r)
+            has_percent_header = any(_norm(_txt(v)) == "%" or "porcentaje" in _norm(_txt(v)) for r in rows for v in r)
+            has_budget = "presupuesto de obra" in joined or "servicios cotizacion" in joined or "servicios cotizacion" in joined
+            # PU/APU details have analysis headers, sections and usually Op/% columns.
+            if has_analysis and has_sections and (has_op or has_percent_header):
+                return "apu_detail"
+            # Concept/catalog summaries normally have code/concept/unit/quantity and
+            # per-section or total cost columns, but no detailed PU sections.
+            if has_budget or ("codigo" in joined and "concepto" in joined and "unidad" in joined and "cantidad" in joined and not has_analysis):
+                return "concept_catalog"
+            return "unknown"
+        finally:
+            wb.close()
+    except Exception:
+        return "unknown"
+
+
 def parse_concepts(path: Path) -> list[CanonicalConcept]:
     """Parse a contractor/base concept catalog preserving original order and hierarchy.
 
@@ -432,6 +468,11 @@ def parse_concepts(path: Path) -> list[CanonicalConcept]:
     wb, ws = _best_sheet(path, preferred_names=["CATALOGO", "CATÁLOGO", "Catalogo", "CATALOGO DE CONCEPTOS", "Catálogo de conceptos", "Comparativa"])
     try:
         rows = [list(r) for r in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 1500), values_only=True)]
+        # Guardrail: a PU/APU sheet is not a concept catalog. If we parse it as
+        # concepts, insumos and financial rows leak into Comparativa. Let the
+        # caller choose another uploaded file as concept source.
+        if classify_xlsx_role(path) == "apu_detail":
+            return []
         hidx, cmap = _detect_header(rows, CONCEPT_SYNONYMS)
         # If we have the canonical CATALOGO layout but fuzzy detection missed it,
         # scan explicit header names.
@@ -482,17 +523,23 @@ def parse_concepts(path: Path) -> list[CanonicalConcept]:
             market_amount = _num(row[cmarket.get("market_amount")]) if cmarket.get("market_amount") is not None and cmarket.get("market_amount") < len(row) else None
             if amount is None and qty is not None and pu is not None:
                 amount = qty * pu
+            if pu is None and amount is not None and qty not in (None, 0):
+                pu = amount / qty
             if market_amount is None and qty is not None and market_pu is not None:
                 market_amount = qty * market_pu
+            if market_pu is None and market_amount is not None and qty not in (None, 0):
+                market_pu = market_amount / qty
             # Continuation row: PMD catalog descriptions may span multiple visual rows.
             # If a row has no code/unit/amount/PU, append it to the previous concept
             # instead of creating a fake catalog line.
             if (not code) and (not unit) and qty in (None, 0) and pu in (None, 0) and amount in (None, 0) and data and data[-1].is_executable:
                 data[-1].description = (data[-1].description + " " + desc).strip()
                 continue
-            # Executable means it participates economically. Notes and hierarchy rows
-            # may have unit/cantidad, but without P.U./importe they should not drive KPIs.
-            executable = bool((pu is not None or amount is not None) and _norm(unit) not in {"nota"})
+            # Executable concept for Comparativa means a catalog/service row
+            # explicitly declares unit and quantity > 0. PU/APU detail rows are
+            # excluded above and in the writer. Notes, chapters and empty/zero
+            # rows do not participate in Comparativa, Pareto or KPIs.
+            executable = bool(_norm(unit) not in {"", "nota"} and qty is not None and qty > 0 and (pu is not None or amount is not None))
             level = _hierarchy_level(code, executable)
             if not executable:
                 current_family = desc
@@ -625,7 +672,7 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                 ))
                 continue
 
-            if any(k in whole for k in ["subtotal materiales", "subtotal mano", "subtotal maquinaria", "subtotal equipo", "subtotal basicos", "costo directo", "total costo", "precio unitario", "materiales", "mano de obra", "maquinaria", "equipo y herramienta", "basicos", "seccion financiera", "indirectos", "utilidad"]):
+            if any(k in whole for k in ["subtotal", "subtotal materiales", "subtotal mano", "subtotal maquinaria", "subtotal equipo", "subtotal basicos", "costo directo", "total costo", "precio unitario", "materiales", "mano de obra", "maquinaria", "equipo y herramienta", "basicos", "seccion financiera", "indirectos", "utilidad"]):
                 if len(texts) <= 4 or whole in {"materiales", "mano de obra", "maquinaria", "equipo", "equipo y herramienta", "basicos", "seccion financiera"} or "subtotal" in whole or "total" in whole or "costo directo" in whole or "utilidad" in whole or "precio unitario" in whole:
                     amount_guess = _num(cell(row, "amount"))
                     pct_guess = _num(cell(row, "percent"))
@@ -740,8 +787,18 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                     item.state = "Match mercado"
                     item.observation = f"{match['source']} · confianza {match['confidence']}"
                 else:
-                    item.state = "Sin referencia"
-                    item.observation = "No se encontró match granular en data"
+                    # Canonical fallback: when Construdata has no usable
+                    # reference for an insumo, market columns must still be
+                    # populated with the contractor's own cost/price. This keeps
+                    # financial subtotals complete and makes the absence of a
+                    # reference explicit without blanking the market calculation.
+                    item.market_unit_price = pu
+                    item.market_quantity = qty
+                    item.market_operator = op or "*"
+                    item.market_amount = amount
+                    item.market_deviation = 0 if pu is not None else None
+                    item.state = "Sin referencia - usa contratista"
+                    item.observation = "Sin match en data; mercado usa valor del contratista"
             out.append(item)
         _post_process_market_financials(out)
         return out[:6000]
@@ -814,8 +871,10 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
 
         for it in group:
             dnorm = _norm(it.description or "")
-            # Track explicit section titles.
-            if it.section == "TÍTULO":
+            # Track explicit section titles. Financial labels like
+            # "(CI) INDIRECTOS" may have been parsed as TÍTULO by the source
+            # layout, but they are calculation rows and must not be skipped.
+            if it.section == "TÍTULO" and not any(k in dnorm for k in ["indirect", "utilidad", "financ", "costo directo", "precio unitario", "total costo", "subtotal"]):
                 sec = _canonical_section_name(it.description, it.description)
                 if sec in {"MATERIALES", "MANO DE OBRA", "MAQUINARIA", "BASICOS"}:
                     last_section = sec
@@ -869,6 +928,18 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                     it.market_quantity = vol
                     it.state = "Cálculo mercado"
                     subtotal_market_by_section[sec] = it.market_amount
+                continue
+
+            if dnorm.startswith("subtotal1") or dnorm.startswith("subtotal2"):
+                base = direct_market or 0.0
+                val = base + financial_market_total
+                if val:
+                    it.market_amount = val
+                    it.market_unit_price = val
+                    it.market_operator = ""
+                    it.market_quantity = None
+                    it.state = "Cálculo mercado"
+                    it.observation = "Subtotal financiero mercado = costo directo + cargos acumulados"
                 continue
 
             if "subtotal" in dnorm:

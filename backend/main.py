@@ -21,7 +21,7 @@ from openpyxl.comments import Comment
 
 from .real_data import (
     CanonicalProvider, CanonicalRun, ReferenceCatalog,
-    canonical_rows_from_items, parse_concepts, parse_matrix, run_id, apply_provider_market_to_concepts,
+    canonical_rows_from_items, parse_concepts, parse_matrix, run_id, apply_provider_market_to_concepts, classify_xlsx_role,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -976,6 +976,11 @@ def _canonical_concept_union(providers: list[CanonicalProvider]) -> list[Any]:
     spine: list[Any] = []
     for provider in providers:
         for concept in provider.concepts:
+            # Comparativa contract: only concepts declared in the contractor's
+            # concept/catalog file with unit and quantity > 0. Never use APU
+            # insumos or hierarchy rows in this tab.
+            if not _is_valid_comparativa_concept(concept):
+                continue
             key = _concept_key(concept)
             if not key or key in seen:
                 continue
@@ -990,6 +995,16 @@ def _concept_key(c: Any) -> str:
         return f"code:{code}"
     desc = str(getattr(c, "description", "") or "").strip().lower()
     return "desc:" + " ".join(desc.split())[:120]
+
+
+def _is_valid_comparativa_concept(c: Any) -> bool:
+    unit = str(getattr(c, "unit", "") or "").strip()
+    qty = getattr(c, "quantity", None)
+    try:
+        qty_ok = qty is not None and float(qty) > 0
+    except Exception:
+        qty_ok = False
+    return bool(getattr(c, "is_executable", False) and unit and qty_ok)
 
 
 def _concept_amount(c: Any) -> float:
@@ -1017,7 +1032,7 @@ def _provider_pareto_keys(provider: CanonicalProvider) -> set[str]:
     It must never be promoted to the shared catalog/base columns in
     Comparativa; the writer may only shade the provider's own block.
     """
-    rows = [c for c in provider.concepts if getattr(c, "is_executable", False) and _concept_amount(c) > 0]
+    rows = [c for c in provider.concepts if _is_valid_comparativa_concept(c) and _concept_amount(c) > 0]
     total = sum(_concept_amount(c) for c in rows)
     if total <= 0:
         return set()
@@ -1088,7 +1103,7 @@ def _write_real_comparativa(ws, providers: list[CanonicalProvider]):
         m = {_concept_key(c): c for c in p.concepts}
         concept_maps.append(m)
         pareto_maps.append(_provider_pareto_keys(p))
-        totals.append(sum(_concept_amount(c) for c in p.concepts if getattr(c, "is_executable", False)))
+        totals.append(sum(_concept_amount(c) for c in p.concepts if _is_valid_comparativa_concept(c)))
 
     if not spine:
         ws.cell(3, 1, "SIN-DATA")
@@ -1105,7 +1120,7 @@ def _write_real_comparativa(ws, providers: list[CanonicalProvider]):
         desc = getattr(base, "description", "") if base else ""
         unit = getattr(base, "unit", "") if base else ""
         qty = getattr(base, "quantity", "") if base else ""
-        executable = bool(getattr(base, "is_executable", False)) if base else False
+        executable = _is_valid_comparativa_concept(base) if base else False
         level = int(getattr(base, "hierarchy_level", 0) or 0) if base else 0
         indent = "   " * max(level - 1, 0)
         key = _concept_key(base) if base else ""
@@ -1453,12 +1468,38 @@ async def comparison_real_run(
         concepts_path = await _save_upload(concept_files[idx], run_dir / name)
         matrix_path = await _save_upload(matrix_files[idx], run_dir / name)
         provider = CanonicalProvider(name=name, concepts_file=concept_files[idx].filename or "", matrix_file=matrix_files[idx].filename or "")
+        # Determine the real semantic role by workbook structure, not by the
+        # upload field name. Some vendors send the PU/APU in the "concepts"
+        # slot and the totals-by-concept workbook in the "matrix" slot.
+        concept_role = classify_xlsx_role(concepts_path)
+        matrix_role = classify_xlsx_role(matrix_path)
+        concept_source = concepts_path
+        matrix_source = matrix_path
+        if concept_role == "apu_detail" and matrix_role != "apu_detail":
+            concept_source = matrix_path
+            matrix_source = concepts_path
+            provider.validations.append({"severity":"Media", "type":"Rol de archivo", "message":"Se detectó que los archivos venían invertidos; se usó el archivo con totales como conceptos y el PU/APU como matriz."})
         try:
-            provider.concepts = parse_concepts(concepts_path)
+            provider.concepts = parse_concepts(concept_source)
+            # Fallback: if strict catalog parsing finds no valid executable
+            # concepts, try the other uploaded workbook before failing silently.
+            if not [c for c in provider.concepts if _is_valid_comparativa_concept(c)]:
+                alt = matrix_path if concept_source == concepts_path else concepts_path
+                alt_concepts = parse_concepts(alt)
+                if [c for c in alt_concepts if _is_valid_comparativa_concept(c)]:
+                    provider.concepts = alt_concepts
+                    provider.validations.append({"severity":"Media", "type":"Conceptos", "message":"Se usó el archivo alterno porque el primero no contenía conceptos válidos con unidad y cantidad > 0."})
         except Exception as exc:
             provider.validations.append({"severity":"Alta", "type":"Parser conceptos", "message":f"{type(exc).__name__}: {exc}"})
         try:
-            provider.apu_items = parse_matrix(matrix_path, catalog)
+            provider.apu_items = parse_matrix(matrix_source, catalog)
+            # Fallback symmetrical to the concept detection.
+            if len(provider.apu_items) < 5:
+                alt = concepts_path if matrix_source == matrix_path else matrix_path
+                alt_items = parse_matrix(alt, catalog)
+                if len(alt_items) > len(provider.apu_items):
+                    provider.apu_items = alt_items
+                    provider.validations.append({"severity":"Media", "type":"Matriz", "message":"Se usó el archivo alterno porque el primero no contenía una matriz/APU estructurada."})
             apply_provider_market_to_concepts(provider)
         except Exception as exc:
             provider.validations.append({"severity":"Alta", "type":"Parser matriz", "message":f"{type(exc).__name__}: {exc}"})

@@ -132,3 +132,14 @@ La V1.7 toma como referencia funcional los archivos PMD manuales usados actualme
 - Parser de matriz soporta layout estándar A:H/J:M y layout ancho tipo TAPIAL.
 - Se optimizó el writer de detalle para matrices grandes.
 
+
+### V1.8 - Corrección de conceptos válidos y fallback de mercado
+
+Esta versión corrige el caso `prov3`, donde los archivos venían con el PU/APU en el slot de conceptos y el resumen de conceptos en el slot de matriz. El motor ahora clasifica el rol del archivo por estructura y no por nombre.
+
+Reglas aplicadas:
+
+- `Comparativa` solo incluye conceptos con unidad y cantidad mayor a cero.
+- `Comparativa` no incluye insumos ni líneas financieras de matriz.
+- `Detalle - <Proveedor>` conserva la matriz/APU estructurada.
+- Si no hay referencia Construdata, mercado usa el valor del contratista como fallback trazable.
