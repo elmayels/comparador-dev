@@ -121,3 +121,14 @@ Se corrigió la propagación de valores de mercado para que no queden como colum
 - `Detalle - <Proveedor>` toma mercado desde `CanonicalApuItem.market_*`.
 - El parser de matriz/APU puede leer columnas de mercado declaradas en la matriz.
 - El modelo conserva `concept_key` para asociar insumos y totales APU con el concepto del catálogo.
+
+## V1.7 - PMD manual baseline
+
+La V1.7 toma como referencia funcional los archivos PMD manuales usados actualmente:
+
+- Comparativa = resumen por concepto/partida.
+- Detalle = matriz/APU que explica el precio unitario.
+- Mercado en Comparativa = resultado final de mercado derivado del detalle, no cálculo aislado.
+- Parser de matriz soporta layout estándar A:H/J:M y layout ancho tipo TAPIAL.
+- Se optimizó el writer de detalle para matrices grandes.
+

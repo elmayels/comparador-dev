@@ -968,9 +968,20 @@ def _canonical_amount_from_concepts(concepts: list[Any]) -> float:
 def _canonical_concept_union(providers: list[CanonicalProvider]) -> list[Any]:
     if not providers:
         return []
-    # Use the largest concept list as the comparison spine. This is an alpha rule;
-    # V1 proper should homologate concepts across providers by code/description.
-    return max((p.concepts for p in providers), key=lambda rows: len(rows), default=[])
+    # Canonical comparison spine: union of catalog concepts across providers.
+    # Never use matrix/APU rows here. Preserve provider order and original catalog
+    # order; append concepts that do not exist in previous providers. This keeps
+    # Comparativa concept-only while allowing providers with non-identical catalogs.
+    seen: set[str] = set()
+    spine: list[Any] = []
+    for provider in providers:
+        for concept in provider.concepts:
+            key = _concept_key(concept)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            spine.append(concept)
+    return spine
 
 
 def _concept_key(c: Any) -> str:
@@ -1230,7 +1241,22 @@ def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, 
     if not rows:
         rows = [{"code":"", "concept":"No se detectaron filas de matriz/APU", "unit":"", "section":"VALIDACIÓN", "pu":"", "op":"", "qty":"", "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"Sin datos", "obs":"Revisar estructura del archivo cargado"}]
 
-    for ridx, row in enumerate(rows[:1300], 3):
+    # Reuse style objects. Creating a fresh fill/border/font per cell makes
+    # large PMD matrices extremely slow to save and inflates the XLSX style table.
+    detail_fills = {
+        "EEF4FF": PatternFill("solid", fgColor="EEF4FF"),
+        "F2F4F7": PatternFill("solid", fgColor="F2F4F7"),
+        "F8FAFC": PatternFill("solid", fgColor="F8FAFC"),
+        "EAF2FF": PatternFill("solid", fgColor="EAF2FF"),
+        "FFFFFF": PatternFill("solid", fgColor="FFFFFF"),
+    }
+    detail_border = _thin_border("EAECF0")
+    sep_border = _thin_border("FFFFFF")
+    normal_font = Font(bold=False, color=BRAND["text"])
+    bold_font = Font(bold=True, color=BRAND["text"])
+    top_alignment = Alignment(vertical="top", wrap_text=True)
+
+    for ridx, row in enumerate(rows[:6000], 3):
         section = str(row.get("section", ""))
         concept_text = str(row.get("concept", "") or "")
         upper = concept_text.upper()
@@ -1260,31 +1286,34 @@ def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, 
         for cidx, value in enumerate(values, 1):
             ws.cell(ridx, cidx, value)
 
+        # Sobrio: el detalle debe ser técnico y limpio, no decorativo.
         if is_partida:
-            fill = "EAF2FF"; bold = True
+            fill = "EEF4FF"; bold = True
         elif is_title:
             fill = "F2F4F7"; bold = True
         elif is_subtotal:
-            fill = "FFF2CC"; bold = True
+            fill = "F8FAFC"; bold = True
         elif is_financial:
-            fill = "E2F0D9"; bold = True
+            fill = "EAF2FF"; bold = True
         elif str(row.get("op", "")) == "%" or str(row.get("unit", "")) == "%" or str(row.get("code", "")).startswith("%"):
-            fill = "F8FAFC"; bold = False
+            fill = "FFFFFF"; bold = False
         else:
             fill = "FFFFFF"; bold = False
 
+        fill_obj = detail_fills.get(fill, detail_fills["FFFFFF"])
+        font_obj = bold_font if bold else normal_font
         for c in range(1, max_col + 1):
             cell = ws.cell(ridx, c)
             if include_market and c == 9:
-                cell.fill = PatternFill("solid", fgColor="FFFFFF")
-                cell.border = _thin_border("FFFFFF")
+                cell.fill = detail_fills["FFFFFF"]
+                cell.border = sep_border
             else:
-                cell.fill = PatternFill("solid", fgColor=fill)
-                cell.border = _thin_border("EAECF0")
-            cell.alignment = Alignment(vertical="top", wrap_text=True)
-            cell.font = Font(bold=bold, color=BRAND["text"])
+                cell.fill = fill_obj
+                cell.border = detail_border
+            cell.alignment = top_alignment
+            cell.font = font_obj
 
-    last = min(2 + len(rows), 1302)
+    last = min(2 + len(rows), 6002)
     money_cols = [4, 7]
     pct_cols = [8]
     if include_market:

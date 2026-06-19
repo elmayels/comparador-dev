@@ -160,3 +160,67 @@ Detalle = matriz/APU del proveedor + comparación granular contra mercado.
 ```
 
 El mercado por concepto se deriva desde la matriz/APU cuando viene declarado o desde la agregación de los matches granulares de mercado. No se inventa en el writer de Excel.
+
+## V1.6 - Mercado y sección financiera calculados en modelo canónico
+
+A partir de V1.6, el mercado ya no se considera una decisión del writer de Excel. El flujo canónico queda así:
+
+1. `CanonicalApuItem` recibe valores de mercado por match granular contra `data` o desde columnas explícitas de mercado si el archivo las trae.
+2. `_post_process_market_financials()` propaga esos valores a filas estructurales del APU:
+   - `Importe:`
+   - `Volumen:`
+   - `SUBTOTAL <sección>`
+   - `COSTO DIRECTO`
+   - `INDIRECTOS / UTILIDAD / FINANCIAMIENTO`
+   - `PRECIO UNITARIO`
+3. `apply_provider_market_to_concepts()` toma el `PRECIO UNITARIO` de mercado calculado y lo asocia al `CanonicalConcept` correspondiente.
+4. `Comparativa` renderiza mercado desde `CanonicalConcept`.
+5. `Detalle - <Proveedor>` renderiza mercado desde `CanonicalApuItem`.
+
+Regla de separación:
+
+- `Comparativa` nunca muestra insumos o matriz. Solo conceptos de catálogo y totales por P.U.
+- `Detalle - <Proveedor>` muestra insumos, subtotales, mercado granular y sección financiera.
+
+También se corrige la detección de secciones: una palabra como “Equipo” dentro de la descripción de un insumo no debe cambiar la sección activa. La sección solo cambia con encabezados explícitos del APU.
+
+## V1.7 - Baseline manual PMD y vínculo comparativa/matriz
+
+Esta versión formaliza los archivos PMD manuales como gold standard funcional del resultado:
+
+- `Comparativa` renderiza exclusivamente conceptos/partidas del catálogo o de la comparativa manual. No puede mostrar insumos ni renglones de matriz/APU.
+- `Detalle - <Proveedor>` renderiza la matriz/APU técnica. Es el único lugar donde aparecen materiales, mano de obra, maquinaria, porcentajes, subtotales y sección financiera.
+- El precio de mercado mostrado en `Comparativa` debe venir del resultado final de mercado calculado en la matriz/APU (`PRECIO UNITARIO` de mercado) o, si el archivo manual ya lo trae, del bloque Mercado de la comparativa.
+- Cada concepto debe estar vinculado con su análisis APU mediante `concept_key`, normalmente derivado del código de partida/análisis.
+- El Pareto 80/20 es propiedad de cada proveedor (`pareto_concept_keys`), no del catálogo compartido.
+
+### Flujo canónico actualizado
+
+```text
+Conceptos / Comparativa manual
+→ CanonicalConcept
+→ Comparativa
+
+Matriz / Hoja1 / PU
+→ CanonicalApuItem
+→ mercado granular por insumo
+→ subtotales por sección
+→ sección financiera
+→ precio unitario mercado
+→ CanonicalConcept.market_unit_price
+→ Comparativa
+```
+
+### Layouts soportados de matriz
+
+El parser de matriz ya no depende solo de columnas fijas. Detecta dos familias de layout:
+
+1. Layout PMD estándar:
+   - A:H matriz proveedor
+   - I separador
+   - J:M mercado
+
+2. Layout PMD desplazado/ancho:
+   - código, descripción, unidad, cantidad, P.U. e importe en columnas desplazadas
+   - mercado en columnas finales equivalentes
+

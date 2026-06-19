@@ -202,3 +202,74 @@ Las columnas `Mercado P.U.` y `Mercado Importe` del tab `Comparativa` deben pobl
 Las columnas de mercado de `Detalle - <Proveedor>` deben poblarse desde `CanonicalApuItem.market_*`.
 
 El Excel writer no debe calcular ni inventar valores de mercado. Solo debe renderizar los valores que ya existan en el modelo canónico.
+
+## V1.6 - Reglas de mercado en Comparativa y Detalle
+
+### Comparativa
+
+- Columnas A:D se mantienen como base de catálogo y no contienen detalle de matriz.
+- Cada bloque de proveedor muestra:
+  - P.U.
+  - Importe
+  - % Part.
+  - % ajuste
+  - Mercado P.U.
+  - Mercado Importe
+- Las columnas de mercado provienen de `CanonicalConcept.market_unit_price` y `CanonicalConcept.market_amount`, calculadas desde el detalle APU y no desde el Excel writer.
+- Si los proveedores tienen catálogos no idénticos, la comparativa usa la unión canónica de conceptos, preservando el orden por proveedor y catálogo.
+
+### Detalle - <Proveedor>
+
+- El bloque A:H muestra la matriz/APU del proveedor.
+- El bloque J:M muestra mercado calculado o leído:
+  - Mercado P. Unitario
+  - Mercado Op.
+  - Mercado Cantidad
+  - Mercado Importe
+- Las filas estructurales también deben tener mercado cuando exista base suficiente:
+  - `Importe:`
+  - `Volumen:`
+  - `SUBTOTAL`
+  - `COSTO DIRECTO`
+  - `INDIRECTOS`
+  - `PRECIO UNITARIO`
+- El estilo del detalle es sobrio: encabezados técnicos, secciones grises, subtotales claros y financiero azul suave.
+
+## V1.7 - Contrato de salida PMD/manual
+
+### Comparativa
+
+La hoja `Comparativa` debe mantener el objetivo del análisis manual:
+
+- A:D = `Servicios / Cotización`.
+- E:J, K:P, etc. = un bloque por proveedor.
+- Cada bloque de proveedor contiene:
+  - `P.U.`
+  - `Importe`
+  - `% Part.`
+  - `% ajuste`
+  - `Mercado P.U.`
+  - `Mercado Importe`
+- `Comparativa` no debe mostrar insumos, subtotales de materiales, mano de obra, maquinaria ni sección financiera.
+- El sombreado azul de Pareto 80/20 solo se aplica dentro del bloque del proveedor correspondiente. A:D no se sombrean por Pareto.
+- Las filas de notas, capítulos y subcapítulos pueden mostrarse, pero no participan en KPIs ni Pareto si no tienen precio unitario o importe.
+
+### Detalle - <Proveedor>
+
+Cada proveedor tiene su propia hoja:
+
+- A:H = matriz/APU del proveedor.
+- I = separador visual.
+- J:M = mercado / referencia.
+- Debe conservar estructura tipo PU:
+  - Encabezado de partida/análisis.
+  - Secciones.
+  - Insumos.
+  - Subtotales.
+  - Costo directo.
+  - Indirectos/utilidad/financiamiento.
+  - Precio unitario.
+
+### Performance
+
+El writer reutiliza objetos de estilo para soportar matrices grandes tipo PMD sin inflar el archivo ni ralentizar el guardado.
