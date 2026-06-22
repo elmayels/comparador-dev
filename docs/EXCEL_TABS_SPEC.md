@@ -310,3 +310,16 @@ Ejemplo:
 
 - Si Construdata tiene precio distinto pero no cantidad, `Mercado P. Unitario` y `Mercado Importe` van en negrita; `Mercado Cantidad` queda normal si se tomó del contratista.
 - Si no hay referencia y todo el mercado usa fallback del contratista, ninguna celda de mercado se resalta.
+
+## Regla V2.0 - Detalle APU y porcentajes de mercado
+
+En `Detalle - <Proveedor>` las columnas A:H muestran la matriz del contratista tal cual fue declarada. Las columnas J:M son responsabilidad del motor de mercado.
+
+Para filas porcentuales:
+
+- `Mercado P. Unitario` = base de mercado equivalente al acumulado/subtotal declarado por el contratista.
+- `Mercado Op.` = operador declarado o normalizado para el calculo de mercado.
+- `Mercado Cantidad` = cantidad/rendimiento de Construdata si existe; de lo contrario, cantidad declarada por el contratista como fallback.
+- `Mercado Importe` = calculo de mercado con esa base y cantidad.
+
+Si dos o mas porcentajes consecutivos se declaran sobre el mismo acumulado de seccion, todos deben usar la misma base de mercado congelada. Las columnas de mercado se muestran en negrita cuando el valor no es fallback al contratista.

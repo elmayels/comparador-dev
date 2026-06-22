@@ -821,6 +821,56 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
         wb.close()
 
 
+
+def _is_percentage_apu_item(item: CanonicalApuItem) -> bool:
+    """True for percentage rows declared inside an APU section.
+
+    These rows are special for the market lane: the contractor values are read
+    as-is, but market P.U. must be the accumulated market subtotal of the
+    corresponding section before percentage rows, not a catalog unit cost.
+    """
+    code = str(item.code or "").strip()
+    unit = str(item.unit or "").strip()
+    op = str(item.operator or "").strip()
+    desc = _norm(item.description or "")
+    sec = _norm(item.section or "")
+    return (
+        code.startswith("%")
+        or unit == "%"
+        or op == "%"
+        or sec.startswith("% sobre")
+        or any(k in desc for k in ["herramienta menor", "equipo de proteccion", "epp", "%herr"])
+    )
+
+
+def _percentage_base_section(item: CanonicalApuItem) -> str:
+    """Return the section subtotal that a percentage row must use as base."""
+    sec = _norm(item.section or "")
+    desc = _norm(item.description or "")
+    joined = f"{sec} {desc}"
+    if "material" in joined:
+        return "MATERIALES"
+    if "mano" in joined or "sobre mo" in joined or "herramienta menor" in joined or "epp" in joined or "proteccion" in joined:
+        return "MANO DE OBRA"
+    if "maquinaria" in joined or "equipo" in joined:
+        return "MAQUINARIA"
+    return _canonical_section_name(item.section, item.description)
+
+
+def _has_reference_market(item: CanonicalApuItem) -> bool:
+    """Whether a row has at least one non-fallback market value."""
+    return any([
+        item.market_unit_price is not None and not item.market_unit_price_is_fallback,
+        item.market_quantity is not None and not item.market_quantity_is_fallback,
+        item.market_amount is not None and not item.market_amount_is_fallback,
+    ])
+
+
+def _calc_amount(unit_price: float | None, operator: str | None, quantity: float | None) -> float | None:
+    if unit_price is None or quantity is None:
+        return None
+    return unit_price / quantity if (operator or "*") == "/" and quantity else unit_price * quantity
+
 def _canonical_section_name(section: str, description: str = "") -> str:
     sn = _norm(section or "")
     dn = _norm(description or "")
@@ -878,6 +928,21 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
     for key in order:
         group = groups[key]
         section_market: dict[str, float] = {}
+        section_has_reference: dict[str, bool] = {}
+        # Contractor values are not recalculated, but we keep running totals from
+        # declared row amounts to identify the base a contractor used for a
+        # percentage row. Example: %HERR unit_price 6,342.76 equals the declared
+        # MO amount accumulated before the percentage rows.
+        contractor_section_running: dict[str, float] = {}
+        # Explicit declared totals/subtotals mapped to their market counterpart.
+        # Example: consu-mec may use the declared SUBTOTAL MANO DE OBRA as its
+        # unit price/base even though it lives in EQUIPO Y HERRAMIENTA.
+        declared_base_to_market: list[tuple[float, float, bool, str]] = []
+        # For section percentage rows, freeze the base at the first percentage
+        # encountered in a target section so sibling percentages share the same
+        # base.
+        frozen_percent_base_by_section: dict[str, float] = {}
+        frozen_percent_ref_by_section: dict[str, bool] = {}
         last_section = ""
         last_importe_market_by_section: dict[str, float] = {}
         subtotal_market_by_section: dict[str, float] = {}
@@ -895,20 +960,96 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                     last_section = sec
                 continue
 
-            # Regular line item: calculate market amount from matched unit price.
+            # Regular line item: calculate only the market lane. The
+            # contractor lane is read and rendered exactly as declared.
             if not _is_structural_item(it):
                 sec = _canonical_section_name(it.section, it.description)
                 if sec in {"MATERIALES", "MANO DE OBRA", "MAQUINARIA", "BASICOS"}:
                     last_section = sec
-                if it.market_amount is None and it.market_unit_price is not None and it.quantity is not None:
-                    if (it.market_operator or "*") == "/":
-                        it.market_amount = it.market_unit_price / it.quantity if it.quantity else None
+
+                # Percentage rows are not priced like normal insumos. When a
+                # contractor declares %HERR, %EPP or any percentage inside a
+                # section, its market P.U. must be the accumulated market subtotal
+                # of that section before section-percentage rows. This makes
+                # multiple percentages in the same block use the same base, e.g.
+                # FLEX41.11 %HERR and %EPP both apply over the MO subtotal before
+                # those percentages.
+                if _is_percentage_apu_item(it):
+                    # The target section is where this percentage row contributes
+                    # (e.g. %HERR inside MO contributes to MO; consu-mec inside
+                    # EQUIPO Y HERRAMIENTA contributes to MAQUINARIA/EQUIPO).
+                    target_sec = _canonical_section_name(it.section, it.description)
+
+                    def resolve_base() -> tuple[float, bool, str]:
+                        declared_base = it.unit_price
+                        # 1) Prefer an explicit prior total/subtotal whose
+                        # contractor amount equals the percentage base. This
+                        # handles rows such as consu-mec using SUBTOTAL MO as base.
+                        if declared_base is not None:
+                            for contractor_val, market_val, ref_val, label in reversed(declared_base_to_market):
+                                if _values_equal(contractor_val, declared_base, tolerance=0.05):
+                                    return market_val, ref_val or not _values_equal(market_val, contractor_val, tolerance=0.05), label
+                            # 2) Match the declared running amount of any active
+                            # section before percentage rows. This handles %HERR
+                            # and %EPP both applying over the MO subtotal before
+                            # percentages, not over each other.
+                            for sec_name, contractor_val in reversed(list(contractor_section_running.items())):
+                                if _values_equal(contractor_val, declared_base, tolerance=0.05):
+                                    market_val = section_market.get(sec_name, 0.0)
+                                    return market_val, section_has_reference.get(sec_name, False) or not _values_equal(market_val, contractor_val, tolerance=0.05), f"acumulado {sec_name}"
+                        # 3) Last safe fallback: use the current target section
+                        # market accumulator.
+                        market_val = section_market.get(target_sec, 0.0)
+                        contractor_val = contractor_section_running.get(target_sec, 0.0)
+                        return market_val, section_has_reference.get(target_sec, False) or not _values_equal(market_val, contractor_val, tolerance=0.05), f"acumulado {target_sec}"
+
+                    if target_sec not in frozen_percent_base_by_section:
+                        base_val, base_ref, base_label = resolve_base()
+                        frozen_percent_base_by_section[target_sec] = base_val
+                        frozen_percent_ref_by_section[target_sec] = base_ref
+                        it.observation = f"Porcentaje de mercado aplicado sobre {base_label}"
                     else:
-                        it.market_amount = it.market_unit_price * it.quantity
+                        base_val = frozen_percent_base_by_section.get(target_sec, 0.0)
+                        base_ref = frozen_percent_ref_by_section.get(target_sec, False)
+                        it.observation = f"Porcentaje de mercado aplicado sobre base congelada de {target_sec}"
+
+                    qty = it.market_quantity if it.market_quantity is not None else it.quantity
+                    op = "*" if (it.market_operator or it.operator or "*") == "%" else (it.market_operator or it.operator or "*")
+                    it.market_unit_price = base_val
+                    it.market_operator = op
+                    it.market_quantity = qty
+                    it.market_amount = _calc_amount(base_val, op, qty)
+                    it.market_deviation = (it.unit_price / base_val - 1) if it.unit_price is not None and base_val else None
+                    it.market_unit_price_is_fallback = not base_ref
+                    # Quantity only becomes non-fallback later when a matched
+                    # Construdata matrix supplies a quantity/rendimiento. With the
+                    # current granular catalogs, the contractor percentage is the
+                    # safe fallback quantity.
+                    it.market_quantity_is_fallback = _values_equal(qty, it.quantity)
+                    it.market_operator_is_fallback = _values_equal(op, it.operator)
+                    it.market_amount_is_fallback = (
+                        it.market_unit_price_is_fallback
+                        and it.market_quantity_is_fallback
+                        and _values_equal(it.market_amount, it.amount, tolerance=0.05)
+                    )
+                    it.state = "Cálculo mercado porcentaje" if not it.market_amount_is_fallback else "Sin referencia - usa contratista"
+                    if it.market_amount is not None:
+                        section_market[target_sec] = section_market.get(target_sec, 0.0) + float(it.market_amount or 0)
+                        contractor_section_running[target_sec] = contractor_section_running.get(target_sec, 0.0) + float(it.amount or 0)
+                        if base_ref:
+                            section_has_reference[target_sec] = True
+                    continue
+
+                if it.market_amount is None and it.market_unit_price is not None and it.quantity is not None:
+                    it.market_amount = _calc_amount(it.market_unit_price, it.market_operator or "*", it.quantity)
                 if it.market_deviation is None and it.unit_price is not None and it.market_unit_price:
                     it.market_deviation = it.unit_price / it.market_unit_price - 1
                 if it.market_amount is not None:
                     section_market[sec] = section_market.get(sec, 0.0) + float(it.market_amount or 0)
+                    if _has_reference_market(it):
+                        section_has_reference[sec] = True
+                if it.amount is not None:
+                    contractor_section_running[sec] = contractor_section_running.get(sec, 0.0) + float(it.amount or 0)
                 continue
 
             # Structural/calculation rows.
@@ -923,6 +1064,8 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                     it.state = "Cálculo mercado"
                     it.observation = f"Importe mercado calculado desde insumos de {sec}"
                     last_importe_market_by_section[sec] = val
+                    if it.amount is not None and it.market_amount is not None:
+                        declared_base_to_market.append((float(it.amount or 0), float(it.market_amount or 0), _has_reference_market(it) or not _values_equal(it.market_amount, it.amount, tolerance=0.05), it.description or "Importe"))
                 continue
 
             if "volumen" in dnorm or "rendimiento" in dnorm:
@@ -943,6 +1086,8 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                     it.market_quantity = vol
                     it.state = "Cálculo mercado"
                     subtotal_market_by_section[sec] = it.market_amount
+                    if it.amount is not None and it.market_amount is not None:
+                        declared_base_to_market.append((float(it.amount or 0), float(it.market_amount or 0), not _values_equal(it.market_amount, it.amount, tolerance=0.05), it.description or "Volumen/Rendimiento"))
                 continue
 
             if dnorm.startswith("subtotal1") or dnorm.startswith("subtotal2"):
@@ -968,6 +1113,8 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                     it.state = "Cálculo mercado"
                     it.observation = f"Subtotal mercado calculado para {sec}"
                     subtotal_market_by_section[sec] = val
+                    if it.amount is not None and it.market_amount is not None:
+                        declared_base_to_market.append((float(it.amount or 0), float(it.market_amount or 0), not _values_equal(it.market_amount, it.amount, tolerance=0.05), it.description or "Subtotal"))
                 continue
 
             if "costo directo" in dnorm:
@@ -979,6 +1126,8 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                     it.market_quantity = None
                     it.state = "Cálculo mercado"
                     it.observation = "Costo directo mercado = suma de subtotales de secciones"
+                    if it.amount is not None and it.market_amount is not None:
+                        declared_base_to_market.append((float(it.amount or 0), float(it.market_amount or 0), not _values_equal(it.market_amount, it.amount, tolerance=0.05), it.description or "Costo directo"))
                 continue
 
             if "indirect" in dnorm or "utilidad" in dnorm or "financ" in dnorm:
