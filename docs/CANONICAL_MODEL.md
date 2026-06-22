@@ -272,3 +272,46 @@ Esta regla evita que el estilo sea un parche del Excel writer: el resaltado visu
 - El carril de mercado debe respetar siempre el operador declarado en la fila del contratista. Si el operador es `/`, el importe mercado se calcula como `Mercado P.U. / Mercado Cantidad`; si el operador es `*`, se calcula como `Mercado P.U. * Mercado Cantidad`.
 - Cuando exista una fila de costo indirecto declarada por el contratista, el carril de mercado debe usar siempre 25% sobre el costo directo de mercado. Este 25% reemplaza cualquier porcentaje indirecto declarado por el contratista solo para el carril de mercado.
 - Los cargos de utilidad o financiamiento se mantienen con la lógica declarada mientras no exista una regla de mercado específica equivalente.
+
+## V2.3 - Regla de primera hoja y vínculo catálogo ↔ matriz
+
+Para evitar mezclar información entre pestañas de un mismo workbook, todo archivo XLSX cargado se procesa usando únicamente la primera hoja visible del archivo, sin importar si la hoja se llama `Sheet1`, `PU`, `CATALOGO`, `Comparativa` u otro nombre. Las hojas secundarias se ignoran dentro del flujo de carga normal.
+
+La `Comparativa` se alimenta exclusivamente desde conceptos válidos del catálogo: unidad declarada, cantidad mayor a cero y precio unitario o importe calculable. La matriz/APU se usa para explicar y calcular el carril de mercado, pero no para crear filas de comparativa.
+
+Cuando los códigos del catálogo no coinciden con los códigos del análisis PU, el modelo crea un vínculo canónico entre concepto y análisis. El vínculo intenta primero código exacto y, si no existe, usa orden relativo con validación de unidad, cantidad e importe. Esto resuelve casos como catálogo `1.1.1` vinculado al análisis `BS.01`.
+
+La entidad lógica de vínculo queda representada por:
+
+- `concept_code`
+- `analysis_code`
+- `concept_order`
+- `analysis_order`
+- `match_strategy`
+- `match_confidence`
+- `unit_match`
+- `quantity_match`
+- `amount_match`
+
+El precio unitario de mercado se propaga así:
+
+```text
+Primer sheet del catálogo -> CanonicalConcept
+Primer sheet de matriz/APU -> CanonicalApuItem / análisis PU
+ConceptApuLink -> asocia concepto con análisis
+Precio unitario mercado del análisis -> Mercado P.U. en Comparativa
+Mercado Importe -> Cantidad catálogo * Mercado P.U.
+```
+
+## V2.4 - Regla centralizada de operador de mercado
+
+La matriz del contratista se conserva como dato declarado y no se recalcula. Para el carril de mercado, todo importe debe pasar por una unica funcion canonica de calculo por operador.
+
+Regla:
+
+- Si el operador declarado es `/`, el importe mercado se calcula como `Mercado P.U. / Mercado Cantidad`.
+- Si el operador declarado es `*`, el importe mercado se calcula como `Mercado P.U. * Mercado Cantidad`.
+- Si el bloque mercado no trae un operador propio, se hereda el operador del contratista.
+- No se permite default visual `*` en `market_operator` antes del calculo, porque eso puede convertir divisiones reales en multiplicaciones.
+
+Esto aplica a todas las filas de insumo, mano de obra, materiales, equipo, herramienta y servicios, sin condiciones por archivo o por proyecto.

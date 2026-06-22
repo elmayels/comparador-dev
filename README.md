@@ -167,3 +167,16 @@ Las columnas de mercado en `Detalle - <Proveedor>` ahora distinguen visualmente 
 - El carril de mercado respeta el operador declarado por fila (`*`, `/`, etc.).
 - El costo indirecto de mercado se calcula siempre con 25% cuando exista indirecto declarado.
 - Se mantiene intacta la matriz del contratista; solo se calcula el carril de mercado.
+
+### V2.3 - Corrección CAT/PU multi-sheet y vínculo por orden
+
+- Los archivos con varios tabs se procesan usando únicamente la primera hoja visible.
+- Se evita mezclar `PU` y `CATALOGO` secundarios dentro del mismo workbook.
+- Se agregó vínculo canónico catálogo ↔ matriz cuando los códigos no coinciden.
+- Caso validado: catálogo `1.1.1` vinculado con matriz `BS.01`; la `Comparativa` ahora llena `Mercado P.U.` y `Mercado Importe` desde el detalle de mercado.
+
+### V2.4 - Correccion operador mercado
+
+- Centraliza el calculo de `Mercado Importe` en `_calc_amount()`.
+- Hereda el operador del contratista cuando el mercado no declara operador propio.
+- Corrige casos como `CUADRILLA No 3 (1 AYUDANTE GENERAL) / 48`, que antes podia salir como multiplicacion.

@@ -94,7 +94,7 @@ class CanonicalApuItem:
     amount: float | None = None
     percent: float | None = None
     market_unit_price: float | None = None
-    market_operator: str = "*"
+    market_operator: str = ""
     market_quantity: float | None = None
     market_amount: float | None = None
     market_deviation: float | None = None
@@ -211,14 +211,22 @@ def _sheet_score(ws) -> int:
 
 
 def _best_sheet(path: Path, preferred_names: Iterable[str] | None = None):
+    """Return the workbook's first visible worksheet.
+
+    Canonical ingestion rule: when an uploaded workbook has multiple tabs, the
+    system must process only the first visible tab (Sheet1 or whatever name the
+    vendor gave to that first tab). Secondary tabs are ignored unless a future
+    explicit workflow asks for cross-sheet validation. This prevents accidental
+    mixing of a PU tab with a CATALOGO tab inside the same workbook.
+
+    ``preferred_names`` is kept for backward compatibility with older calls but
+    no longer changes the selected sheet.
+    """
     wb = load_workbook(path, read_only=True, data_only=True)
-    if preferred_names:
-        wanted = {_norm(x) for x in preferred_names}
-        for ws in wb.worksheets:
-            if _norm(ws.title) in wanted:
-                return wb, ws
-    ws = max(wb.worksheets, key=_sheet_score)
-    return wb, ws
+    for ws in wb.worksheets:
+        if getattr(ws, "sheet_state", "visible") == "visible":
+            return wb, ws
+    return wb, wb.worksheets[0]
 
 
 def _hierarchy_level(code: str, executable: bool = False) -> int:
@@ -473,9 +481,12 @@ def classify_xlsx_role(path: Path) -> str:
         wb = load_workbook(path, read_only=True, data_only=True)
         try:
             rows: list[list[Any]] = []
-            for ws in wb.worksheets[:2]:
-                for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 80), values_only=True):
-                    rows.append(list(row))
+            # Role detection follows the same canonical single-sheet contract:
+            # use only the first visible worksheet. Do not scan CATALOGO/PU
+            # secondary tabs because upload role resolution is per workbook.
+            ws = next((w for w in wb.worksheets if getattr(w, "sheet_state", "visible") == "visible"), wb.worksheets[0])
+            for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 80), values_only=True):
+                rows.append(list(row))
             joined = " ".join(_norm(" ".join(_txt(v) for v in r if _txt(v))) for r in rows)
             has_analysis = "analisis" in joined or "analisis de basicos" in joined or "analisis de precios" in joined
             has_sections = any(t in joined for t in ["materiales", "mano de obra", "equipo y herramienta", "precio unitario"])
@@ -649,6 +660,9 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
         hidx, cmap = _detect_matrix_header(rows)
         current_section = ""
         current_concept_key = ""
+        # PU analysis codes may repeat across chapters. Keep a unique canonical
+        # occurrence key so detail blocks do not merge accidentally.
+        analysis_key_counts: dict[str, int] = {}
         out: list[CanonicalApuItem] = []
 
         def cell(row: list[Any], field: str):
@@ -697,7 +711,10 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                         ui = cmap.get("unit")
                         header_unit = _txt(row[ui]) if ui is not None and ui < len(row) else header_unit
                     if header_code:
-                        current_concept_key = canonical_key(header_code, "")
+                        base_key = canonical_key(header_code, "")
+                        occurrence = analysis_key_counts.get(base_key, 0) + 1
+                        analysis_key_counts[base_key] = occurrence
+                        current_concept_key = base_key if occurrence == 1 else f"{base_key}#{occurrence}"
                 desc_header = " ".join(texts)
                 out.append(CanonicalApuItem(
                     code=header_code,
@@ -746,7 +763,7 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                     mqty = _num(cell(row, "market_quantity"))
                     mamount = _num(cell(row, "market_amount"))
                     if mamount is None and mpu is not None and mqty is not None:
-                        mamount = mpu * mqty if mop != "/" else (mpu / mqty if mqty else None)
+                        mamount = _calc_amount(mpu, mop, mqty)
                     out.append(CanonicalApuItem(
                         concept_key=current_concept_key,
                         description=desc_label,
@@ -775,20 +792,25 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
             amount = _num(cell(row, "amount"))
             pct = _num(cell(row, "percent"))
             mpu = _num(cell(row, "market_unit_price"))
-            mop = _txt(cell(row, "market_operator")) or "*"
+            mop = _txt(cell(row, "market_operator")) or ""
             mqty = _num(cell(row, "market_quantity"))
             mamount = _num(cell(row, "market_amount"))
 
             if amount is None and pu is not None and qty is not None:
-                amount = pu * qty if op != "/" else (pu / qty if qty else None)
+                amount = _calc_amount(pu, op, qty)
             if mamount is None and mpu is not None and mqty is not None:
-                mamount = mpu * mqty if mop != "/" else (mpu / mqty if mqty else None)
+                # Market calculations must respect the declared contractor operator
+                # whenever the market block does not explicitly declare its own operator.
+                mamount = _calc_amount(mpu, mop or op, mqty)
 
             # Concept header rows in a PU matrix define the current concept bucket.
             # All following insumos/subtotals inherit this key until the next header.
             looks_like_concept_header = bool(code and unit and amount is not None and not code.strip().startswith("%") and current_section in {"", "SIN SECCIÓN"})
             if looks_like_concept_header:
-                current_concept_key = canonical_key(code, desc)
+                base_key = canonical_key(code, desc)
+                occurrence = analysis_key_counts.get(base_key, 0) + 1
+                analysis_key_counts[base_key] = occurrence
+                current_concept_key = base_key if occurrence == 1 else f"{base_key}#{occurrence}"
 
             section = current_section or "SIN SECCIÓN"
             is_declared_percent = (op == "%") or unit.strip() == "%" or code.strip().startswith("%")
@@ -809,7 +831,7 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                 amount=amount,
                 percent=pct,
                 market_unit_price=mpu,
-                market_operator=mop or "*",
+                market_operator=mop or "",
                 market_quantity=mqty,
                 market_amount=mamount,
                 market_deviation=(pu / mpu - 1) if pu is not None and mpu else None,
@@ -900,11 +922,22 @@ def _has_reference_market(item: CanonicalApuItem) -> bool:
     ])
 
 
+def _normalize_operator(operator: str | None) -> str:
+    op = str(operator or "*").strip()
+    if op in {"/", "÷", "div", "DIV"}:
+        return "/"
+    if op in {"*", "x", "X", "×"}:
+        return "*"
+    if op == "%":
+        return "%"
+    return op or "*"
+
+
 def _calc_amount(unit_price: float | None, operator: str | None, quantity: float | None) -> float | None:
     if unit_price is None or quantity is None:
         return None
-    op = str(operator or "*").strip()
-    if op in {"/", "÷"}:
+    op = _normalize_operator(operator)
+    if op == "/":
         return unit_price / quantity if quantity else None
     # Percentage rows are normalized to multiplication before calling this
     # function. Any unknown/blank operator follows the contractor's usual
@@ -1305,21 +1338,90 @@ def canonical_rows_from_items(items: list[CanonicalApuItem], include_market: boo
 
 
 
+def _concept_apu_link_map(provider: CanonicalProvider) -> dict[str, str]:
+    """Map APU analysis keys to catalog concept keys.
+
+    Primary link is exact key/code. When vendor files use different coding
+    systems (e.g. catalog 1.1.1 but PU analysis BS.01), create a high-confidence
+    order-based bridge only between executable catalog concepts and detected APU
+    analysis headers. The bridge is part of the canonical model flow so
+    Comparativa can receive market P.U. from the correct PU block without
+    depending on matching codes.
+    """
+    exec_concepts = [c for c in provider.concepts if c.is_executable]
+    concept_keys = [canonical_key(c.code, c.description) for c in exec_concepts]
+    direct_keys = set(concept_keys)
+    apu_header_items = []
+    seen = set()
+    for it in provider.apu_items:
+        key = it.concept_key or canonical_key(it.code, it.description)
+        if not key or key in seen:
+            continue
+        # Only real analysis headers participate in order-linking. Ignore
+        # broader chapter/partida title rows with no analysis code because they
+        # throw off the one-to-one CAT ↔ PU order bridge.
+        if it.section == "PARTIDA" and it.code:
+            seen.add(key)
+            apu_header_items.append(it)
+        elif it.code and key not in direct_keys and it.unit and (it.amount is not None or it.quantity is not None):
+            seen.add(key)
+            apu_header_items.append(it)
+    apu_keys = [it.concept_key or canonical_key(it.code, it.description) for it in apu_header_items]
+    mapping: dict[str, str] = {k: k for k in apu_keys if k in direct_keys}
+
+    # Order bridge: use it when both sides have the same cardinality. This is
+    # the common PMD/manual case where CAT uses 1.1.1, 1.1.2... and PU uses
+    # BS.01, BS.02... in the same declared order.
+    if len(exec_concepts) == len(apu_keys) and len(exec_concepts) > 0:
+        confident = 0
+        for c, it in zip(exec_concepts, apu_header_items):
+            checks = 0
+            passed = 0
+            if c.unit and it.unit:
+                checks += 1
+                passed += 1 if _norm(c.unit) == _norm(it.unit) else 0
+            if c.quantity is not None and it.quantity is not None:
+                checks += 1
+                passed += 1 if _values_equal(c.quantity, it.quantity, tolerance=0.01) else 0
+            # Header amount may be the P.U. rather than catalog importe, so accept
+            # either unit price or amount similarity as supporting evidence.
+            if it.amount is not None:
+                checks += 1
+                passed += 1 if (_values_equal(c.unit_price, it.amount, tolerance=0.05) or _values_equal(c.amount, it.amount, tolerance=0.05)) else 0
+            if checks == 0 or passed >= max(1, min(2, checks)):
+                confident += 1
+        # Do not require every row to have comparable fields; messy vendor files
+        # often omit unit/quantity in the header. If most rows pass, link by order.
+        if confident >= max(1, int(len(exec_concepts) * 0.65)):
+            for c, apu_key in zip(exec_concepts, apu_keys):
+                mapping[apu_key] = canonical_key(c.code, c.description)
+            provider.validations.append({
+                "severity": "Info",
+                "type": "Vínculo catálogo-matriz",
+                "message": f"Se vinculó catálogo con PU por orden/unidad/cantidad para {len(exec_concepts)} conceptos porque los códigos no coinciden."
+            })
+    return mapping
+
+
 def apply_provider_market_to_concepts(provider: CanonicalProvider) -> None:
     """Attach market totals to provider concepts from its canonical APU detail.
 
     This is a canonical model step, not an Excel styling patch. Comparativa
     compares concept-level P.U. totals; Detalle explains the APU. Therefore the
     provider must expose concept-level market values derived from the APU market
-    rows or from granular reference matches.
+    rows or from granular reference matches. When catalog and PU use different
+    codes, a canonical ConceptApuLink-like bridge maps PU analysis keys to
+    catalog concept keys by order/unit/quantity/amount.
     """
     if not provider.concepts or not provider.apu_items:
         return
     concept_map = {canonical_key(c.code, c.description): c for c in provider.concepts}
+    apu_to_concept = _concept_apu_link_map(provider)
     direct: dict[str, CanonicalApuItem] = {}
     aggregates: dict[str, float] = {}
     for item in provider.apu_items:
-        key = item.concept_key or canonical_key(item.code, item.description)
+        raw_key = item.concept_key or canonical_key(item.code, item.description)
+        key = apu_to_concept.get(raw_key, raw_key)
         if not key or key not in concept_map:
             continue
         dnorm = _norm(item.description or "")
@@ -1331,7 +1433,7 @@ def apply_provider_market_to_concepts(provider: CanonicalProvider) -> None:
             continue
         # Secondary source: concept header rows if a matrix explicitly declares
         # market values there.
-        if item.code and canonical_key(item.code, item.description) == key and (item.market_amount is not None or item.market_unit_price is not None):
+        if item.code and (apu_to_concept.get(canonical_key(item.code, item.description), canonical_key(item.code, item.description)) == key) and (item.market_amount is not None or item.market_unit_price is not None):
             direct[key] = item
         # Aggregate only true line-level market amounts as fallback. Exclude all
         # structural/calculation rows to avoid double counting subtotals, volume,
@@ -1356,7 +1458,6 @@ def apply_provider_market_to_concepts(provider: CanonicalProvider) -> None:
             concept.market_amount = (mpu * float(qty)) if qty else mpu
             concept.market_source = "APU granular"
             concept.market_state = "Mercado agregado desde insumos"
-
 
 def run_id(prefix: str) -> str:
     return f"{prefix}-{int(time.time())}"

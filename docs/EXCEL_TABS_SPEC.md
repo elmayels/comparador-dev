@@ -335,3 +335,20 @@ En los tabs `Detalle - <Proveedor>`:
   - `*`: `Mercado P.U. * Mercado Cantidad`
   - `/`: `Mercado P.U. / Mercado Cantidad`
 - Si existe una fila de `INDIRECTO`, `COSTO INDIRECTO` o equivalente, el mercado debe calcularla con `25%` sobre el costo directo de mercado, aunque el contratista declare otro porcentaje.
+
+## V2.3 - Comparativa con mercado desde PU vinculado
+
+La hoja `Comparativa` debe mostrar solo conceptos del catálogo. Si un workbook tiene varias hojas, se procesa solo la primera hoja visible. Esto evita que se tome accidentalmente una hoja `PU` o `CATALOGO` secundaria dentro del mismo archivo.
+
+Si el catálogo usa códigos como `1.1.1` y la matriz usa códigos como `BS.01`, el Excel no debe quedar sin mercado. El modelo canónico debe vincular ambos por orden/unidad/cantidad/importe y luego subir el precio unitario de mercado calculado en el detalle hacia las columnas `Mercado P.U.` y `Mercado Importe` de `Comparativa`.
+
+## V2.4 - Operador de mercado en Detalle
+
+En las hojas `Detalle - <Proveedor>`, las columnas de mercado deben respetar el operador de la fila. Cuando la columna `Mercado Op.` no venga declarada, se debe mostrar y usar el mismo operador declarado por el contratista.
+
+Ejemplo:
+
+- Contratista: `CUADRILLA No 3`, `P.U. = 775.84`, `Op. = /`, `Cantidad = 48`, `Importe = 16.16`.
+- Mercado: `Mercado P.U. = 910.49`, `Mercado Op. = /`, `Mercado Cantidad = 48`, `Mercado Importe = 18.97`.
+
+Nunca debe calcularse como `910.49 * 48` si el operador declarado es `/`.
