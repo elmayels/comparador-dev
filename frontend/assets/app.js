@@ -14,6 +14,7 @@ const state = {
     { id: 2, name: 'PROV-B', conceptsFile: null, matrixFile: null },
   ],
   lastComparisonRun: null,
+  lastBaseBudgetRun: null,
 };
 
 document.documentElement.dataset.theme = state.theme;
@@ -361,17 +362,34 @@ function bindContractorInputs(){
 }
 
 function baseBudgetsNew(){
-  shell(`${pageHead('Nuevo presupuesto base', 'Crear presupuesto independiente desde archivo de conceptos de ingeniería y matrices Construdata en data.', `<button class="btn btn-secondary" data-nav="base-budgets">Volver</button>`)}<div class="stepper"><span class="step active">1 Datos</span><span class="step active">2 Carga .xlsx</span><span class="step">3 Match Construdata</span><span class="step">4 Resultado</span></div><div class="grid cols-2"><div class="card"><h3>Datos del presupuesto</h3><div class="form-grid"><div><label class="label">Nombre</label><input class="input" value="Presupuesto base Sucursal Norte"></div><div><label class="label">Cliente / Obra</label><input class="input" value="Cliente A / Obra Civil 2026"></div><div><label class="label">Fuente Construdata detectada</label><input class="input" value="data/construdata_matrices.xlsx" readonly></div></div></div><div class="card"><h3>Archivo de conceptos de ingeniería</h3><p>Este módulo no requiere proveedors ni licitación.</p>${filePicker('baseFiles', false)}<div class="actions" style="margin-top:16px"><button id="runBase" class="btn btn-primary">Generar presupuesto base mock</button></div></div></div><div class="callout" style="margin-top:16px"><strong>Separación clave:</strong> este flujo usa <span class="mono">construdata_matrices.xlsx</span>. El detalle APU de proveedors usa materiales/MO/maquinaria desde data y no busca matrices Construdata.</div>`, 'Nuevo presupuesto base');
+  shell(`${pageHead('Nuevo presupuesto base', 'Crear presupuesto independiente desde archivo de conceptos de ingeniería y matrices Construdata en data.', `<button class="btn btn-secondary" data-nav="base-budgets">Volver</button>`)}<div class="stepper"><span class="step active">1 Datos</span><span class="step active">2 Carga .xlsx</span><span class="step">3 Match Construdata</span><span class="step">4 Resultado</span></div><div class="grid cols-2"><div class="card"><h3>Datos del presupuesto</h3><div class="form-grid"><div><label class="label">Nombre</label><input class="input" value="Presupuesto base real"></div><div><label class="label">Cliente / Obra</label><input class="input" value="Proyecto con catálogo real"></div><div><label class="label">Fuente Construdata detectada</label><input class="input" value="data/construdata_matrices.xlsx" readonly></div></div></div><div class="card"><h3>Archivo de conceptos de ingeniería</h3><p>Este módulo no requiere proveedors ni licitación.</p>${filePicker('baseFiles', false)}<div class="actions" style="margin-top:16px"><button id="runBase" class="btn btn-primary">Generar presupuesto base real</button></div></div></div><div class="callout" style="margin-top:16px"><strong>Separación clave:</strong> este flujo usa <span class="mono">construdata_matrices.xlsx</span>. El detalle APU de proveedors usa materiales/MO/maquinaria desde data y no busca matrices Construdata.</div>`, 'Nuevo presupuesto base');
   bindPicker('baseFiles','baseUploadFiles');
   $('#runBase').onclick = async () => {
     if (!state.baseUploadFiles.length) { alert('Carga un archivo .xlsx de conceptos de ingeniería.'); return; }
     if (state.baseUploadFiles.some(f=>!f.name.toLowerCase().endsWith('.xlsx'))) { alert('Solo se aceptan archivos .xlsx'); return; }
-    go('base-budgets-result');
+    const btn = $('#runBase');
+    btn.disabled = true; btn.textContent = 'Procesando presupuesto real...';
+    try{
+      const fd = new FormData();
+      const projectInput = document.querySelector('.input');
+      fd.append('projectName', projectInput ? projectInput.value : 'Presupuesto base real');
+      fd.append('concepts_file', state.baseUploadFiles[0]);
+      const res = await fetch('/api/base-budgets/real-run', {method:'POST', body:fd});
+      if(!res.ok){ const err = await res.json().catch(()=>({detail:'Error al generar presupuesto base'})); throw new Error(err.detail || 'Error al generar presupuesto base'); }
+      state.lastBaseBudgetRun = await res.json();
+      go('base-budgets-result');
+    }catch(err){ alert(err.message); btn.disabled = false; btn.textContent = 'Generar presupuesto base real'; }
   };
 }
 
 function baseBudgetResult(){
-  shell(`${pageHead('Resultado presupuesto base', 'Resultado mock: matriz presupuestada independiente lista para descarga y revisión.', `<a class="btn btn-primary" href="/api/reports/base">Descargar Excel base</a>`)}${kpis([{label:'Monto estimado',value:money(56520000),text:'Presupuesto base'}, {label:'Conceptos',value:'128',text:'Archivo ingeniería'}, {label:'Con match',value:'104',text:'Contra matrices Construdata'}, {label:'En revisión',value:'17',text:'Match medio'}])}<div class="grid cols-2" style="margin-top:16px"><div class="card"><h3>Hallazgos IA mock</h3><p>7 conceptos no tienen match directo. 17 conceptos requieren revisión técnica por unidad o descripción ambigua.</p></div><div class="card"><h3>Distribución por familia</h3>${table(['Familia','Importe','Participación'], [['Movimiento de tierras',money(10560000),'18.7%'],['Concreto',money(16800000),'29.7%'],['Acero',money(11160000),'19.7%'],['Acabados',money(18000000),'31.9%']])}</div></div><div style="margin-top:16px">${table(['Código','Concepto ingeniería','Unidad','Cantidad','Concepto Construdata','PU ref.','Importe','Estado'], [['001','Excavación manual','m3','120','Excavación manual material común',money(88000),money(10560000),'<span class="badge ok">Con precio</span>'],['002','Concreto f\'c 250','m3','40','Concreto 250 kg/cm2',money(420000),money(16800000),'<span class="badge ok">Con precio</span>'],['003','Acero de refuerzo','kg','1800','Acero fy 4200',money(6200),money(11160000),'<span class="badge warn">Revisar</span>'],['004','Partida especial','gl','1','Sin referencia','—','—','<span class="badge bad">Sin match</span>']])}</div>`, 'Resultado presupuesto base');
+  const real = state.lastBaseBudgetRun;
+  if(real){
+    const download = real.downloadUrl || '/api/reports/base';
+    shell(`${pageHead('Resultado presupuesto base', 'Presupuesto generado desde el archivo cargado y matrices Construdata reales.', `<a class="btn btn-primary" href="${download}">Descargar Excel base real</a><button class="btn btn-secondary" data-nav="base-budgets-new">Nuevo presupuesto</button>`)}${kpis([{label:'Corrida',value:real.id,text:'Base real'}, {label:'Conceptos leídos',value:real.concepts||0,text:'Archivo cargado'}, {label:'Ejecutables',value:real.executableConcepts||0,text:'Unidad + cantidad'}, {label:'Filas matriz',value:real.apuItems||0,text:'Detalle Base'}])}<div class="callout" style="margin-top:16px"><strong>Data real:</strong> este resultado viene de <span class="mono">/api/base-budgets/real-run</span>. No usa tablas mock ni el endpoint <span class="mono">/api/reports/base</span>.</div><div style="margin-top:16px">${table(['Campo','Valor'], [['Estado', real.status || 'COMPLETED_WITH_WARNINGS'], ['Validaciones', real.validations || 0], ['Descarga', `<a href="${download}">${download}</a>`]])}</div>`, 'Resultado presupuesto base');
+    return;
+  }
+  shell(`${pageHead('Resultado presupuesto base', 'Aún no hay una corrida real cargada.', `<button class="btn btn-primary" data-nav="base-budgets-new">Cargar archivo base</button>`)}<div class="callout"><strong>Sin corrida real:</strong> carga un archivo .xlsx de conceptos para generar el presupuesto base con data real.</div>`, 'Resultado presupuesto base');
 }
 
 function comparisons(){

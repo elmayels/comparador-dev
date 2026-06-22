@@ -187,12 +187,10 @@ Las columnas de mercado en `Detalle - <Proveedor>` ahora distinguen visualmente 
 
 Se agrega trazabilidad del match Construdata al modelo canónico y al Excel. Las hojas `Detalle - <Proveedor>` muestran una columna `Match Construdata` inmediatamente después de `Mercado Importe`, con `Código - Descripción` de la referencia usada para el match.
 
-### V2.7 - Presupuesto base real
 
-El endpoint `/api/base-budgets/real-run` ahora genera una matriz base desde un catálogo de conceptos de ingeniería y `data/construdata_matrices.xlsx`.
+## V2.8 Base budget real endpoint
 
-- Lee conceptos válidos con unidad y cantidad > 0.
-- Busca una matriz Construdata relacionada.
-- Genera `Detalle Base` con materiales, mano de obra, maquinaria y sección financiera.
-- Usa indirecto de mercado fijo al 25%.
-- No afecta el flujo de comparativas existentes.
+- El frontend de Nuevo presupuesto base llama `/api/base-budgets/real-run`; ya no navega a una pantalla mock.
+- El archivo cargado se envía como `concepts_file` y se parsea con `parse_base_concepts`.
+- El reporte descargado usa `build_real_base_report` y contiene conceptos/Detalle Base generados desde el archivo real + `data/construdata_matrices.xlsx`.
+- `/api/reports/base` se conserva solo como demo legado; no es el flujo canónico de presupuesto base real.

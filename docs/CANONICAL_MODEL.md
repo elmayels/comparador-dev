@@ -356,3 +356,11 @@ Reglas:
 7. Los matches quedan trazados en `Validaciones` con código de concepto Construdata y confianza.
 
 Esto evita crear un flujo paralelo y mantiene la matriz base asociada al modelo canónico.
+
+
+## V2.8 Base budget real endpoint
+
+- El frontend de Nuevo presupuesto base llama `/api/base-budgets/real-run`; ya no navega a una pantalla mock.
+- El archivo cargado se envía como `concepts_file` y se parsea con `parse_base_concepts`.
+- El reporte descargado usa `build_real_base_report` y contiene conceptos/Detalle Base generados desde el archivo real + `data/construdata_matrices.xlsx`.
+- `/api/reports/base` se conserva solo como demo legado; no es el flujo canónico de presupuesto base real.
