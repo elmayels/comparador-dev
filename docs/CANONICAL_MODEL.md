@@ -265,3 +265,10 @@ Esta regla evita que el estilo sea un parche del Excel writer: el resaltado visu
   - `%MO5` / `%EPP` Equipo de seguridad/protección personal: 2%
 - Estos porcentajes afectan solo `Mercado Cantidad`; el valor declarado por el contratista se muestra intacto en sus columnas.
 - Si un porcentaje aparece dentro de una sección, `Mercado P.U.` usa el acumulado/subtotal de mercado correspondiente y `Mercado Cantidad` usa primero el porcentaje recomendado de Construdata cuando exista.
+
+## V2.2 - Reglas de cierre para columnas de mercado
+
+- La matriz del contratista se conserva como dato declarado; no se recalculan las columnas del contratista.
+- El carril de mercado debe respetar siempre el operador declarado en la fila del contratista. Si el operador es `/`, el importe mercado se calcula como `Mercado P.U. / Mercado Cantidad`; si el operador es `*`, se calcula como `Mercado P.U. * Mercado Cantidad`.
+- Cuando exista una fila de costo indirecto declarada por el contratista, el carril de mercado debe usar siempre 25% sobre el costo directo de mercado. Este 25% reemplaza cualquier porcentaje indirecto declarado por el contratista solo para el carril de mercado.
+- Los cargos de utilidad o financiamiento se mantienen con la lógica declarada mientras no exista una regla de mercado específica equivalente.

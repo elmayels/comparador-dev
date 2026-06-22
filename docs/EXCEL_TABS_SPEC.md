@@ -324,3 +324,14 @@ Ejemplo:
   - `%MO5` / `%EPP` Equipo de seguridad/protección personal: 2%
 - Estos porcentajes afectan solo `Mercado Cantidad`; el valor declarado por el contratista se muestra intacto en sus columnas.
 - Si un porcentaje aparece dentro de una sección, `Mercado P.U.` usa el acumulado/subtotal de mercado correspondiente y `Mercado Cantidad` usa primero el porcentaje recomendado de Construdata cuando exista.
+
+## V2.2 - Detalle: operadores y costo indirecto de mercado
+
+En los tabs `Detalle - <Proveedor>`:
+
+- Las columnas A:H representan la matriz declarada por el contratista y no deben recalcularse.
+- Las columnas J:M representan el carril de mercado.
+- `Mercado Importe` debe respetar `Mercado Op.`:
+  - `*`: `Mercado P.U. * Mercado Cantidad`
+  - `/`: `Mercado P.U. / Mercado Cantidad`
+- Si existe una fila de `INDIRECTO`, `COSTO INDIRECTO` o equivalente, el mercado debe calcularla con `25%` sobre el costo directo de mercado, aunque el contratista declare otro porcentaje.

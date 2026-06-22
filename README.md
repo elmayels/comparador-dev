@@ -161,3 +161,9 @@ Las columnas de mercado en `Detalle - <Proveedor>` ahora distinguen visualmente 
   - `%MO5` / `%EPP` Equipo de seguridad/protección personal: 2%
 - Estos porcentajes afectan solo `Mercado Cantidad`; el valor declarado por el contratista se muestra intacto en sus columnas.
 - Si un porcentaje aparece dentro de una sección, `Mercado P.U.` usa el acumulado/subtotal de mercado correspondiente y `Mercado Cantidad` usa primero el porcentaje recomendado de Construdata cuando exista.
+
+### V2.2 - Ajustes de cierre de comparativa
+
+- El carril de mercado respeta el operador declarado por fila (`*`, `/`, etc.).
+- El costo indirecto de mercado se calcula siempre con 25% cuando exista indirecto declarado.
+- Se mantiene intacta la matriz del contratista; solo se calcula el carril de mercado.

@@ -823,7 +823,7 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                     item.market_unit_price = float(match["price"])
                     item.market_quantity = qty
                     item.market_operator = op or "*"
-                    item.market_amount = item.market_unit_price * qty if qty is not None else None
+                    item.market_amount = _calc_amount(item.market_unit_price, item.market_operator, item.market_quantity)
                     item.market_deviation = (pu / item.market_unit_price - 1) if pu is not None and item.market_unit_price else None
                     item.market_unit_price_is_fallback = False
                     item.market_operator_is_fallback = True
@@ -903,7 +903,13 @@ def _has_reference_market(item: CanonicalApuItem) -> bool:
 def _calc_amount(unit_price: float | None, operator: str | None, quantity: float | None) -> float | None:
     if unit_price is None or quantity is None:
         return None
-    return unit_price / quantity if (operator or "*") == "/" and quantity else unit_price * quantity
+    op = str(operator or "*").strip()
+    if op in {"/", "÷"}:
+        return unit_price / quantity if quantity else None
+    # Percentage rows are normalized to multiplication before calling this
+    # function. Any unknown/blank operator follows the contractor's usual
+    # multiplication convention.
+    return unit_price * quantity
 
 def _canonical_section_name(section: str, description: str = "") -> str:
     sn = _norm(section or "")
@@ -1082,8 +1088,12 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                             section_has_reference[target_sec] = True
                     continue
 
-                if it.market_amount is None and it.market_unit_price is not None and it.quantity is not None:
-                    it.market_amount = _calc_amount(it.market_unit_price, it.market_operator or "*", it.quantity)
+                if it.market_amount is None and it.market_unit_price is not None:
+                    qty_for_market = it.market_quantity if it.market_quantity is not None else it.quantity
+                    op_for_market = it.market_operator or it.operator or "*"
+                    it.market_quantity = qty_for_market
+                    it.market_operator = op_for_market
+                    it.market_amount = _calc_amount(it.market_unit_price, op_for_market, qty_for_market)
                 if it.market_deviation is None and it.unit_price is not None and it.market_unit_price:
                     it.market_deviation = it.unit_price / it.market_unit_price - 1
                 if it.market_amount is not None:
@@ -1175,14 +1185,31 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
             if "indirect" in dnorm or "utilidad" in dnorm or "financ" in dnorm:
                 base = direct_market
                 pct = it.quantity if it.quantity is not None else it.percent
-                if base is not None and pct is not None:
-                    factor = pct / 100 if pct > 1 else pct
+                if base is not None:
+                    if "indirect" in dnorm:
+                        # Canonical rule: when the contractor declares an
+                        # indirect cost row, the market lane must always use
+                        # Construdata's standard 25%, regardless of the
+                        # contractor's declared percentage.
+                        factor = 0.25
+                        qty_ref = True
+                        obs = "Indirecto mercado estándar Construdata = 25% sobre costo directo"
+                    elif pct is not None:
+                        factor = pct / 100 if pct > 1 else pct
+                        qty_ref = False
+                        obs = "Cargo financiero mercado calculado sobre costo directo"
+                    else:
+                        continue
                     it.market_unit_price = base
                     it.market_operator = "*"
                     it.market_quantity = factor
-                    it.market_amount = base * factor
+                    it.market_amount = _calc_amount(base, it.market_operator, factor)
+                    it.market_unit_price_is_fallback = False
+                    it.market_operator_is_fallback = False
+                    it.market_quantity_is_fallback = not qty_ref and _values_equal(factor, it.quantity)
+                    it.market_amount_is_fallback = False
                     it.state = "Cálculo mercado"
-                    it.observation = "Cargo financiero mercado calculado sobre costo directo"
+                    it.observation = obs
                     financial_market_total += float(it.market_amount or 0)
                 continue
 
