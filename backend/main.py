@@ -31,7 +31,7 @@ RUNTIME_DIR = ROOT / "backend" / "runtime"
 REPORTS_DIR = RUNTIME_DIR / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="APU Canonical Platform V1 Alpha", version="1.0.0-alpha")
+app = FastAPI(title="Quantia APU Canonical", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -787,26 +787,102 @@ def _write_parametros(ws):
     _add_table(ws, "A5:C15", "ParametrosTable", "TableStyleMedium2")
 
 
-def _write_analisis_ia(ws):
-    _setup_sheet(ws, "Análisis IA", "Narrativa ejecutiva generada sobre datos calculados. La IA no inventa importes ni modifica cálculos.", 6)
-    _set_widths(ws, {"A": 24, "B": 95, "C": 18, "D": 18, "E": 18, "F": 18})
-    sections = [
-        ["Resumen ejecutivo", "La comparación identifica una propuesta competitiva, pero con partidas críticas que requieren validación técnica antes de negociar o adjudicar."],
-        ["Riesgos", "El riesgo principal se concentra en partidas con alto impacto económico y en diferencias de insumos de mano de obra y materiales."],
-        ["Recomendaciones", "Solicitar desglose APU, validar rendimiento, comparar porcentajes financieros y negociar partidas con mayor impacto económico."],
-        ["Preguntas al contratista", "¿Qué alcance está incluido en las partidas bajo mercado? ¿Qué tarifas y rendimientos soportan mano de obra? ¿Qué fichas técnicas respaldan los insumos críticos?"],
-        ["Limitaciones", "V0 usa datos mockeados. El motor real debe leer la matriz/APU del contratista y poblar Detalle APU desde esa fuente."],
-    ]
+def _short_codes(items: list[Any], limit: int = 5) -> str:
+    codes = []
+    for x in items:
+        code = str(getattr(x, "code", "") or "").strip()
+        if code and code not in codes:
+            codes.append(code)
+        if len(codes) >= limit:
+            break
+    return ", ".join(codes) if codes else "—"
+
+
+def _safe_amount(obj: Any) -> float:
+    amount = getattr(obj, "amount", None)
+    if amount is not None:
+        try:
+            return float(amount or 0)
+        except Exception:
+            return 0.0
+    qty = getattr(obj, "quantity", None)
+    pu = getattr(obj, "unit_price", None)
+    if qty is not None and pu is not None:
+        try:
+            return float(qty or 0) * float(pu or 0)
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _write_analisis_ia(ws, run: CanonicalRun | None = None):
+    """Write a concise executive analysis based only on calculated data.
+
+    This sheet intentionally avoids long service descriptions. It cites counts,
+    totals, coverage and codes so an APU analyst can review findings without the
+    narrative inventing scope or amounts.
+    """
+    _setup_sheet(ws, "Análisis IA", "Resumen ejecutivo profesional basado únicamente en datos calculados del reporte.", 6)
+    _set_widths(ws, {"A": 24, "B": 112, "C": 18, "D": 18, "E": 18, "F": 18})
+
+    sections: list[list[str]] = []
+    if run and run.kind == "base":
+        exec_concepts = [c for c in run.base_concepts if getattr(c, "is_executable", False)]
+        total = sum(_safe_amount(c) for c in exec_concepts)
+        items = run.base_apu_items or []
+        validations = run.validations or []
+        matched = len([v for v in validations if "→" in str(v.get("message", ""))])
+        missing = len([v for v in validations if "Sin matriz" in str(v.get("message", ""))])
+        matrix_rows = len(items)
+        top = sorted(exec_concepts, key=_safe_amount, reverse=True)[:5]
+        top_codes = _short_codes(top, 5)
+        coverage = (matched / len(exec_concepts)) if exec_concepts else 0
+        sections = [
+            ["Resumen ejecutivo", f"El presupuesto base se generó desde {len(exec_concepts)} conceptos ejecutables y {matrix_rows} filas de Detalle Base. El monto calculado es {total:,.2f}. La cobertura de matriz Construdata es {coverage:.1%} ({matched} con match y {missing} sin matriz directa)."],
+            ["Hallazgos", f"La concentración económica inicial se ubica en los códigos {top_codes}. Estos conceptos deben revisarse primero porque explican la mayor exposición del presupuesto base."],
+            ["Cobertura de referencia", f"Los conceptos con matriz directa usan estructura Construdata. Los conceptos sin matriz directa quedan trazados en Validaciones y no deben tratarse como definitivos sin revisión técnica."],
+            ["Riesgo económico", "El riesgo principal está en conceptos sin matriz equivalente o con match de confianza media/baja. No se identifican sobrecostos inventados; los importes provienen del cálculo del modelo canónico."],
+            ["Acciones recomendadas", "Revisar primero los códigos de mayor importe, validar alcance técnico de los conceptos sin matriz directa y cerrar criterios de indirecto/base antes de usar el presupuesto para licitación."],
+            ["Limitaciones", "Este resumen no reemplaza la revisión de APU. Solo interpreta los datos calculados y las validaciones generadas por el motor."],
+        ]
+    elif run and run.kind == "comparison":
+        providers = run.providers or []
+        totals = [(p, _canonical_amount_from_concepts(p.concepts)) for p in providers]
+        totals_sorted = sorted(totals, key=lambda x: x[1])
+        best = totals_sorted[0] if totals_sorted else (None, 0)
+        worst = totals_sorted[-1] if totals_sorted else (None, 0)
+        no_ref = sum(len([i for i in p.apu_items if i.state == "Sin referencia"]) for p in providers)
+        total_concepts = sum(len([c for c in p.concepts if _is_valid_comparativa_concept(c)]) for p in providers)
+        total_items = sum(len(p.apu_items) for p in providers)
+        spread = ((worst[1] / best[1]) - 1) if best[1] else 0
+        sections = [
+            ["Resumen ejecutivo", f"La comparativa incluye {len(providers)} proveedor(es), {total_concepts} conceptos ejecutables y {total_items} filas APU. La mejor posición económica detectada corresponde a {best[0].name if best[0] else '—'} con {best[1]:,.2f} detectados."],
+            ["Hallazgos", f"La brecha entre menor y mayor oferta detectada es {spread:.1%}. Las partidas de mayor peso deben revisarse por impacto económico, no solo por desviación porcentual."],
+            ["Mercado", f"Se detectaron {no_ref} insumos sin referencia granular. Esos casos usan fallback del contratista y deben validarse antes de negociar."],
+            ["Riesgo económico", "El riesgo se concentra en insumos sin referencia, porcentajes financieros fuera de criterio y conceptos de alto importe dentro del Pareto de cada proveedor."],
+            ["Acciones recomendadas", "Negociar primero partidas de mayor impacto, validar rendimientos y solicitar soporte técnico para insumos sin match Construdata."],
+            ["Limitaciones", "La IA interpreta resultados calculados; no modifica importes, operadores, cantidades ni precios unitarios."],
+        ]
+    else:
+        sections = [
+            ["Resumen ejecutivo", "No hay corrida real asociada a esta hoja. El análisis ejecutivo requiere datos calculados del modelo canónico."],
+            ["Hallazgos", "Sin datos calculados no se emiten hallazgos."],
+            ["Riesgos", "Sin datos calculados no se evalúa riesgo económico."],
+            ["Recomendaciones", "Ejecutar una corrida real y revisar Validaciones."],
+            ["Limitaciones", "No se inventan datos ni importes."],
+        ]
+
     headers = ["Sección", "Contenido"]
-    for c, h in enumerate(headers, 1): ws.cell(5, c, h)
+    for c, h in enumerate(headers, 1):
+        ws.cell(5, c, h)
     _header_style(ws, 5, 1, 2)
     for r, row in enumerate(sections, 6):
         ws.cell(r, 1, row[0]).font = Font(bold=True, color=BRAND["navy"])
         ws.cell(r, 2, row[1])
-        ws.row_dimensions[r].height = 45
-    _body_style(ws, 6, 10, 1, 2)
-    _add_table(ws, "A5:B10", "AnalisisIATable", "TableStyleMedium2")
-
+        ws.cell(r, 2).alignment = Alignment(wrap_text=True, vertical="top")
+        ws.row_dimensions[r].height = 58
+    _body_style(ws, 6, 5 + len(sections), 1, 2)
+    _add_table(ws, f"A5:B{5+len(sections)}", "AnalisisIATable", "TableStyleMedium2")
 
 def _write_base_budget_report(wb):
     """Generate the independent base-budget workbook.
@@ -910,10 +986,10 @@ def report(kind: str, providers: Optional[str] = Query(default=None)):
 
 
 # -----------------------------------------------------------------------------
-# V1 alpha: real-data ingestion through the canonical model
+# V1: real-data ingestion through the canonical model
 # -----------------------------------------------------------------------------
 # These endpoints keep the V0 professional UI/Excel shell, but start replacing
-# static mocks with parsed XLSX content. The first version is intentionally
+# static demo paths with parsed XLSX content. This version is intentionally
 # tolerant: it detects headers by synonyms and maps rows into the canonical
 # model. Unsupported structures are surfaced as validations instead of being
 # silently forced into a fake format.
@@ -1357,14 +1433,14 @@ def _write_real_validaciones(ws, run: CanonicalRun):
     rows = []
     for p in run.providers:
         if not p.concepts:
-            rows.append(["Alta", "Parser conceptos", p.name, p.concepts_file, "conceptos", "0", "No se detectaron conceptos", "Validar encabezados del archivo", "Pendiente", "V1 alpha"])
+            rows.append(["Alta", "Parser conceptos", p.name, p.concepts_file, "conceptos", "0", "No se detectaron conceptos", "Validar encabezados del archivo", "Pendiente", "V1"])
         if not p.apu_items:
-            rows.append(["Alta", "Parser matriz", p.name, p.matrix_file, "matriz", "0", "No se detectaron insumos APU", "Validar estructura de matriz/APU", "Pendiente", "V1 alpha"])
+            rows.append(["Alta", "Parser matriz", p.name, p.matrix_file, "matriz", "0", "No se detectaron insumos APU", "Validar estructura de matriz/APU", "Pendiente", "V1"])
         no_match = len([i for i in p.apu_items if i.state == "Sin referencia"])
         if no_match:
-            rows.append(["Media", "Mercado", p.name, p.matrix_file, "referencia", no_match, "Insumos sin match granular en data", "Revisar descripción/unidad o cargar referencia complementaria", "Pendiente", "V1 alpha"])
+            rows.append(["Media", "Mercado", p.name, p.matrix_file, "referencia", no_match, "Insumos sin match granular en data", "Revisar descripción/unidad o cargar referencia complementaria", "Pendiente", "V1"])
     if not rows:
-        rows.append(["Baja", "Carga", "—", "—", "general", "OK", "No se generaron validaciones críticas", "Continuar revisión técnica", "Revisado", "V1 alpha"])
+        rows.append(["Baja", "Carga", "—", "—", "general", "OK", "No se generaron validaciones críticas", "Continuar revisión técnica", "Revisado", "V1"])
     for r, row in enumerate(rows, 6):
         for c, v in enumerate(row, 1): ws.cell(r, c, v)
         ws.cell(r, 1).fill = PatternFill("solid", fgColor=_status_fill(row[0]))
@@ -1377,7 +1453,7 @@ def build_real_comparison_report(run: CanonicalRun) -> Path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Resumen Ejecutivo"
-    _setup_sheet(ws, "Resumen Ejecutivo", "Reporte generado con V1 alpha desde archivos XLSX cargados y modelo canónico.", 10)
+    _setup_sheet(ws, "Resumen Ejecutivo", "Reporte generado desde archivos XLSX reales y modelo canónico.", 10)
     names = [p.name for p in run.providers]
     totals = [_canonical_amount_from_concepts(p.concepts) for p in run.providers]
     best_idx = min(range(len(totals)), key=lambda i: totals[i]) if totals else 0
@@ -1385,7 +1461,7 @@ def build_real_comparison_report(run: CanonicalRun) -> Path:
     _write_kpi(ws, 4, 3, "Mejor oferta", totals[best_idx] if totals else 0, names[best_idx] if names else "—", "E2F0D9")
     _write_kpi(ws, 4, 5, "Conceptos leídos", sum(len(p.concepts) for p in run.providers), "Catálogos", "F8FAFC")
     _write_kpi(ws, 4, 7, "Filas APU", sum(len(p.apu_items) for p in run.providers), "Matrices", "F8FAFC")
-    _write_kpi(ws, 4, 9, "Motor", "V1 alpha", "Data real inicial", "FFF2CC")
+    _write_kpi(ws, 4, 9, "Motor", "V1", "Data real", "FFF2CC")
     for cell in ["C5"]: ws[cell].number_format = MONEY_FMT
     _section_label(ws, 9, "Ranking por importes detectados en catálogo de conceptos", 10)
     headers = ["Posición", "Proveedor", "Conceptos", "Filas matriz", "Monto detectado", "Observación"]
@@ -1398,8 +1474,8 @@ def build_real_comparison_report(run: CanonicalRun) -> Path:
     _apply_formats(ws, money_cols=[5], start_row=11, end_row=10 + len(ranking))
     if ranking:
         _add_table(ws, f"A10:F{10+len(ranking)}", "RealExecutiveRanking", "TableStyleMedium2")
-    _section_label(ws, 15 + len(ranking), "Nota de alcance V1 alpha", 10)
-    ws.cell(16 + len(ranking), 1, "Esta versión ya procesa archivos reales, pero la homologación perfecta de conceptos y el matching semántico avanzado quedan para la siguiente iteración.")
+    _section_label(ws, 15 + len(ranking), "Nota de alcance V1", 10)
+    ws.cell(16 + len(ranking), 1, "Esta versión procesa archivos reales y conserva trazabilidad. La homologación semántica avanzada queda como mejora evolutiva.")
     ws.merge_cells(start_row=16+len(ranking), start_column=1, end_row=16+len(ranking), end_column=10)
 
     _write_real_comparativa(wb.create_sheet("Comparativa"), run.providers)
@@ -1409,7 +1485,7 @@ def build_real_comparison_report(run: CanonicalRun) -> Path:
         rows = canonical_rows_from_items(p.apu_items, include_market=True)
         _write_real_canonical_detail(wb.create_sheet(sheet_name), f"Detalle APU - {p.name}", rows, include_market=True, theme_color=palette[idx % len(palette)])
     _write_real_validaciones(wb.create_sheet("Validaciones"), run)
-    _write_analisis_ia(wb.create_sheet("Análisis IA"))
+    _write_analisis_ia(wb.create_sheet("Análisis IA"), run)
     for sheet in wb.worksheets:
         sheet.sheet_view.showGridLines = False
     out = REPORTS_DIR / f"apu_v1_real_comparison_{run.run_id}.xlsx"
@@ -1428,7 +1504,7 @@ def build_real_base_report(run: CanonicalRun) -> Path:
     _write_kpi(ws, 4, 3, "Conceptos", len(exec_concepts), "Unidad + cantidad > 0", "F8FAFC")
     _write_kpi(ws, 4, 5, "Detalle", len(run.base_apu_items), "Matriz base", "E2F0D9")
     _write_kpi(ws, 4, 7, "Fuente", "Construdata", "Matrices/ref.", "F8FAFC")
-    _write_kpi(ws, 4, 9, "Motor", "V1 alpha", "Data real inicial", "FFF2CC")
+    _write_kpi(ws, 4, 9, "Motor", "V1", "Data real", "FFF2CC")
     ws["A5"].number_format = MONEY_FMT
     comp = wb.create_sheet("Comparativa")
     _setup_sheet(comp, "Comparativa presupuesto base", "Conceptos reales leídos desde el catálogo base de ingeniería.", 8)
@@ -1462,7 +1538,7 @@ def build_real_base_report(run: CanonicalRun) -> Path:
         _body_style(val, 6, 5 + min(len(rows_v), 500), 1, 4)
         _add_table(val, f"A5:D{5+min(len(rows_v),500)}", "BaseValidacionesTable", "TableStyleMedium2")
     _set_widths(val, {"A":14,"B":24,"C":80,"D":18})
-    _write_analisis_ia(wb.create_sheet("Análisis IA"))
+    _write_analisis_ia(wb.create_sheet("Análisis IA"), run)
     out = REPORTS_DIR / f"apu_v1_real_base_{run.run_id}.xlsx"
     wb.save(out)
     return out
@@ -1534,7 +1610,7 @@ async def comparison_real_run(
         "projectName": projectName,
         "providers": [{"name": p.name, "concepts": len(p.concepts), "apuItems": len(p.apu_items), "conceptsFile": p.concepts_file, "matrixFile": p.matrix_file} for p in providers],
         "downloadUrl": f"/api/real-runs/{rid}/report",
-        "note": "V1 alpha: datos reales parseados con heurística inicial; homologación avanzada pendiente."
+        "note": "Datos reales parseados con modelo canónico; homologación avanzada en evolución."
     }
 
 
