@@ -718,6 +718,317 @@ def _classify_section(text: str, current: str) -> str:
     return current
 
 
+
+# -----------------------------------------------------------------------------
+# Base budget from engineering concept catalog + Construdata matrices
+# -----------------------------------------------------------------------------
+
+@dataclass
+class ConstrudataMatrixMatch:
+    concept_code: str = ""
+    concept_name: str = ""
+    concept_description: str = ""
+    unit: str = ""
+    unit_price: float | None = None
+    confidence: float = 0.0
+    rows: list[dict[str, Any]] = field(default_factory=list)
+
+
+def parse_base_concepts(path: Path) -> list[CanonicalConcept]:
+    """Parse an engineering/base concept catalog.
+
+    Unlike contractor comparison catalogs, a base concept file may not have a
+    contractor P.U. yet. For base-budget generation a valid concept is:
+    code + unit + quantity > 0 + description. The P.U./amount are calculated
+    later from the matched Construdata matrix.
+    """
+    wb, ws = _best_sheet(path)
+    try:
+        rows = [list(r) for r in ws.iter_rows(min_row=1, max_row=min(ws.max_row or 3000, 3000), values_only=True)]
+        # Detect a compact header like: Part. | Cant. | Uni. | Descripción
+        hidx = 0
+        cmap: dict[str, int] = {}
+        for idx, row in enumerate(rows[:30]):
+            cells = [_norm(_txt(v)) for v in row]
+            score = 0
+            local: dict[str, int] = {}
+            for c, t in enumerate(cells):
+                if t in {"part", "partida", "codigo", "clave"}:
+                    local["code"] = c; score += 1
+                elif t in {"cant", "cantidad", "volumen"}:
+                    local["quantity"] = c; score += 1
+                elif t in {"uni", "unidad", "und", "udm"}:
+                    local["unit"] = c; score += 1
+                elif "desc" in t or "d e s c" in t or "concepto" in t or "servicio" in t:
+                    local["description"] = c; score += 1
+                elif t in {"p u", "pu", "precio unitario", "p unitario"}:
+                    local["unit_price"] = c
+                elif "importe" in t or "subtotal" in t or "total" == t:
+                    local["amount"] = c
+            if score > len(cmap):
+                hidx, cmap = idx, local
+        if not {"code", "quantity", "unit", "description"}.issubset(set(cmap)):
+            # Fall back to generic parser, then relax executability.
+            generic = parse_concepts(path)
+            for c in generic:
+                c.is_executable = bool(_txt(c.code) and _txt(c.unit) and c.quantity is not None and c.quantity > 0)
+            return generic
+        concepts: list[CanonicalConcept] = []
+        family = ""
+        order = 0
+        for ridx, row in enumerate(rows[hidx+1:], hidx+2):
+            def get(field):
+                col = cmap.get(field)
+                return row[col] if col is not None and col < len(row) else None
+            code = _txt(get("code"))
+            desc = _txt(get("description"))
+            unit = _txt(get("unit"))
+            qty = _num(get("quantity"))
+            pu = _num(get("unit_price")) if "unit_price" in cmap else None
+            amount = _num(get("amount")) if "amount" in cmap else None
+            if not desc and not code:
+                continue
+            if code and qty is not None and qty > 0 and unit and desc:
+                if amount is None and pu is not None:
+                    amount = qty * pu
+                if pu is None and amount is not None and qty:
+                    pu = amount / qty
+                executable = True
+            else:
+                executable = False
+                if desc:
+                    family = desc
+            if not desc:
+                continue
+            order += 1
+            concepts.append(CanonicalConcept(
+                code=code,
+                description=desc,
+                unit=unit,
+                quantity=qty,
+                unit_price=pu,
+                amount=amount,
+                family=family,
+                hierarchy_level=_hierarchy_level(code, executable),
+                original_order=order,
+                is_executable=executable,
+                source_row=ridx,
+            ))
+        return concepts
+    finally:
+        wb.close()
+
+
+class ConstrudataMatrixCatalog:
+    """Index of Construdata matrices for independent base-budget generation.
+
+    The matrix file has no header. The columns used here were inferred from the
+    actual file bundled in /data:
+    5 code, 6 short name, 7 full concept description, 8 unit, 11 P.U.,
+    14 insumo code, 16 full insumo description, 17 insumo unit,
+    19 section, 20 insumo P.U., 21 quantity/rendimiento, 24 amount.
+    """
+    MAX_ROWS = 250000
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.groups: dict[str, dict[str, Any]] = {}
+        self._load()
+
+    def _load(self):
+        wb = load_workbook(self.path, read_only=True, data_only=True)
+        try:
+            ws = next((s for s in wb.worksheets if getattr(s, "sheet_state", "visible") == "visible"), wb.worksheets[0])
+            for i, row in enumerate(ws.iter_rows(values_only=True), 1):
+                if i > self.MAX_ROWS:
+                    break
+                vals = list(row)
+                if len(vals) < 24:
+                    continue
+                concept_code = _txt(vals[4])
+                concept_name = _txt(vals[5])
+                concept_desc = _txt(vals[6])
+                concept_unit = _txt(vals[7])
+                concept_pu = _num(vals[10])
+                item_code = _txt(vals[13])
+                item_desc = _txt(vals[15]) or _txt(vals[14])
+                item_unit = _txt(vals[16])
+                section = _txt(vals[18])
+                item_pu = _num(vals[19])
+                item_qty = _num(vals[20])
+                item_amount = _num(vals[23])
+                if not concept_code or not concept_desc or not item_desc:
+                    continue
+                g = self.groups.setdefault(concept_code, {
+                    "code": concept_code,
+                    "name": concept_name,
+                    "description": concept_desc,
+                    "unit": concept_unit,
+                    "unit_price": concept_pu,
+                    "tokens": _tokens(concept_name + " " + concept_desc),
+                    "rows": [],
+                })
+                g["rows"].append({
+                    "code": item_code,
+                    "description": item_desc,
+                    "unit": item_unit,
+                    "section": section,
+                    "unit_price": item_pu,
+                    "operator": "*",
+                    "quantity": item_qty,
+                    "amount": item_amount,
+                    "source_row": i,
+                })
+        finally:
+            wb.close()
+
+    def match(self, concept: CanonicalConcept) -> ConstrudataMatrixMatch | None:
+        q = _tokens((concept.description or "") + " " + (concept.code or ""))
+        if not q:
+            return None
+        unit_n = _norm(concept.unit or "")
+        best: dict[str, Any] | None = None
+        best_score = 0.0
+        for g in self.groups.values():
+            it = g["tokens"]
+            if not it:
+                continue
+            inter = len(q & it)
+            if inter == 0:
+                continue
+            coverage = inter / max(len(q), 1)
+            jaccard = inter / max(len(q | it), 1)
+            score = 0.72 * coverage + 0.28 * jaccard
+            if unit_n and _norm(g.get("unit", "")) == unit_n:
+                score += 0.14
+            # penalize incompatible units, but do not eliminate because many
+            # engineering base files use LOTE/PZA while Construdata has a per-unit matrix.
+            elif unit_n and g.get("unit"):
+                score -= 0.04
+            if score > best_score:
+                best_score, best = score, g
+        if not best or best_score < 0.20:
+            return None
+        return ConstrudataMatrixMatch(
+            concept_code=best["code"],
+            concept_name=best["name"],
+            concept_description=best["description"],
+            unit=best["unit"],
+            unit_price=best.get("unit_price"),
+            confidence=round(best_score, 2),
+            rows=list(best["rows"]),
+        )
+
+
+def _build_base_apu_for_concept(concept: CanonicalConcept, match: ConstrudataMatrixMatch | None) -> list[CanonicalApuItem]:
+    key = canonical_key(concept.code, concept.description)
+    out: list[CanonicalApuItem] = []
+    qty_service = concept.quantity or 0
+    if not match:
+        out.append(CanonicalApuItem(
+            code=concept.code,
+            concept_key=key,
+            description=f"Análisis base no encontrado: {concept.description}",
+            unit=concept.unit,
+            section="PARTIDA",
+            quantity=qty_service,
+            state="Sin matriz Construdata",
+            observation="No se encontró matriz equivalente; concepto queda para revisión técnica",
+        ))
+        return out
+
+    out.append(CanonicalApuItem(
+        code=concept.code,
+        concept_key=key,
+        description=f"Análisis base {concept.code} → {match.concept_code} - {match.concept_name}",
+        unit=concept.unit or match.unit,
+        section="PARTIDA",
+        quantity=qty_service,
+        unit_price=match.unit_price,
+        amount=(match.unit_price or 0) * qty_service if qty_service else None,
+        state="Matriz Construdata",
+        observation=f"Match {match.concept_code} · confianza {match.confidence}",
+    ))
+
+    section_totals: dict[str, float] = {}
+    current_section = ""
+    for r in match.rows:
+        sec = _canonical_section_name(r.get("section") or "", r.get("description") or "")
+        if sec != current_section:
+            current_section = sec
+            out.append(CanonicalApuItem(concept_key=key, description=sec, section="TÍTULO", state="Sección base", observation="Sección generada desde Construdata"))
+        item = CanonicalApuItem(
+            code=r.get("code", ""),
+            concept_key=key,
+            description=r.get("description", ""),
+            unit=r.get("unit", ""),
+            section=sec,
+            unit_price=r.get("unit_price"),
+            operator=r.get("operator", "*"),
+            quantity=r.get("quantity"),
+            amount=r.get("amount"),
+            state="Construdata matriz",
+            observation=f"{match.concept_code} - {match.concept_name}",
+            source_row=r.get("source_row"),
+        )
+        out.append(item)
+        if item.amount is not None:
+            section_totals[sec] = section_totals.get(sec, 0.0) + float(item.amount)
+    direct = 0.0
+    for sec in ["MATERIALES", "MANO DE OBRA", "MAQUINARIA", "BASICOS"]:
+        if sec in section_totals:
+            subtotal = section_totals[sec]
+            out.append(CanonicalApuItem(concept_key=key, description=f"SUBTOTAL {sec}", section=f"SUBTOTAL {sec}", amount=subtotal, state="Subtotal base", observation="Calculado desde filas Construdata"))
+            direct += subtotal
+    indirect = direct * 0.25
+    unit_price = direct + indirect
+    concept.unit_price = unit_price
+    concept.amount = unit_price * qty_service if qty_service else None
+    # Keep the PARTIDA header aligned with the generated base P.U., not the
+    # original Construdata matrix P.U. column. The generated base follows our
+    # current market financial rule: direct cost + indirect 25%.
+    if out:
+        out[0].unit_price = unit_price
+        out[0].amount = concept.amount
+    concept.market_unit_price = unit_price
+    concept.market_amount = concept.amount
+    concept.market_source = "construdata_matrices.xlsx"
+    concept.market_state = f"Match {match.concept_code} · confianza {match.confidence}"
+    out.extend([
+        CanonicalApuItem(concept_key=key, description="SECCIÓN FINANCIERA", section="TÍTULO", state="Financiero base", observation="Regla canónica de mercado"),
+        CanonicalApuItem(concept_key=key, description="COSTO DIRECTO", section="COSTO DIRECTO", amount=direct, state="Financiero base", observation="Suma de subtotales base"),
+        CanonicalApuItem(concept_key=key, description="INDIRECTO 25%", section="INDIRECTO", unit_price=direct, operator="*", quantity=0.25, amount=indirect, percent=0.25, state="Financiero base", observation="Indirecto de mercado fijo al 25%"),
+        CanonicalApuItem(concept_key=key, description="PRECIO UNITARIO", section="PRECIO UNITARIO", amount=unit_price, state="Financiero base", observation="Costo directo + indirecto 25%"),
+        CanonicalApuItem(concept_key=key, description="TOTAL POR SERVICIO", section="TOTAL POR SERVICIO", unit_price=unit_price, operator="*", quantity=qty_service, amount=concept.amount, state="Financiero base", observation="P.U. base × cantidad del catálogo"),
+    ])
+    return out
+
+
+def generate_base_budget_from_concepts(concepts: list[CanonicalConcept], data_dir: Path) -> tuple[list[CanonicalApuItem], list[dict[str, Any]]]:
+    """Generate a base-budget APU detail from engineering concepts.
+
+    This is the independent base-budget flow: engineering catalog concepts are
+    matched against ``construdata_matrices.xlsx`` and rendered through the same
+    canonical detail writer used by comparisons. It does not affect comparison
+    logic.
+    """
+    matrix_path = data_dir / "construdata_matrices.xlsx"
+    validations: list[dict[str, Any]] = []
+    if not matrix_path.exists():
+        return [], [{"severity": "Alta", "type": "Base Construdata", "message": "No se encontró data/construdata_matrices.xlsx"}]
+    idx = ConstrudataMatrixCatalog(matrix_path)
+    items: list[CanonicalApuItem] = []
+    executable = [c for c in concepts if c.is_executable and c.quantity is not None and c.quantity > 0 and _txt(c.unit)]
+    for c in executable:
+        match = idx.match(c)
+        if not match:
+            validations.append({"severity": "Media", "type": "Match matriz base", "message": f"Sin matriz Construdata para {c.code} - {c.description[:80]}"})
+        else:
+            validations.append({"severity": "Info", "type": "Match matriz base", "message": f"{c.code} → {match.concept_code} ({match.confidence})"})
+        items.extend(_build_base_apu_for_concept(c, match))
+    _apply_pareto_80(concepts)
+    return items, validations
+
 def _percent_base(description: str, section: str) -> str:
     n = _norm(description + " " + section)
     if "material" in n:

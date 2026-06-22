@@ -21,7 +21,7 @@ from openpyxl.comments import Comment
 
 from .real_data import (
     CanonicalProvider, CanonicalRun, ReferenceCatalog,
-    canonical_rows_from_items, parse_concepts, parse_matrix, run_id, apply_provider_market_to_concepts, classify_xlsx_role,
+    canonical_rows_from_items, parse_concepts, parse_base_concepts, parse_matrix, run_id, apply_provider_market_to_concepts, classify_xlsx_role, generate_base_budget_from_concepts,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1435,7 +1435,8 @@ def build_real_base_report(run: CanonicalRun) -> Path:
     _setup_sheet(ws, "Presupuesto Base", "Presupuesto generado desde conceptos reales y expresado en el modelo canónico.", 10)
     total = _canonical_amount_from_concepts(run.base_concepts)
     _write_kpi(ws, 4, 1, "Monto detectado", total, "Conceptos base", "F8FAFC")
-    _write_kpi(ws, 4, 3, "Conceptos", len(run.base_concepts), "Archivo ingeniería", "F8FAFC")
+    exec_concepts = [c for c in run.base_concepts if getattr(c, "is_executable", False)]
+    _write_kpi(ws, 4, 3, "Conceptos", len(exec_concepts), "Unidad + cantidad > 0", "F8FAFC")
     _write_kpi(ws, 4, 5, "Detalle", len(run.base_apu_items), "Matriz base", "E2F0D9")
     _write_kpi(ws, 4, 7, "Fuente", "Construdata", "Matrices/ref.", "F8FAFC")
     _write_kpi(ws, 4, 9, "Motor", "V1 alpha", "Data real inicial", "FFF2CC")
@@ -1445,16 +1446,33 @@ def build_real_base_report(run: CanonicalRun) -> Path:
     headers = ["Código", "Concepto", "Unidad", "Cantidad", "P.U.", "Importe", "Estado", "Observación"]
     for c, h in enumerate(headers, 1): comp.cell(5, c, h)
     _header_style(comp, 5, 1, 8)
-    for r, cpt in enumerate(run.base_concepts[:250], 6):
-        vals = [cpt.code, cpt.description, cpt.unit, cpt.quantity or "", cpt.unit_price or "", cpt.amount or "", "Leído", f"Fila origen {cpt.source_row}"]
+    base_rows = [c for c in run.base_concepts if getattr(c, "is_executable", False)]
+    for r, cpt in enumerate(base_rows[:250], 6):
+        vals = [cpt.code, cpt.description, cpt.unit, cpt.quantity or "", cpt.unit_price or "", cpt.amount or "", cpt.market_state or "Generado", f"Fila origen {cpt.source_row}"]
         for c, v in enumerate(vals, 1): comp.cell(r, c, v)
-    if run.base_concepts:
-        _body_style(comp, 6, 5 + min(len(run.base_concepts), 250), 1, 8)
-        _apply_formats(comp, money_cols=[5,6], start_row=6, end_row=5+min(len(run.base_concepts),250))
-        _add_table(comp, f"A5:H{5+min(len(run.base_concepts),250)}", "RealBaseComparativaTable", "TableStyleMedium2")
+    if base_rows:
+        _body_style(comp, 6, 5 + min(len(base_rows), 250), 1, 8)
+        _apply_formats(comp, money_cols=[5,6], start_row=6, end_row=5+min(len(base_rows),250))
+        _add_table(comp, f"A5:H{5+min(len(base_rows),250)}", "RealBaseComparativaTable", "TableStyleMedium2")
     _set_widths(comp, {"A":16,"B":58,"C":12,"D":12,"E":16,"F":18,"G":16,"H":28})
     detail_rows = canonical_rows_from_items(run.base_apu_items, include_market=False)
     _write_real_canonical_detail(wb.create_sheet("Detalle Base"), "Detalle Base - matriz canónica", detail_rows, include_market=False, theme_color="1F4E79")
+    # Base-budget validations: show match confidence and missing matrices without
+    # depending on provider-specific validation writer.
+    val = wb.create_sheet("Validaciones")
+    _setup_sheet(val, "Validaciones presupuesto base", "Trazabilidad de matches contra construdata_matrices.xlsx.", 8)
+    headers_v = ["Severidad", "Tipo", "Mensaje", "Estado"]
+    for c, h in enumerate(headers_v, 1): val.cell(5, c, h)
+    _header_style(val, 5, 1, 4)
+    rows_v = run.validations or [{"severity":"Baja", "type":"Base", "message":"Sin validaciones"}]
+    for r, v in enumerate(rows_v[:500], 6):
+        vals = [v.get("severity", "Info"), v.get("type", ""), v.get("message", ""), "Revisar" if v.get("severity") in {"Alta", "Media"} else "Informativo"]
+        for c, value in enumerate(vals, 1): val.cell(r, c, value)
+        val.cell(r, 1).fill = PatternFill("solid", fgColor=_status_fill(vals[0]))
+    if rows_v:
+        _body_style(val, 6, 5 + min(len(rows_v), 500), 1, 4)
+        _add_table(val, f"A5:D{5+min(len(rows_v),500)}", "BaseValidacionesTable", "TableStyleMedium2")
+    _set_widths(val, {"A":14,"B":24,"C":80,"D":18})
     _write_analisis_ia(wb.create_sheet("Análisis IA"))
     out = REPORTS_DIR / f"apu_v1_real_base_{run.run_id}.xlsx"
     wb.save(out)
@@ -1536,18 +1554,19 @@ async def base_budget_real_run(projectName: str = Form("Presupuesto base real"),
     rid = run_id("REAL-BASE")
     run_dir = UPLOADS_DIR / rid
     concepts_path = await _save_upload(concepts_file, run_dir)
-    catalog = ReferenceCatalog(DATA_DIR)
-    base_concepts = parse_concepts(concepts_path)
-    # Optional uploaded base matrix; if omitted, try using construdata_matrices as source placeholder.
-    base_apu_items = []
-    if matrix_file and matrix_file.filename:
-        matrix_path = await _save_upload(matrix_file, run_dir)
-        base_apu_items = parse_matrix(matrix_path, catalog)
-    run = CanonicalRun(run_id=rid, kind="base", project_name=projectName, base_concepts=base_concepts, base_apu_items=base_apu_items)
+    # Base-budget flow: read engineering concept catalog, then generate the
+    # market/base matrix from data/construdata_matrices.xlsx. The optional
+    # uploaded matrix_file is kept for backward compatibility, but the canonical
+    # V2.7 path uses Construdata matrices so base and comparison share the same
+    # detail writer without recalculating contractor matrices.
+    base_concepts = parse_base_concepts(concepts_path)
+    base_apu_items, base_validations = generate_base_budget_from_concepts(base_concepts, DATA_DIR)
+    run = CanonicalRun(run_id=rid, kind="base", project_name=projectName, base_concepts=base_concepts, base_apu_items=base_apu_items, validations=base_validations)
     REAL_RUNS[rid] = run
     report_path = build_real_base_report(run)
     REAL_REPORTS[rid] = report_path
-    return {"id": rid, "status": "COMPLETED_WITH_WARNINGS", "concepts": len(base_concepts), "apuItems": len(base_apu_items), "downloadUrl": f"/api/real-runs/{rid}/report"}
+    executable_count = len([c for c in base_concepts if getattr(c, "is_executable", False)])
+    return {"id": rid, "status": "COMPLETED_WITH_WARNINGS", "concepts": len(base_concepts), "executableConcepts": executable_count, "apuItems": len(base_apu_items), "validations": len(base_validations), "downloadUrl": f"/api/real-runs/{rid}/report"}
 
 
 @app.get("/api/real-runs/{run_id}/report")

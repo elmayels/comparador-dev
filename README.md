@@ -186,3 +186,13 @@ Las columnas de mercado en `Detalle - <Proveedor>` ahora distinguen visualmente 
 ### V2.6 - Match Construdata visible en Detalle
 
 Se agrega trazabilidad del match Construdata al modelo canónico y al Excel. Las hojas `Detalle - <Proveedor>` muestran una columna `Match Construdata` inmediatamente después de `Mercado Importe`, con `Código - Descripción` de la referencia usada para el match.
+
+### V2.7 - Presupuesto base real
+
+El endpoint `/api/base-budgets/real-run` ahora genera una matriz base desde un catálogo de conceptos de ingeniería y `data/construdata_matrices.xlsx`.
+
+- Lee conceptos válidos con unidad y cantidad > 0.
+- Busca una matriz Construdata relacionada.
+- Genera `Detalle Base` con materiales, mano de obra, maquinaria y sección financiera.
+- Usa indirecto de mercado fijo al 25%.
+- No afecta el flujo de comparativas existentes.

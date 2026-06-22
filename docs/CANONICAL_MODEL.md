@@ -340,3 +340,19 @@ Cada fila canónica `CanonicalApuItem` conserva ahora la referencia exacta usada
 El Excel de detalle renderiza una columna adicional `Match Construdata` después de `Mercado Importe`, con el formato `Código - Descripción`. Esta columna no participa en cálculos; sirve para auditoría y para facilitar la búsqueda posterior dentro de Construdata.
 
 Si el mercado es fallback puro al contratista y no existió candidato, la columna queda vacía. Si existió candidato pero fue rechazado por regla económica, se conserva el candidato en la columna y el estado indica el rechazo.
+
+## V2.7 - Presupuesto base con data real
+
+El módulo de Presupuesto Base queda conectado al mismo modelo canónico usado por Comparativa/Detalle, pero sin columnas de mercado porque el detalle generado ya representa la matriz base de mercado.
+
+Reglas:
+
+1. El archivo base se lee como catálogo de conceptos de ingeniería. Un concepto base válido requiere código, descripción, unidad y cantidad mayor a 0. No necesita P.U. del contratista.
+2. Cada concepto válido se busca contra `data/construdata_matrices.xlsx` usando descripción, unidad y señales textuales.
+3. Cuando se encuentra matriz equivalente, se genera un bloque APU canónico con secciones `MATERIALES`, `MANO DE OBRA`, `MAQUINARIA/EQUIPO`, `BASICOS` y `SECCIÓN FINANCIERA`.
+4. Los insumos, cantidades/rendimientos y precios unitarios vienen de la matriz Construdata.
+5. La sección financiera del presupuesto base usa la regla de mercado vigente: costo directo + indirecto fijo de 25%.
+6. El mismo writer de detalle renderiza `Detalle Base`; las columnas de mercado se omiten porque el carril base ya es el carril de mercado.
+7. Los matches quedan trazados en `Validaciones` con código de concepto Construdata y confianza.
+
+Esto evita crear un flujo paralelo y mantiene la matriz base asociada al modelo canónico.

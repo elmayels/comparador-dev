@@ -364,3 +364,15 @@ En cada hoja `Detalle - <Proveedor>`, el bloque de mercado queda así:
 5. Match Construdata
 
 `Match Construdata` muestra `Código - Descripción` de la referencia usada. Su objetivo es trazabilidad y búsqueda manual; no modifica los cálculos del carril de mercado.
+
+## V2.7 - Excel de Presupuesto Base
+
+Hojas esperadas:
+
+- `Resumen Ejecutivo`: KPIs de conceptos base, monto generado y fuente Construdata.
+- `Comparativa`: conceptos válidos del catálogo base con P.U. e importe generados desde `construdata_matrices.xlsx`.
+- `Detalle Base`: matriz APU canónica generada desde la matriz Construdata relacionada. Usa el mismo layout del detalle de comparativa, excluyendo columnas de mercado.
+- `Validaciones`: trazabilidad de match concepto base ↔ matriz Construdata.
+- `Análisis IA`: reservado para lectura ejecutiva del presupuesto.
+
+Regla de detalle: `Detalle Base` debe conservar la estructura por secciones: materiales, mano de obra, maquinaria/equipo, subtotales y sección financiera.
