@@ -352,3 +352,15 @@ En `Detalle - <Proveedor>`, las columnas de mercado muestran:
 - Observación de rechazo cuando existe candidato pero se descarta por precio excesivo.
 
 El Excel no decide el match; solo renderiza el estado canónico del insumo.
+
+## V2.6 - columna Match Construdata en Detalle
+
+En cada hoja `Detalle - <Proveedor>`, el bloque de mercado queda así:
+
+1. Mercado P. Unitario
+2. Mercado Op.
+3. Mercado Cantidad
+4. Mercado Importe
+5. Match Construdata
+
+`Match Construdata` muestra `Código - Descripción` de la referencia usada. Su objetivo es trazabilidad y búsqueda manual; no modifica los cálculos del carril de mercado.

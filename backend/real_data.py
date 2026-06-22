@@ -98,6 +98,9 @@ class CanonicalApuItem:
     market_quantity: float | None = None
     market_amount: float | None = None
     market_deviation: float | None = None
+    matched_reference_code: str = ""
+    matched_reference_description: str = ""
+    matched_reference_source: str = ""
     # Canonical market provenance flags. These drive the Excel visual cue:
     # market values are bold only when they come from a real reference or differ
     # from the contractor's declared value. Fallback values remain normal.
@@ -924,6 +927,9 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                     item.market_operator = op or "*"
                     item.market_amount = _calc_amount(item.market_unit_price, item.market_operator, item.market_quantity)
                     item.market_deviation = (pu / item.market_unit_price - 1) if pu is not None and item.market_unit_price else None
+                    item.matched_reference_code = str(match.get("code", "") or "")
+                    item.matched_reference_description = str(match.get("description", "") or "")
+                    item.matched_reference_source = str(match.get("source", "") or "")
                     item.market_unit_price_is_fallback = False
                     item.market_operator_is_fallback = True
                     item.market_quantity_is_fallback = True
@@ -939,6 +945,9 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                     item.market_operator = op or "*"
                     item.market_amount = amount
                     item.market_deviation = 0 if pu is not None else None
+                    item.matched_reference_code = str(match.get("code", "") or "") if match else ""
+                    item.matched_reference_description = str(match.get("description", "") or "") if match else ""
+                    item.matched_reference_source = str(match.get("source", "") or "") if match else ""
                     item.market_unit_price_is_fallback = True
                     item.market_operator_is_fallback = True
                     item.market_quantity_is_fallback = True
@@ -1418,6 +1427,7 @@ def canonical_rows_from_items(items: list[CanonicalApuItem], include_market: boo
             "mop": item.market_operator if include_market and (item.market_unit_price is not None or item.market_amount is not None) else "",
             "mqty": item.market_quantity if include_market and item.market_quantity is not None else "",
             "mamount": market_amount if include_market else "",
+            "match_ref": (f"{item.matched_reference_code} - {item.matched_reference_description}" if item.matched_reference_code and item.matched_reference_description else item.matched_reference_description or item.matched_reference_code or "") if include_market else "",
             "dev": item.market_deviation if include_market and item.market_deviation is not None else "",
             "mpu_ref": _market_is_reference_value(item, "unit_price") if include_market else False,
             "mop_ref": _market_is_reference_value(item, "operator") if include_market else False,

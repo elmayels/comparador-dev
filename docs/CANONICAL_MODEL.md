@@ -328,3 +328,15 @@ Si `precio_construdata > precio_contratista * 1.25`, el candidato se rechaza por
 ### IA / reranking
 
 La IA debe entrar después del generador de candidatos, no como búsqueda libre sobre todo Construdata. El modelo canónico debe entregar top-N candidatos con score, precio y unidad. La IA puede elegir o rechazar el mejor candidato y devolver una justificación auditable.
+
+## V2.6 - trazabilidad del match Construdata en Detalle
+
+Cada fila canónica `CanonicalApuItem` conserva ahora la referencia exacta usada para poblar el carril de mercado:
+
+- `matched_reference_code`
+- `matched_reference_description`
+- `matched_reference_source`
+
+El Excel de detalle renderiza una columna adicional `Match Construdata` después de `Mercado Importe`, con el formato `Código - Descripción`. Esta columna no participa en cálculos; sirve para auditoría y para facilitar la búsqueda posterior dentro de Construdata.
+
+Si el mercado es fallback puro al contratista y no existió candidato, la columna queda vacía. Si existió candidato pero fue rechazado por regla económica, se conserva el candidato en la columna y el estado indica el rechazo.

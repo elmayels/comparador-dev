@@ -182,3 +182,7 @@ Las columnas de mercado en `Detalle - <Proveedor>` ahora distinguen visualmente 
 - El matching de mercado usa un score híbrido por tokens, unidad y tipo de sección.
 - Se agrega una regla de seguridad: si el precio Construdata candidato supera en más de 25% al precio del contratista, se conserva el precio del contratista como fallback y se documenta el candidato rechazado.
 - Esta capa queda lista para incorporar IA/LLM como reranker sobre los candidatos, sin cambiar el modelo canónico ni el Excel writer.
+
+### V2.6 - Match Construdata visible en Detalle
+
+Se agrega trazabilidad del match Construdata al modelo canónico y al Excel. Las hojas `Detalle - <Proveedor>` muestran una columna `Match Construdata` inmediatamente después de `Mercado Importe`, con `Código - Descripción` de la referencia usada para el match.

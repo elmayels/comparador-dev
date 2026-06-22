@@ -1228,7 +1228,7 @@ def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, 
     - Structural PU rows are preserved as section titles/subtotals/totals.
     """
     base_headers = ["Código", "Concepto", "Unidad", "P. Unitario", "Op.", "Cantidad", "Importe", "%"]
-    market_headers = ["Mercado P. Unitario", "Mercado Op.", "Mercado Cantidad", "Mercado Importe"]
+    market_headers = ["Mercado P. Unitario", "Mercado Op.", "Mercado Cantidad", "Mercado Importe", "Match Construdata"]
     headers = base_headers + ([""] + market_headers if include_market else [])
     max_col = len(headers)
     ws.sheet_view.showGridLines = False
@@ -1236,7 +1236,7 @@ def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, 
 
     widths = [16, 64, 12, 16, 9, 12, 16, 11]
     if include_market:
-        widths += [4, 18, 12, 16, 18]
+        widths += [4, 18, 12, 16, 18, 46]
     for idx, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(idx)].width = width
 
@@ -1244,14 +1244,14 @@ def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, 
     if include_market:
         ws.cell(1, 9, "")
         ws.cell(1, 9).fill = PatternFill("solid", fgColor="FFFFFF")
-        _provider_group_header(ws, 1, 10, 13, "Mercado / Referencia", "475467")
+        _provider_group_header(ws, 1, 10, 14, "Mercado / Referencia", "475467")
     for c, h in enumerate(headers, 1):
         ws.cell(2, c, h)
     _header_style(ws, 2, 1, 8, fill=theme_color)
     if include_market:
         ws.cell(2, 9).fill = PatternFill("solid", fgColor="FFFFFF")
         ws.cell(2, 9).border = _thin_border("FFFFFF")
-        _header_style(ws, 2, 10, 13, fill="475467")
+        _header_style(ws, 2, 10, 14, fill="475467")
 
     if not rows:
         rows = [{"code":"", "concept":"No se detectaron filas de matriz/APU", "unit":"", "section":"VALIDACIÓN", "pu":"", "op":"", "qty":"", "amount":"", "pct":"", "mpu":"", "mop":"", "mqty":"", "mamount":"", "dev":"", "state":"Sin datos", "obs":"Revisar estructura del archivo cargado"}]
@@ -1297,6 +1297,7 @@ def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, 
                 row.get("mop", ""),
                 row.get("mqty", ""),
                 row.get("mamount", ""),
+                row.get("match_ref", ""),
             ]
         for cidx, value in enumerate(values, 1):
             ws.cell(ridx, cidx, value)
