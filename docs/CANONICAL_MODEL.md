@@ -303,15 +303,28 @@ Precio unitario mercado del análisis -> Mercado P.U. en Comparativa
 Mercado Importe -> Cantidad catálogo * Mercado P.U.
 ```
 
-## V2.4 - Regla centralizada de operador de mercado
+## V2.5 - Matching de materiales contra Construdata
 
-La matriz del contratista se conserva como dato declarado y no se recalcula. Para el carril de mercado, todo importe debe pasar por una unica funcion canonica de calculo por operador.
+El catálogo granular de referencias debe cargarse antes del cálculo de mercado. Los archivos de materiales, mano de obra y maquinaria pueden no reportar `max_row` cuando se abren en modo lectura; por eso la carga canónica debe ser secuencial, usando la primera hoja visible y detección de columnas por encabezado.
 
-Regla:
+### Flujo canónico
 
-- Si el operador declarado es `/`, el importe mercado se calcula como `Mercado P.U. / Mercado Cantidad`.
-- Si el operador declarado es `*`, el importe mercado se calcula como `Mercado P.U. * Mercado Cantidad`.
-- Si el bloque mercado no trae un operador propio, se hereda el operador del contratista.
-- No se permite default visual `*` en `market_operator` antes del calculo, porque eso puede convertir divisiones reales en multiplicaciones.
+1. Leer referencias Construdata granular:
+   - materiales
+   - mano de obra
+   - maquinaria
+2. Indexar por tokens de código y descripción.
+3. Para cada insumo APU:
+   - determinar tipo esperado por sección;
+   - generar candidatos;
+   - puntuar por tokens, unidad y cobertura;
+   - aplicar regla de precio máximo permitido;
+   - aceptar referencia o usar fallback contratista.
 
-Esto aplica a todas las filas de insumo, mano de obra, materiales, equipo, herramienta y servicios, sin condiciones por archivo o por proyecto.
+### Regla de precio máximo
+
+Si `precio_construdata > precio_contratista * 1.25`, el candidato se rechaza por defecto y se conserva el valor del contratista como mercado fallback. Esta regla evita que un match semánticamente plausible pero económicamente desproporcionado contamine el análisis.
+
+### IA / reranking
+
+La IA debe entrar después del generador de candidatos, no como búsqueda libre sobre todo Construdata. El modelo canónico debe entregar top-N candidatos con score, precio y unidad. La IA puede elegir o rechazar el mejor candidato y devolver una justificación auditable.

@@ -140,10 +140,50 @@ class CanonicalRun:
 
 
 class ReferenceCatalog:
+    """Granular Construdata reference loader and matcher.
+
+    The previous implementation relied on ``ws.max_row`` while opening the
+    Construdata files in read-only mode. Several of those files report
+    ``max_row=None`` (materials, machinery and one labor file), so they were
+    silently skipped and only a small labor file was loaded. That is why
+    materials almost never matched. This loader reads rows sequentially from
+    the first visible sheet and detects the relevant columns from the header.
+    """
+
+    MAX_ROWS_PER_FILE = 200000
+    MAX_MARKET_OVER_CONTRACTOR_FACTOR = 1.25
+
     def __init__(self, data_dir: Path):
         self.items: list[dict[str, Any]] = []
         self.index: dict[str, list[dict[str, Any]]] = {}
         self.load(data_dir)
+
+    def _column_map(self, header: list[Any], kind: str) -> dict[str, int | None]:
+        normed = [_norm(_txt(h)) for h in header]
+
+        def find(*needles: str) -> int | None:
+            for i, h in enumerate(normed):
+                if all(n in h for n in needles):
+                    return i
+            return None
+
+        code_idx = find("codigo") or find("code")
+        desc_idx = find("descripcion", "completa") or find("descripcion") or find("concepto")
+        unit_idx = find("unidad")
+        price_idx = None
+        if kind == "MATERIAL":
+            price_idx = find("costo")
+            # Prefer the final total cost column over intermediate cost columns.
+            costo_cols = [i for i, h in enumerate(normed) if h == "costo" or h.endswith(" costo")]
+            if costo_cols:
+                price_idx = costo_cols[-1]
+        elif kind == "MO":
+            price_idx = find("costototal") or find("costo", "total") or find("salario", "real")
+        elif kind == "MAQUINARIA":
+            price_idx = find("costo")
+        if price_idx is None:
+            price_idx = find("precio") or find("pu")
+        return {"code": code_idx, "description": desc_idx, "unit": unit_idx, "price": price_idx}
 
     def load(self, data_dir: Path):
         for path in data_dir.glob("*.xlsx"):
@@ -153,24 +193,49 @@ class ReferenceCatalog:
             kind = "MATERIAL" if "material" in lname else "MO" if "mano" in lname or "obra" in lname else "MAQUINARIA" if "maquinaria" in lname else "REF"
             try:
                 wb = load_workbook(path, read_only=True, data_only=True)
-                for ws in wb.worksheets[:3]:
-                    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 3000), values_only=True):
-                        vals = list(row)
-                        texts = [_txt(v) for v in vals if _txt(v)]
-                        nums = [_num(v) for v in vals if _num(v) is not None]
-                        desc = max(texts, key=len) if texts else ""
-                        # prefer plausible unit price: positive, not tiny, not row index-like
-                        price = next((n for n in reversed(nums) if n and n > 1), None)
-                        if desc and price:
-                            item = {"description": desc, "price": price, "kind": kind, "source": path.name, "tokens": _tokens(desc)}
-                            self.items.append(item)
-                            for tok in item["tokens"]:
-                                self.index.setdefault(tok, []).append(item)
+                # Canonical rule: first visible sheet only.
+                ws = next((s for s in wb.worksheets if getattr(s, "sheet_state", "visible") == "visible"), wb.worksheets[0])
+                rows_iter = ws.iter_rows(values_only=True)
+                header = next(rows_iter, None)
+                if not header:
+                    wb.close()
+                    continue
+                cmap = self._column_map(list(header), kind)
+                loaded = 0
+                for row_num, row in enumerate(rows_iter, start=2):
+                    if row_num > self.MAX_ROWS_PER_FILE:
+                        break
+                    vals = list(row)
+                    desc_idx = cmap.get("description")
+                    price_idx = cmap.get("price")
+                    code_idx = cmap.get("code")
+                    unit_idx = cmap.get("unit")
+                    desc = _txt(vals[desc_idx]) if desc_idx is not None and desc_idx < len(vals) else ""
+                    code = _txt(vals[code_idx]) if code_idx is not None and code_idx < len(vals) else ""
+                    unit = _txt(vals[unit_idx]) if unit_idx is not None and unit_idx < len(vals) else ""
+                    price = _num(vals[price_idx]) if price_idx is not None and price_idx < len(vals) else None
+                    if not desc or price is None or price <= 0:
+                        continue
+                    tokens = _tokens(desc) | _tokens(code)
+                    item = {
+                        "code": code,
+                        "description": desc,
+                        "unit": unit,
+                        "price": float(price),
+                        "kind": kind,
+                        "source": path.name,
+                        "row": row_num,
+                        "tokens": tokens,
+                    }
+                    self.items.append(item)
+                    loaded += 1
+                    for tok in item["tokens"]:
+                        self.index.setdefault(tok, []).append(item)
                 wb.close()
             except Exception:
                 continue
 
-    def match(self, description: str, section: str = "") -> dict[str, Any] | None:
+    def match(self, description: str, section: str = "", contractor_price: float | None = None, unit: str = "") -> dict[str, Any] | None:
         q = _tokens(description)
         if not q:
             return None
@@ -188,8 +253,8 @@ class ReferenceCatalog:
         for tok in q:
             for item in self.index.get(tok, []):
                 candidates[id(item)] = item
-        # Fallback to full scan only for very sparse/rare token queries.
         iterable = candidates.values() if candidates else self.items
+        unit_n = _norm(unit)
         for item in iterable:
             if wanted and item["kind"] != wanted:
                 continue
@@ -197,13 +262,25 @@ class ReferenceCatalog:
             if not it:
                 continue
             inter = len(q & it)
-            score = inter / max(len(q), 1)
+            if inter == 0:
+                continue
+            # Blend coverage over the contractor text with Jaccard to avoid
+            # loose one-word matches, and reward unit equality where available.
+            coverage = inter / max(len(q), 1)
+            jaccard = inter / max(len(q | it), 1)
+            score = 0.70 * coverage + 0.30 * jaccard
+            if unit_n and _norm(item.get("unit", "")) == unit_n:
+                score += 0.08
             if score > best_score:
                 best_score = score
                 best = item
-        if best and best_score >= 0.35:
-            return {**best, "confidence": round(best_score, 2)}
-        return None
+        if not best or best_score < 0.32:
+            return None
+        result = {**best, "confidence": round(best_score, 2)}
+        if contractor_price is not None and contractor_price > 0 and result["price"] > contractor_price * self.MAX_MARKET_OVER_CONTRACTOR_FACTOR:
+            result["rejected"] = True
+            result["reject_reason"] = f"Precio Construdata {result['price']:.2f} supera {self.MAX_MARKET_OVER_CONTRACTOR_FACTOR:.2f}x el precio contratista {contractor_price:.2f}"
+        return result
 
 
 def _sheet_score(ws) -> int:
@@ -840,8 +917,8 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                 source_row=ridx,
             )
             if (item.market_unit_price is None and item.market_amount is None) and catalog:
-                match = catalog.match(desc, section)
-                if match:
+                match = catalog.match(desc, section, contractor_price=pu, unit=unit)
+                if match and not match.get("rejected"):
                     item.market_unit_price = float(match["price"])
                     item.market_quantity = qty
                     item.market_operator = op or "*"
@@ -852,7 +929,22 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                     item.market_quantity_is_fallback = True
                     item.market_amount_is_fallback = False
                     item.state = "Match mercado"
-                    item.observation = f"{match['source']} · confianza {match['confidence']}"
+                    item.observation = f"{match['source']} fila {match.get('row','')} · confianza {match['confidence']}"
+                elif match and match.get("rejected"):
+                    # Candidate exists, but it is too expensive compared with the contractor.
+                    # Business rule: keep contractor value as market fallback when
+                    # Construdata is materially above the contractor price.
+                    item.market_unit_price = pu
+                    item.market_quantity = qty
+                    item.market_operator = op or "*"
+                    item.market_amount = amount
+                    item.market_deviation = 0 if pu is not None else None
+                    item.market_unit_price_is_fallback = True
+                    item.market_operator_is_fallback = True
+                    item.market_quantity_is_fallback = True
+                    item.market_amount_is_fallback = True
+                    item.state = "Candidato rechazado - usa contratista"
+                    item.observation = f"{match.get('source','Construdata')} fila {match.get('row','')} · {match.get('reject_reason','precio fuera de rango')}"
                 else:
                     # Canonical fallback: when Construdata has no usable
                     # reference for an insumo, market columns must still be

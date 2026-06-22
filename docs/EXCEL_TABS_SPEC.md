@@ -342,13 +342,13 @@ La hoja `Comparativa` debe mostrar solo conceptos del catálogo. Si un workbook 
 
 Si el catálogo usa códigos como `1.1.1` y la matriz usa códigos como `BS.01`, el Excel no debe quedar sin mercado. El modelo canónico debe vincular ambos por orden/unidad/cantidad/importe y luego subir el precio unitario de mercado calculado en el detalle hacia las columnas `Mercado P.U.` y `Mercado Importe` de `Comparativa`.
 
-## V2.4 - Operador de mercado en Detalle
+## V2.5 - Visualización de materiales con match o fallback
 
-En las hojas `Detalle - <Proveedor>`, las columnas de mercado deben respetar el operador de la fila. Cuando la columna `Mercado Op.` no venga declarada, se debe mostrar y usar el mismo operador declarado por el contratista.
+En `Detalle - <Proveedor>`, las columnas de mercado muestran:
 
-Ejemplo:
+- Precio Construdata aceptado cuando el candidato pasa el score y la regla de precio.
+- Valor del contratista como fallback cuando no hay candidato o cuando el candidato excede el umbral económico.
+- Observación con fuente, fila y confianza cuando hay match.
+- Observación de rechazo cuando existe candidato pero se descarta por precio excesivo.
 
-- Contratista: `CUADRILLA No 3`, `P.U. = 775.84`, `Op. = /`, `Cantidad = 48`, `Importe = 16.16`.
-- Mercado: `Mercado P.U. = 910.49`, `Mercado Op. = /`, `Mercado Cantidad = 48`, `Mercado Importe = 18.97`.
-
-Nunca debe calcularse como `910.49 * 48` si el operador declarado es `/`.
+El Excel no decide el match; solo renderiza el estado canónico del insumo.

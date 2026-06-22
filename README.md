@@ -175,8 +175,10 @@ Las columnas de mercado en `Detalle - <Proveedor>` ahora distinguen visualmente 
 - Se agregó vínculo canónico catálogo ↔ matriz cuando los códigos no coinciden.
 - Caso validado: catálogo `1.1.1` vinculado con matriz `BS.01`; la `Comparativa` ahora llena `Mercado P.U.` y `Mercado Importe` desde el detalle de mercado.
 
-### V2.4 - Correccion operador mercado
+## V2.5 - Materiales Construdata + motor de candidatos
 
-- Centraliza el calculo de `Mercado Importe` en `_calc_amount()`.
-- Hereda el operador del contratista cuando el mercado no declara operador propio.
-- Corrige casos como `CUADRILLA No 3 (1 AYUDANTE GENERAL) / 48`, que antes podia salir como multiplicacion.
+- Corrige la carga de referencias granulares de Construdata cuando los workbooks reportan `max_row=None` en modo lectura. Esto afectaba especialmente materiales, maquinaria y un archivo de mano de obra.
+- `ReferenceCatalog` ahora lee la primera hoja visible secuencialmente y detecta columnas por encabezado: código, descripción, unidad y costo.
+- El matching de mercado usa un score híbrido por tokens, unidad y tipo de sección.
+- Se agrega una regla de seguridad: si el precio Construdata candidato supera en más de 25% al precio del contratista, se conserva el precio del contratista como fallback y se documenta el candidato rechazado.
+- Esta capa queda lista para incorporar IA/LLM como reranker sobre los candidatos, sin cambiar el modelo canónico ni el Excel writer.
