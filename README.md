@@ -194,3 +194,20 @@ Se agrega trazabilidad del match Construdata al modelo canónico y al Excel. Las
 - El archivo cargado se envía como `concepts_file` y se parsea con `parse_base_concepts`.
 - El reporte descargado usa `build_real_base_report` y contiene conceptos/Detalle Base generados desde el archivo real + `data/construdata_matrices.xlsx`.
 - `/api/reports/base` se conserva solo como demo legado; no es el flujo canónico de presupuesto base real.
+
+
+## V2.9 - Prueba correcta del presupuesto base real
+
+La pantalla `Presupuestos base` ya no muestra historicos mock. Para probar el flujo real:
+
+1. Ejecutar la app con `python run.py`.
+2. Entrar a la webapp y usar `Dashboard` -> `Nuevo presupuesto base real`, o abrir la ruta/hash `#base-budgets-new`.
+3. Cargar un unico archivo `.xlsx` de catalogo de conceptos, por ejemplo `secador-nestle.xlsx`.
+4. Presionar `Generar presupuesto base real`.
+5. El frontend debe llamar a `POST /api/base-budgets/real-run` con el campo `concepts_file`.
+6. La pantalla de resultado debe descargar desde `/api/real-runs/{run_id}/report`, no desde `/api/reports/base`.
+
+Senales de que el flujo es real:
+- El Excel debe contener `Detalle Base`.
+- El resumen debe mostrar conceptos reales del archivo, no proyectos demo.
+- El endpoint `/api/reports/base` queda solo como legado/demo y no se usa desde la UI de presupuesto base.
