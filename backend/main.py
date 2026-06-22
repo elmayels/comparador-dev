@@ -1317,6 +1317,12 @@ def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, 
 
         fill_obj = detail_fills.get(fill, detail_fills["FFFFFF"])
         font_obj = bold_font if bold else normal_font
+        market_ref_cols = {
+            10: bool(row.get("mpu_ref")),
+            11: bool(row.get("mop_ref")),
+            12: bool(row.get("mqty_ref")),
+            13: bool(row.get("mamount_ref")),
+        }
         for c in range(1, max_col + 1):
             cell = ws.cell(ridx, c)
             if include_market and c == 9:
@@ -1326,7 +1332,13 @@ def _write_real_canonical_detail(ws, title: str, rows: list[dict[str, Any]], *, 
                 cell.fill = fill_obj
                 cell.border = detail_border
             cell.alignment = top_alignment
-            cell.font = font_obj
+            # Market columns J:M are emphasized only when the canonical row says
+            # the market value is reference-based or different from contractor.
+            # Fallback values copied from contractor stay visually normal.
+            if include_market and c in market_ref_cols and market_ref_cols[c]:
+                cell.font = bold_font
+            else:
+                cell.font = font_obj
 
     last = min(2 + len(rows), 6002)
     money_cols = [4, 7]

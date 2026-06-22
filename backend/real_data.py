@@ -98,6 +98,13 @@ class CanonicalApuItem:
     market_quantity: float | None = None
     market_amount: float | None = None
     market_deviation: float | None = None
+    # Canonical market provenance flags. These drive the Excel visual cue:
+    # market values are bold only when they come from a real reference or differ
+    # from the contractor's declared value. Fallback values remain normal.
+    market_unit_price_is_fallback: bool = False
+    market_operator_is_fallback: bool = False
+    market_quantity_is_fallback: bool = False
+    market_amount_is_fallback: bool = False
     state: str = ""
     observation: str = ""
     source_row: int | None = None
@@ -784,6 +791,10 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                     item.market_operator = op or "*"
                     item.market_amount = item.market_unit_price * qty if qty is not None else None
                     item.market_deviation = (pu / item.market_unit_price - 1) if pu is not None and item.market_unit_price else None
+                    item.market_unit_price_is_fallback = False
+                    item.market_operator_is_fallback = True
+                    item.market_quantity_is_fallback = True
+                    item.market_amount_is_fallback = False
                     item.state = "Match mercado"
                     item.observation = f"{match['source']} · confianza {match['confidence']}"
                 else:
@@ -797,6 +808,10 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                     item.market_operator = op or "*"
                     item.market_amount = amount
                     item.market_deviation = 0 if pu is not None else None
+                    item.market_unit_price_is_fallback = True
+                    item.market_operator_is_fallback = True
+                    item.market_quantity_is_fallback = True
+                    item.market_amount_is_fallback = True
                     item.state = "Sin referencia - usa contratista"
                     item.observation = "Sin match en data; mercado usa valor del contratista"
             out.append(item)
@@ -993,6 +1008,42 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                 continue
 
 
+
+def _values_equal(a: Any, b: Any, *, tolerance: float = 1e-7) -> bool:
+    if a in (None, "") and b in (None, ""):
+        return True
+    an = _num(a)
+    bn = _num(b)
+    if an is not None and bn is not None:
+        return abs(an - bn) <= tolerance
+    return str(a or "").strip() == str(b or "").strip()
+
+
+def _market_is_reference_value(item: CanonicalApuItem, field: str) -> bool:
+    """Return True when a market field should be emphasized in Excel.
+
+    Canonical rule: fallback market values are merely contractor values copied to
+    avoid blanks and must not be emphasized. Reference values, declared market
+    values, or calculated market values that differ from the contractor are
+    emphasized. This keeps style driven by the canonical row semantics, not by a
+    hardcoded Excel patch.
+    """
+    if field == "unit_price":
+        mv, cv, fb = item.market_unit_price, item.unit_price, item.market_unit_price_is_fallback
+    elif field == "operator":
+        mv, cv, fb = item.market_operator, item.operator, item.market_operator_is_fallback
+    elif field == "quantity":
+        mv, cv, fb = item.market_quantity, item.quantity, item.market_quantity_is_fallback
+    elif field == "amount":
+        mv, cv, fb = item.market_amount, item.amount, item.market_amount_is_fallback
+    else:
+        return False
+    if mv in (None, ""):
+        return False
+    if fb and _values_equal(mv, cv):
+        return False
+    return (not fb) or (not _values_equal(mv, cv))
+
 def canonical_rows_from_items(items: list[CanonicalApuItem], include_market: bool = True) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     # If the parser already preserved PU structural rows (PARTIDA, TÍTULO,
@@ -1025,6 +1076,10 @@ def canonical_rows_from_items(items: list[CanonicalApuItem], include_market: boo
             "mqty": item.market_quantity if include_market and item.market_quantity is not None else "",
             "mamount": market_amount if include_market else "",
             "dev": item.market_deviation if include_market and item.market_deviation is not None else "",
+            "mpu_ref": _market_is_reference_value(item, "unit_price") if include_market else False,
+            "mop_ref": _market_is_reference_value(item, "operator") if include_market else False,
+            "mqty_ref": _market_is_reference_value(item, "quantity") if include_market else False,
+            "mamount_ref": _market_is_reference_value(item, "amount") if include_market else False,
             "state": item.state,
             "obs": item.observation,
         })

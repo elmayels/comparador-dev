@@ -143,3 +143,7 @@ Reglas aplicadas:
 - `Comparativa` no incluye insumos ni líneas financieras de matriz.
 - `Detalle - <Proveedor>` conserva la matriz/APU estructurada.
 - Si no hay referencia Construdata, mercado usa el valor del contratista como fallback trazable.
+
+### V1.9 - Detalle: negritas por referencia real de mercado
+
+Las columnas de mercado en `Detalle - <Proveedor>` ahora distinguen visualmente los valores con referencia real frente a los valores fallback. Cuando el mercado usa el mismo valor del contratista por falta de referencia, la celda queda normal; cuando hay valor de referencia o diferencia real, se muestra en negrita.

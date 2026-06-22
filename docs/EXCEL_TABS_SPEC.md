@@ -293,3 +293,20 @@ La hoja de detalle pinta la matriz/APU estructurada con base en `CanonicalApuIte
 - El bloque de mercado se llena desde match Construdata cuando existe.
 - Si no hay match, el bloque de mercado usa el precio/costo del contratista y lo marca como fallback.
 - Las filas financieras calculan mercado desde el modelo canónico, no desde fórmulas inventadas en el writer.
+
+## V1.9 - Negritas en columnas de mercado del Detalle
+
+En `Detalle - <Proveedor>`, las columnas J:M corresponden al bloque de mercado. Para mejorar la lectura:
+
+- Si un valor de mercado viene de referencia real o difiere del contratista, se muestra en **negrita**.
+- Si el valor de mercado es fallback al valor del contratista, se muestra normal.
+- La regla aplica de forma independiente por columna:
+  - `Mercado P. Unitario`
+  - `Mercado Op.`
+  - `Mercado Cantidad`
+  - `Mercado Importe`
+
+Ejemplo:
+
+- Si Construdata tiene precio distinto pero no cantidad, `Mercado P. Unitario` y `Mercado Importe` van en negrita; `Mercado Cantidad` queda normal si se tomó del contratista.
+- Si no hay referencia y todo el mercado usa fallback del contratista, ninguna celda de mercado se resalta.

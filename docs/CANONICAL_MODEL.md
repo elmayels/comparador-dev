@@ -234,3 +234,20 @@ El parser de matriz ya no depende solo de columnas fijas. Detecta dos familias d
 - La matriz/APU se expresa en `CanonicalApuItem` y se renderiza únicamente en `Detalle - <Proveedor>`.
 - Cuando no existe match granular contra Construdata, el mercado del insumo usa el valor declarado por el contratista y marca estado `Sin referencia - usa contratista`. Esto evita columnas de mercado vacías y conserva trazabilidad.
 - Los cálculos financieros de mercado se derivan dentro del modelo canónico: subtotales de sección, costo directo, indirectos, financiamiento, utilidad, subtotal financiero y precio unitario.
+
+## V1.9 - Proveniencia visual de columnas de mercado
+
+Regla canónica para el tab `Detalle - <Proveedor>`:
+
+- La matriz del contratista se lee y se muestra tal como viene declarada.
+- El sistema no recalcula los valores del contratista.
+- Las columnas de mercado (`Mercado P. Unitario`, `Mercado Op.`, `Mercado Cantidad`, `Mercado Importe`) se calculan desde referencia Construdata o, si no existe referencia, usan fallback al valor del contratista.
+- Cada fila APU conserva flags de proveniencia:
+  - `market_unit_price_is_fallback`
+  - `market_operator_is_fallback`
+  - `market_quantity_is_fallback`
+  - `market_amount_is_fallback`
+- El Excel renderiza en negrita únicamente los valores de mercado que no son fallback o que difieren del valor declarado por el contratista.
+- Los valores de mercado copiados como fallback permanecen visualmente normales.
+
+Esta regla evita que el estilo sea un parche del Excel writer: el resaltado visual depende de la semántica del modelo canónico de mercado.
