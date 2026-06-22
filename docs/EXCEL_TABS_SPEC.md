@@ -384,3 +384,12 @@ Regla de detalle: `Detalle Base` debe conservar la estructura por secciones: mat
 - El archivo cargado se envía como `concepts_file` y se parsea con `parse_base_concepts`.
 - El reporte descargado usa `build_real_base_report` y contiene conceptos/Detalle Base generados desde el archivo real + `data/construdata_matrices.xlsx`.
 - `/api/reports/base` se conserva solo como demo legado; no es el flujo canónico de presupuesto base real.
+
+
+## V3.0 - Presupuesto base real blindado contra mock/caché
+
+- La ruta antigua `/api/base-budgets/mock-run` ya no genera datos demo: ahora ejecuta el mismo motor real usando el primer `.xlsx` cargado.
+- La ruta antigua `/api/reports/base` ya no genera workbook demo; si existe una corrida real de base, devuelve el último reporte real. Si no existe, responde error 409 para evitar entregar data mock por accidente.
+- El frontend carga `/assets/app.v30.js?v=30-real-base` para romper caché del navegador.
+- `app.js` y `app.v30.js` contienen el flujo real: botón `Generar presupuesto base real`, endpoint `/api/base-budgets/real-run` y descarga `/api/real-runs/{run_id}/report`.
+- Validado con `secador-nestle.xlsx`: 83 conceptos leídos, 61 ejecutables, 1,458 filas en `Detalle Base`.

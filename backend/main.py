@@ -138,32 +138,16 @@ def _validate_xlsx_uploads(files: List[UploadFile]) -> list[str]:
     return names
 
 
+# Compatibility route: older frontend bundles used /api/base-budgets/mock-run
+# and posted the file under the field name "files".  This route is now a real
+# base-budget execution path so a cached/old UI cannot generate the legacy mock
+# workbook by accident.
 @app.post("/api/base-budgets/mock-run")
-async def base_budget_mock_run(projectName: str = Form("Presupuesto base demo"), files: List[UploadFile] = File(default=[])):
-    names = _validate_xlsx_uploads(files)
-    refs = _list_data_references()
-    matrix = next((r for r in refs if r["kind"] == "CONSTRUDATA_MATRICES_BASE_BUDGET"), None)
-    return {
-        "id": f"BB-{int(time.time())}",
-        "projectName": projectName,
-        "status": "COMPLETED_WITH_WARNINGS",
-        "uploadedFiles": names,
-        "construdataMatrix": matrix["name"] if matrix else None,
-        "kpis": {
-            "estimatedTotal": 56520000,
-            "totalConcepts": 128,
-            "matchedConcepts": 104,
-            "reviewConcepts": 17,
-            "unmatchedConcepts": 7,
-            "duplicatedConcepts": 3,
-            "estimationRisk": "Medio",
-        },
-        "findings": [
-            "La matriz base se generó como presupuesto independiente; no se asocia obligatoriamente a una licitación.",
-            "17 conceptos tienen match medio y requieren revisión técnica antes de usar el presupuesto.",
-            "7 conceptos no encontraron referencia directa en matrices Construdata.",
-        ],
-    }
+async def base_budget_mock_run(projectName: str = Form("Presupuesto base real"), files: List[UploadFile] = File(default=[])):
+    if not files:
+        raise HTTPException(status_code=400, detail="Carga un archivo .xlsx de conceptos para generar el presupuesto base real")
+    _validate_xlsx_uploads(files)
+    return await _execute_base_budget_real(projectName, files[0])
 
 
 @app.post("/api/comparisons/mock-run")
@@ -914,6 +898,11 @@ def build_report(kind: str, provider_names: Optional[List[str]] = None) -> Path:
 def report(kind: str, providers: Optional[str] = Query(default=None)):
     if kind not in {"base", "comparison"}:
         raise HTTPException(status_code=400, detail="kind debe ser base o comparison")
+    if kind == "base":
+        latest_base = REAL_REPORTS.get("LATEST_BASE")
+        if latest_base and latest_base.exists():
+            return FileResponse(latest_base, filename=latest_base.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        raise HTTPException(status_code=409, detail="No hay presupuesto base real generado en esta sesión. Usa /api/base-budgets/real-run con un .xlsx.")
     provider_names = [p.strip() for p in providers.split(",") if p.strip()] if providers else None
     path = build_report(kind, provider_names)
     return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -1549,24 +1538,40 @@ async def comparison_real_run(
     }
 
 
-@app.post("/api/base-budgets/real-run")
-async def base_budget_real_run(projectName: str = Form("Presupuesto base real"), concepts_file: UploadFile = File(...), matrix_file: UploadFile | None = File(default=None)):
+async def _execute_base_budget_real(projectName: str, concepts_file: UploadFile):
+    if not concepts_file.filename or not concepts_file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail=f"Archivo no permitido: {concepts_file.filename}. Solo se acepta .xlsx")
     rid = run_id("REAL-BASE")
     run_dir = UPLOADS_DIR / rid
     concepts_path = await _save_upload(concepts_file, run_dir)
-    # Base-budget flow: read engineering concept catalog, then generate the
-    # market/base matrix from data/construdata_matrices.xlsx. The optional
-    # uploaded matrix_file is kept for backward compatibility, but the canonical
-    # V2.7 path uses Construdata matrices so base and comparison share the same
-    # detail writer without recalculating contractor matrices.
     base_concepts = parse_base_concepts(concepts_path)
     base_apu_items, base_validations = generate_base_budget_from_concepts(base_concepts, DATA_DIR)
     run = CanonicalRun(run_id=rid, kind="base", project_name=projectName, base_concepts=base_concepts, base_apu_items=base_apu_items, validations=base_validations)
     REAL_RUNS[rid] = run
     report_path = build_real_base_report(run)
     REAL_REPORTS[rid] = report_path
+    # Last real base report is also exposed through the legacy report URL for
+    # old/cached UI bundles. This eliminates the demo workbook path entirely for
+    # base budgets once a real run has been executed.
+    REAL_REPORTS["LATEST_BASE"] = report_path
     executable_count = len([c for c in base_concepts if getattr(c, "is_executable", False)])
-    return {"id": rid, "status": "COMPLETED_WITH_WARNINGS", "concepts": len(base_concepts), "executableConcepts": executable_count, "apuItems": len(base_apu_items), "validations": len(base_validations), "downloadUrl": f"/api/real-runs/{rid}/report"}
+    return {
+        "id": rid,
+        "status": "COMPLETED_WITH_WARNINGS",
+        "projectName": projectName,
+        "concepts": len(base_concepts),
+        "executableConcepts": executable_count,
+        "apuItems": len(base_apu_items),
+        "validations": len(base_validations),
+        "downloadUrl": f"/api/real-runs/{rid}/report",
+        "sourceFile": concepts_file.filename,
+        "mode": "REAL",
+    }
+
+
+@app.post("/api/base-budgets/real-run")
+async def base_budget_real_run(projectName: str = Form("Presupuesto base real"), concepts_file: UploadFile = File(...), matrix_file: UploadFile | None = File(default=None)):
+    return await _execute_base_budget_real(projectName, concepts_file)
 
 
 @app.get("/api/real-runs/{run_id}/report")

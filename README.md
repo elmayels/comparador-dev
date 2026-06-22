@@ -211,3 +211,12 @@ Senales de que el flujo es real:
 - El Excel debe contener `Detalle Base`.
 - El resumen debe mostrar conceptos reales del archivo, no proyectos demo.
 - El endpoint `/api/reports/base` queda solo como legado/demo y no se usa desde la UI de presupuesto base.
+
+
+## V3.0 - Presupuesto base real blindado contra mock/caché
+
+- La ruta antigua `/api/base-budgets/mock-run` ya no genera datos demo: ahora ejecuta el mismo motor real usando el primer `.xlsx` cargado.
+- La ruta antigua `/api/reports/base` ya no genera workbook demo; si existe una corrida real de base, devuelve el último reporte real. Si no existe, responde error 409 para evitar entregar data mock por accidente.
+- El frontend carga `/assets/app.v30.js?v=30-real-base` para romper caché del navegador.
+- `app.js` y `app.v30.js` contienen el flujo real: botón `Generar presupuesto base real`, endpoint `/api/base-budgets/real-run` y descarga `/api/real-runs/{run_id}/report`.
+- Validado con `secador-nestle.xlsx`: 83 conceptos leídos, 61 ejecutables, 1,458 filas en `Detalle Base`.
