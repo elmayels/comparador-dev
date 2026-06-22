@@ -426,6 +426,40 @@ MATRIX_SYNONYMS = {
 }
 
 
+# Recommended percentage quantities/rates derived from construdata_matrices.xlsx.
+# These are canonical market-quantity references for percentage rows when no
+# equivalent Construdata matrix has been matched yet. The contractor lane remains
+# untouched; these values affect only Mercado Cantidad.
+CONSTRUDATA_PERCENT_DEFAULTS = {
+    "%MO1": {"qty": 0.03, "label": "HERRAMIENTA MENOR", "source": "construdata_matrices default %MO1"},
+    "%HERR": {"qty": 0.03, "label": "HERRAMIENTA MENOR", "source": "construdata_matrices default %MO1"},
+    "%MO2": {"qty": 0.05, "label": "ANDAMIOS", "source": "construdata_matrices default %MO2"},
+    "%MO3": {"qty": 0.05, "label": "MATERIALES MENORES", "source": "construdata_matrices default %MO3"},
+    "%MO5": {"qty": 0.02, "label": "EQUIPO DE SEGURIDAD", "source": "construdata_matrices default %MO5"},
+    "%EPP": {"qty": 0.02, "label": "EQUIPO DE SEGURIDAD", "source": "construdata_matrices default %MO5"},
+}
+
+
+def _recommended_percent_default(item: "CanonicalApuItem") -> dict[str, Any] | None:
+    """Return Construdata recommended percentage rate for known % rows.
+
+    This is intentionally based on code/semantic concept, not on any random
+    percent sign inside long descriptions. A service such as BORO-01 may mention
+    "10%" in its text, but it is not a percentage row.
+    """
+    code = str(item.code or "").strip().upper()
+    if code in CONSTRUDATA_PERCENT_DEFAULTS:
+        return CONSTRUDATA_PERCENT_DEFAULTS[code]
+    d = _norm(item.description or "")
+    if "herramienta menor" in d:
+        return CONSTRUDATA_PERCENT_DEFAULTS["%MO1"]
+    if "andamio" in d:
+        return CONSTRUDATA_PERCENT_DEFAULTS["%MO2"]
+    if "materiales menores" in d or "material menor" in d:
+        return CONSTRUDATA_PERCENT_DEFAULTS["%MO3"]
+    if "equipo de seguridad" in d or "equipo de proteccion" in d or "proteccion personal" in d or d == "epp":
+        return CONSTRUDATA_PERCENT_DEFAULTS["%MO5"]
+    return None
 
 
 def classify_xlsx_role(path: Path) -> str:
@@ -757,7 +791,7 @@ def parse_matrix(path: Path, catalog: ReferenceCatalog | None = None) -> list[Ca
                 current_concept_key = canonical_key(code, desc)
 
             section = current_section or "SIN SECCIÓN"
-            is_declared_percent = (op == "%") or unit.strip() == "%" or code.strip().startswith("%") or "%" in desc
+            is_declared_percent = (op == "%") or unit.strip() == "%" or code.strip().startswith("%")
             if is_declared_percent:
                 section = _percent_base(desc, section)
                 if qty is None and pct is not None:
@@ -1013,7 +1047,15 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                         base_ref = frozen_percent_ref_by_section.get(target_sec, False)
                         it.observation = f"Porcentaje de mercado aplicado sobre base congelada de {target_sec}"
 
-                    qty = it.market_quantity if it.market_quantity is not None else it.quantity
+                    rec = _recommended_percent_default(it)
+                    if rec:
+                        qty = float(rec["qty"])
+                        qty_ref = True
+                        qty_source = str(rec["source"])
+                    else:
+                        qty = it.market_quantity if it.market_quantity is not None else it.quantity
+                        qty_ref = False
+                        qty_source = "cantidad contratista"
                     op = "*" if (it.market_operator or it.operator or "*") == "%" else (it.market_operator or it.operator or "*")
                     it.market_unit_price = base_val
                     it.market_operator = op
@@ -1021,18 +1063,18 @@ def _post_process_market_financials(items: list[CanonicalApuItem]) -> None:
                     it.market_amount = _calc_amount(base_val, op, qty)
                     it.market_deviation = (it.unit_price / base_val - 1) if it.unit_price is not None and base_val else None
                     it.market_unit_price_is_fallback = not base_ref
-                    # Quantity only becomes non-fallback later when a matched
-                    # Construdata matrix supplies a quantity/rendimiento. With the
-                    # current granular catalogs, the contractor percentage is the
-                    # safe fallback quantity.
-                    it.market_quantity_is_fallback = _values_equal(qty, it.quantity)
+                    it.market_quantity_is_fallback = not qty_ref and _values_equal(qty, it.quantity)
                     it.market_operator_is_fallback = _values_equal(op, it.operator)
                     it.market_amount_is_fallback = (
                         it.market_unit_price_is_fallback
                         and it.market_quantity_is_fallback
                         and _values_equal(it.market_amount, it.amount, tolerance=0.05)
                     )
-                    it.state = "Cálculo mercado porcentaje" if not it.market_amount_is_fallback else "Sin referencia - usa contratista"
+                    if rec:
+                        it.state = "Cantidad mercado recomendada Construdata"
+                        it.observation = (it.observation + f" · Mercado Cantidad = {qty:.2%} ({qty_source})").strip()
+                    else:
+                        it.state = "Cálculo mercado porcentaje" if not it.market_amount_is_fallback else "Sin referencia - usa contratista"
                     if it.market_amount is not None:
                         section_market[target_sec] = section_market.get(target_sec, 0.0) + float(it.market_amount or 0)
                         contractor_section_running[target_sec] = contractor_section_running.get(target_sec, 0.0) + float(it.amount or 0)

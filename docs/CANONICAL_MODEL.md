@@ -252,15 +252,16 @@ Regla canónica para el tab `Detalle - <Proveedor>`:
 
 Esta regla evita que el estilo sea un parche del Excel writer: el resaltado visual depende de la semántica del modelo canónico de mercado.
 
-## Regla V2.0 - Porcentajes por acumulado de seccion en columnas de mercado
 
-La matriz/APU del contratista se conserva como dato declarado. El sistema no recalcula P.U., operador, cantidad, importe, subtotales ni seccion financiera del contratista.
+## V2.1 - Porcentajes Construdata y servicios no porcentuales
 
-Para las columnas de mercado, las filas porcentuales declaradas dentro de una seccion se calculan sobre el acumulado de mercado que corresponde a la base usada por el contratista:
-
-- Si una fila porcentual usa como P. Unitario/base el acumulado previo de su misma seccion, el mercado P.U. usa el acumulado de mercado previo de esa seccion.
-- Si una fila porcentual usa como base un subtotal/total declarado anteriormente, el mercado P.U. usa el valor de mercado equivalente de ese subtotal/total.
-- Varias filas porcentuales consecutivas dentro de la misma seccion comparten la misma base congelada. Por ejemplo, %HERR y %EPP en FLEX41.11 se aplican ambos sobre el acumulado previo de MANO DE OBRA, no uno sobre el otro.
-- La contribucion del porcentaje se agrega al subtotal de mercado de la seccion donde fue declarado.
-
-Esta regla aplica de forma general a materiales, mano de obra, maquinaria/equipo/herramienta, basicos y cargos porcentuales equivalentes.
+- La matriz del contratista se conserva como dato declarado; no se recalcula la columna del contratista.
+- Las columnas de mercado calculan únicamente el carril de referencia.
+- La detección de porcentajes ya no usa cualquier símbolo `%` dentro de la descripción. Un servicio como BORO-01 puede mencionar `10%` en su texto y seguir siendo un elemento normal de Equipo y Herramienta.
+- Los porcentajes canónicos de mercado recomendados desde `construdata_matrices.xlsx` son:
+  - `%MO1` / `%HERR` Herramienta menor: 3%
+  - `%MO2` Andamios: 5%
+  - `%MO3` Materiales menores: 5%
+  - `%MO5` / `%EPP` Equipo de seguridad/protección personal: 2%
+- Estos porcentajes afectan solo `Mercado Cantidad`; el valor declarado por el contratista se muestra intacto en sus columnas.
+- Si un porcentaje aparece dentro de una sección, `Mercado P.U.` usa el acumulado/subtotal de mercado correspondiente y `Mercado Cantidad` usa primero el porcentaje recomendado de Construdata cuando exista.

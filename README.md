@@ -147,3 +147,17 @@ Reglas aplicadas:
 ### V1.9 - Detalle: negritas por referencia real de mercado
 
 Las columnas de mercado en `Detalle - <Proveedor>` ahora distinguen visualmente los valores con referencia real frente a los valores fallback. Cuando el mercado usa el mismo valor del contratista por falta de referencia, la celda queda normal; cuando hay valor de referencia o diferencia real, se muestra en negrita.
+
+
+## V2.1 - Porcentajes Construdata y servicios no porcentuales
+
+- La matriz del contratista se conserva como dato declarado; no se recalcula la columna del contratista.
+- Las columnas de mercado calculan únicamente el carril de referencia.
+- La detección de porcentajes ya no usa cualquier símbolo `%` dentro de la descripción. Un servicio como BORO-01 puede mencionar `10%` en su texto y seguir siendo un elemento normal de Equipo y Herramienta.
+- Los porcentajes canónicos de mercado recomendados desde `construdata_matrices.xlsx` son:
+  - `%MO1` / `%HERR` Herramienta menor: 3%
+  - `%MO2` Andamios: 5%
+  - `%MO3` Materiales menores: 5%
+  - `%MO5` / `%EPP` Equipo de seguridad/protección personal: 2%
+- Estos porcentajes afectan solo `Mercado Cantidad`; el valor declarado por el contratista se muestra intacto en sus columnas.
+- Si un porcentaje aparece dentro de una sección, `Mercado P.U.` usa el acumulado/subtotal de mercado correspondiente y `Mercado Cantidad` usa primero el porcentaje recomendado de Construdata cuando exista.

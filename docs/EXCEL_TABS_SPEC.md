@@ -311,15 +311,16 @@ Ejemplo:
 - Si Construdata tiene precio distinto pero no cantidad, `Mercado P. Unitario` y `Mercado Importe` van en negrita; `Mercado Cantidad` queda normal si se tomó del contratista.
 - Si no hay referencia y todo el mercado usa fallback del contratista, ninguna celda de mercado se resalta.
 
-## Regla V2.0 - Detalle APU y porcentajes de mercado
 
-En `Detalle - <Proveedor>` las columnas A:H muestran la matriz del contratista tal cual fue declarada. Las columnas J:M son responsabilidad del motor de mercado.
+## V2.1 - Porcentajes Construdata y servicios no porcentuales
 
-Para filas porcentuales:
-
-- `Mercado P. Unitario` = base de mercado equivalente al acumulado/subtotal declarado por el contratista.
-- `Mercado Op.` = operador declarado o normalizado para el calculo de mercado.
-- `Mercado Cantidad` = cantidad/rendimiento de Construdata si existe; de lo contrario, cantidad declarada por el contratista como fallback.
-- `Mercado Importe` = calculo de mercado con esa base y cantidad.
-
-Si dos o mas porcentajes consecutivos se declaran sobre el mismo acumulado de seccion, todos deben usar la misma base de mercado congelada. Las columnas de mercado se muestran en negrita cuando el valor no es fallback al contratista.
+- La matriz del contratista se conserva como dato declarado; no se recalcula la columna del contratista.
+- Las columnas de mercado calculan únicamente el carril de referencia.
+- La detección de porcentajes ya no usa cualquier símbolo `%` dentro de la descripción. Un servicio como BORO-01 puede mencionar `10%` en su texto y seguir siendo un elemento normal de Equipo y Herramienta.
+- Los porcentajes canónicos de mercado recomendados desde `construdata_matrices.xlsx` son:
+  - `%MO1` / `%HERR` Herramienta menor: 3%
+  - `%MO2` Andamios: 5%
+  - `%MO3` Materiales menores: 5%
+  - `%MO5` / `%EPP` Equipo de seguridad/protección personal: 2%
+- Estos porcentajes afectan solo `Mercado Cantidad`; el valor declarado por el contratista se muestra intacto en sus columnas.
+- Si un porcentaje aparece dentro de una sección, `Mercado P.U.` usa el acumulado/subtotal de mercado correspondiente y `Mercado Cantidad` usa primero el porcentaje recomendado de Construdata cuando exista.
