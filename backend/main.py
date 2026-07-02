@@ -1000,6 +1000,107 @@ REAL_RUNS: dict[str, CanonicalRun] = {}
 REAL_REPORTS: dict[str, Path] = {}
 
 
+BASE_RUN_SUMMARIES: dict[str, dict[str, Any]] = {}
+
+
+def _short_code_prefix(code: str) -> str:
+    code = (code or '').strip().upper()
+    if not code:
+        return 'SIN CODIGO'
+    # Prefer the first alphabetic/number prefix before separators. Examples: PR01 -> PR, 1.1.1 -> 1, DD-01 -> DD
+    import re as _re
+    m = _re.match(r'([A-Z]+)', code)
+    if m:
+        return m.group(1)[:8]
+    return code.split('.')[0].split('-')[0][:8]
+
+
+def _base_run_summary(run: CanonicalRun, report_path: Path | None = None, source_file: str = '') -> dict[str, Any]:
+    exec_concepts = [c for c in run.base_concepts if getattr(c, 'is_executable', False)]
+    qty_by_key = {canonical_key(c.code, c.description): float(c.quantity or 0) for c in exec_concepts}
+
+    def scale(item):
+        return float(item.amount or 0) * float(qty_by_key.get(item.concept_key, 1) or 1)
+
+    total_amount = sum(float(c.amount or 0) for c in exec_concepts)
+    direct_cost = sum(scale(i) for i in run.base_apu_items if i.section == 'COSTO DIRECTO')
+    indirect_cost = sum(scale(i) for i in run.base_apu_items if i.section == 'INDIRECTO')
+
+    breakdown_map = {
+        'materials': ('Materiales', ['SUBTOTAL MATERIALES']),
+        'labor': ('Mano de obra', ['SUBTOTAL MANO DE OBRA', 'SUBTOTAL MO']),
+        'equipment': ('Maquinaria / equipo', ['SUBTOTAL MAQUINARIA', 'SUBTOTAL EQUIPO']),
+        'basics': ('Básicos', ['SUBTOTAL BASICOS', 'SUBTOTAL BÁSICOS']),
+    }
+    cost_breakdown = {}
+    for key, (label, sections) in breakdown_map.items():
+        amount = sum(scale(i) for i in run.base_apu_items if i.section in sections)
+        cost_breakdown[key] = {'label': label, 'amount': round(amount, 2)}
+    cost_breakdown['indirect'] = {'label': 'Indirecto 25%', 'amount': round(indirect_cost, 2)}
+
+    matched = len([c for c in exec_concepts if str(getattr(c, 'market_state', '')).startswith('Match')])
+    unmatched = max(0, len(exec_concepts) - matched)
+    coverage_pct = (matched / len(exec_concepts) * 100) if exec_concepts else 0
+
+    segs: dict[str, float] = {}
+    for c in exec_concepts:
+        prefix = _short_code_prefix(c.code)
+        segs[prefix] = segs.get(prefix, 0.0) + float(c.amount or 0)
+    segments = [
+        {'code': k, 'amount': round(v, 2), 'weightPct': round((v / total_amount * 100) if total_amount else 0, 2)}
+        for k, v in sorted(segs.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    ]
+
+    top_concepts = []
+    for c in sorted(exec_concepts, key=lambda x: float(x.amount or 0), reverse=True)[:10]:
+        top_concepts.append({
+            'code': c.code or '',
+            'unit': c.unit or '',
+            'quantity': float(c.quantity or 0),
+            'unitPrice': round(float(c.unit_price or 0), 2),
+            'amount': round(float(c.amount or 0), 2),
+            'weightPct': round((float(c.amount or 0) / total_amount * 100) if total_amount else 0, 2),
+            'state': c.market_state or '',
+        })
+
+    findings = []
+    findings.append(f'Se procesaron {len(exec_concepts)} conceptos ejecutables con {len(run.base_apu_items)} filas de Detalle Base.')
+    if total_amount:
+        findings.append(f'El monto total estimado es {total_amount:,.0f}; el indirecto aplicado corresponde al 25% del costo directo.')
+    findings.append(f'La cobertura de matrices Construdata es {coverage_pct:.1f}% ({matched} con match, {unmatched} en revisión).')
+    if top_concepts:
+        findings.append('Las partidas de mayor impacto deben revisarse primero por su peso económico relativo.')
+    if unmatched:
+        findings.append('Los conceptos sin matriz directa requieren validación técnica antes de emitir una versión final.')
+
+    return {
+        'runId': run.run_id,
+        'type': 'base_budget',
+        'projectName': run.project_name,
+        'status': 'COMPLETED_WITH_WARNINGS' if unmatched else 'COMPLETED',
+        'sourceFile': source_file,
+        'downloadUrl': f'/api/real-runs/{run.run_id}/report',
+        'reportFile': report_path.name if report_path else '',
+        'conceptsRead': len(run.base_concepts),
+        'conceptsExecutable': len(exec_concepts),
+        'detailRows': len(run.base_apu_items),
+        'validations': len(run.validations or []),
+        'totalAmount': round(total_amount, 2),
+        'directCost': round(direct_cost, 2),
+        'indirectCost': round(indirect_cost, 2),
+        'coverage': {
+            'matched': matched,
+            'unmatched': unmatched,
+            'estimated': 0,
+            'coveragePct': round(coverage_pct, 2),
+        },
+        'costBreakdown': cost_breakdown,
+        'segments': segments,
+        'topConcepts': top_concepts,
+        'executiveFindings': findings,
+    }
+
+
 def _safe_filename(name: str) -> str:
     keep = []
     for ch in (name or "archivo.xlsx"):
@@ -1630,10 +1731,13 @@ async def _execute_base_budget_real(projectName: str, concepts_file: UploadFile)
     # old/cached UI bundles. This eliminates the demo workbook path entirely for
     # base budgets once a real run has been executed.
     REAL_REPORTS["LATEST_BASE"] = report_path
+    summary = _base_run_summary(run, report_path, concepts_file.filename or "")
+    BASE_RUN_SUMMARIES[rid] = summary
+    BASE_RUN_SUMMARIES["LATEST_BASE"] = summary
     executable_count = len([c for c in base_concepts if getattr(c, "is_executable", False)])
     return {
         "id": rid,
-        "status": "COMPLETED_WITH_WARNINGS",
+        "status": summary.get("status", "COMPLETED_WITH_WARNINGS"),
         "projectName": projectName,
         "concepts": len(base_concepts),
         "executableConcepts": executable_count,
@@ -1642,12 +1746,30 @@ async def _execute_base_budget_real(projectName: str, concepts_file: UploadFile)
         "downloadUrl": f"/api/real-runs/{rid}/report",
         "sourceFile": concepts_file.filename,
         "mode": "REAL",
+        "summaryUrl": f"/api/real-runs/{rid}/summary",
+        "summary": summary,
     }
 
 
 @app.post("/api/base-budgets/real-run")
 async def base_budget_real_run(projectName: str = Form("Presupuesto base real"), concepts_file: UploadFile = File(...), matrix_file: UploadFile | None = File(default=None)):
     return await _execute_base_budget_real(projectName, concepts_file)
+
+
+@app.get("/api/real-runs/{run_id}/summary")
+def real_run_summary(run_id: str):
+    summary = BASE_RUN_SUMMARIES.get(run_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Resumen de corrida no encontrado")
+    return summary
+
+
+@app.get("/api/real-runs/latest-base/summary")
+def latest_base_run_summary():
+    summary = BASE_RUN_SUMMARIES.get("LATEST_BASE")
+    if not summary:
+        raise HTTPException(status_code=404, detail="No hay presupuesto base real generado en esta sesión")
+    return summary
 
 
 @app.get("/api/real-runs/{run_id}/report")

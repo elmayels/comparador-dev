@@ -243,6 +243,19 @@ function pageHead(title, subtitle, action=''){
 function kpis(items){return `<div class="grid cols-4">${items.map(i=>`<div class="card kpi"><label>${i.label}</label><strong>${i.value}</strong><span>${i.text||''}</span></div>`).join('')}</div>`}
 function table(headers, rows){return `<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
 
+function fmtMoney(n){ const v = Number(n||0); return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(v); }
+function fmtPct(n){ return `${Number(n||0).toFixed(1)}%`; }
+function chartBar(label, amount, max, meta=''){
+  const pct = max > 0 ? Math.max(2, Math.min(100, (Number(amount||0)/max)*100)) : 0;
+  return `<div class="bar-row"><div class="bar-meta"><strong>${label}</strong><span>${fmtMoney(amount)}${meta?` · ${meta}`:''}</span></div><div class="bar-track"><span style="width:${pct}%"></span></div></div>`;
+}
+function donutLegend(items){
+  const total = items.reduce((a,i)=>a+Number(i.amount||0),0);
+  const max = Math.max(...items.map(i=>Number(i.amount||0)), 1);
+  return `<div class="chart-list">${items.map(i=>chartBar(i.label, i.amount, max, total?`${((Number(i.amount||0)/total)*100).toFixed(1)}%`:'' )).join('')}</div>`;
+}
+function summaryFromRun(run){ return run?.summary || run || {}; }
+
 function dashboard(){
   const role = state.user.role;
   const cards = role==='SUPER_ADMIN' ? [
@@ -373,7 +386,7 @@ function baseBudgetsNew(){
 function baseBudgetLoading(){
   const pending = state.pendingBaseBudget;
   if(!pending || !state.baseUploadFiles.length){ return go('base-budgets-new'); }
-  shell(`${pageHead('Generando presupuesto base', 'Procesando archivo real y construyendo matrices APU desde Construdata.')}<div class="card"><h3>Procesamiento en curso</h3><p>Archivo: <strong>${pending.fileName}</strong></p><div class="stepper"><span class="step active">Leyendo conceptos</span><span class="step active">Buscando matrices</span><span class="step active">Calculando Detalle Base</span><span class="step">Generando Excel</span></div><div class="callout" style="margin-top:16px"><strong>No cierres esta pantalla.</strong> Al terminar se mostrará el resumen de la corrida y el botón de descarga.</div></div>`, 'Generando presupuesto base');
+  shell(`${pageHead('Generando presupuesto base', 'Procesando archivo real y construyendo el tablero ejecutivo.')}<div class="processing-screen card"><div class="spinner-wrap"><div class="spinner"></div></div><h3>Estamos construyendo el análisis</h3><p>Archivo: <strong>${pending.fileName}</strong></p><div class="progress large"><span></span></div><div class="process-grid"><div class="process-step done">✓ Leyendo conceptos</div><div class="process-step done">✓ Buscando matrices Construdata</div><div class="process-step active">Calculando Detalle Base</div><div class="process-step">Preparando KPIs y gráficas</div><div class="process-step">Generando Excel profesional</div></div><div class="callout" style="margin-top:16px"><strong>Proceso real:</strong> al finalizar se mostrará monto total, costo directo, indirecto, cobertura Construdata, segmentos y descarga del Excel.</div></div>`, 'Generando presupuesto base');
   setTimeout(async () => {
     try{
       const fd = new FormData();
@@ -381,7 +394,8 @@ function baseBudgetLoading(){
       fd.append('concepts_file', state.baseUploadFiles[0]);
       const res = await fetch('/api/base-budgets/real-run', {method:'POST', body:fd});
       if(!res.ok){ const err = await res.json().catch(()=>({detail:'Error al generar presupuesto base'})); throw new Error(err.detail || 'Error al generar presupuesto base'); }
-      state.lastBaseBudgetRun = await res.json();
+      const data = await res.json();
+      state.lastBaseBudgetRun = data;
       state.pendingBaseBudget = null;
       state.lastBaseError = null;
       go('base-budgets-result');
@@ -396,17 +410,42 @@ function baseBudgetResult(){
     return;
   }
   if(real){
-    const download = real.downloadUrl || '/api/real-runs/{run_id}/report';
+    const summary = summaryFromRun(real);
+    const download = summary.downloadUrl || real.downloadUrl || '/api/real-runs/{run_id}/report';
+    const coverage = summary.coverage || {};
+    const breakdown = summary.costBreakdown || {};
+    const breakdownItems = ['materials','labor','equipment','basics','indirect'].map(k=>breakdown[k]).filter(Boolean);
+    const segs = summary.segments || [];
+    const top = summary.topConcepts || [];
+    const findings = summary.executiveFindings || [];
+    const maxSeg = Math.max(...segs.map(s=>Number(s.amount||0)),1);
     const rows = [
-      ['Estado', real.status || 'COMPLETED_WITH_WARNINGS'],
-      ['Archivo fuente', real.sourceFile || '—'],
-      ['Conceptos leídos', real.concepts || 0],
-      ['Conceptos ejecutables', real.executableConcepts || 0],
-      ['Filas Detalle Base', real.apuItems || 0],
-      ['Validaciones', real.validations || 0],
+      ['Estado', summary.status || real.status || 'COMPLETED_WITH_WARNINGS'],
+      ['Archivo fuente', summary.sourceFile || real.sourceFile || '—'],
+      ['Conceptos leídos', summary.conceptsRead ?? real.concepts ?? 0],
+      ['Conceptos ejecutables', summary.conceptsExecutable ?? real.executableConcepts ?? 0],
+      ['Filas Detalle Base', summary.detailRows ?? real.apuItems ?? 0],
+      ['Cobertura Construdata', `${coverage.matched||0} con match / ${coverage.unmatched||0} en revisión`],
       ['Descarga', `<a href="${download}">${download}</a>`]
     ];
-    shell(`${pageHead('Resultado presupuesto base', 'Presupuesto generado desde archivo real y matrices Construdata.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><button class="btn btn-secondary" data-nav="base-budgets-new">Nuevo presupuesto base</button>`)}${kpis([{label:'Corrida',value:real.id,text:'Datos reales'}, {label:'Conceptos',value:real.concepts||0,text:'Leídos'}, {label:'Ejecutables',value:real.executableConcepts||0,text:'Con unidad y cantidad'}, {label:'Detalle Base',value:real.apuItems||0,text:'Filas APU'}])}<div class="grid cols-2" style="margin-top:16px"><div class="card"><h3>Entregables generados</h3><p>El Excel contiene Comparativa, Detalle Base, Validaciones y Análisis IA ejecutivo.</p></div><div class="card"><h3>Siguiente revisión</h3><p>Revisar conceptos sin matriz directa y validar partidas de mayor importe antes de usarlo como base de licitación.</p></div></div><div style="margin-top:16px">${table(['Campo','Valor'], rows)}</div>`, 'Resultado presupuesto base');
+    const topRows = top.slice(0,8).map(c=>[c.code||'—', c.unit||'—', fmtMoney(c.unitPrice), fmtMoney(c.amount), `${Number(c.weightPct||0).toFixed(1)}%`, c.state||'—']);
+    shell(`${pageHead('Resultado presupuesto base', 'Tablero ejecutivo generado desde el modelo canónico y data real.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><button class="btn btn-secondary" data-nav="base-budgets-new">Nuevo presupuesto base</button>`)}
+      ${kpis([
+        {label:'Monto total',value:fmtMoney(summary.totalAmount),text:'Presupuesto base'},
+        {label:'Costo directo',value:fmtMoney(summary.directCost),text:'Antes de indirecto'},
+        {label:'Indirecto 25%',value:fmtMoney(summary.indirectCost),text:'Regla canónica'},
+        {label:'Cobertura',value:fmtPct(coverage.coveragePct),text:`${coverage.matched||0} matches`}
+      ])}
+      <div class="grid cols-2" style="margin-top:16px">
+        <div class="card"><h3>Composición del presupuesto</h3>${donutLegend(breakdownItems)}</div>
+        <div class="card"><h3>Distribución por segmento</h3><div class="chart-list">${segs.length?segs.map(s=>chartBar(s.code, s.amount, maxSeg, `${Number(s.weightPct||0).toFixed(1)}%`)).join(''):'<p>Sin segmentos disponibles.</p>'}</div></div>
+      </div>
+      <div class="grid cols-2" style="margin-top:16px">
+        <div class="card"><h3>Hallazgos ejecutivos</h3><ul class="finding-list">${findings.map(f=>`<li>${f}</li>`).join('') || '<li>Sin hallazgos calculados.</li>'}</ul></div>
+        <div class="card"><h3>Cobertura de referencias</h3>${kpis([{label:'Con match',value:coverage.matched||0,text:'Construdata'}, {label:'En revisión',value:coverage.unmatched||0,text:'Sin matriz directa'}, {label:'Estimadas',value:coverage.estimated||0,text:'Fallback experto'}, {label:'Validaciones',value:summary.validations||0,text:'Registros'}])}</div>
+      </div>
+      <div style="margin-top:16px"><h3>Top conceptos por impacto</h3>${table(['Código','Unidad','P.U.','Importe','% Part.','Estado'], topRows)}</div>
+      <div style="margin-top:16px">${table(['Campo','Valor'], rows)}</div>`, 'Resultado presupuesto base');
     return;
   }
   shell(`${pageHead('Resultado presupuesto base', 'Aún no hay una corrida real cargada.', `<button class="btn btn-primary" data-nav="base-budgets-new">Cargar archivo base</button>`)}<div class="callout"><strong>Sin corrida real:</strong> carga un archivo .xlsx de conceptos para generar el presupuesto base con data real.</div>`, 'Resultado presupuesto base');
