@@ -21,6 +21,42 @@ const state = {
 
 document.documentElement.dataset.theme = state.theme;
 
+
+function showAnalysisOverlay(title='Preparando diagnóstico profesional'){
+  let el = $('#analysis-overlay');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'analysis-overlay';
+    document.body.appendChild(el);
+  }
+  const cards = [
+    ['Mercado Construdata','Leyendo referencias y trazabilidad de precios.'],
+    ['Secciones APU','Separando Materiales, Mano de obra, Maquinaria e Indirectos.'],
+    ['Alertas económicas','Detectando desviaciones, concentración e insumos sin referencia.'],
+    ['Plan del analista','Ordenando acciones por impacto monetario.']
+  ];
+  el.innerHTML = `<div class="analysis-overlay-card">
+    <div class="analysis-orb"></div>
+    <div class="analysis-loader-head"><span></span><strong>${esc(title)}</strong></div>
+    <h2>Construyendo lectura económica de la corrida</h2>
+    <p>No cierres esta ventana. Estamos preparando KPIs, alertas de mercado, participación por secciones y el plan de revisión.</p>
+    <div class="analysis-progress"><i></i></div>
+    <div class="analysis-news-slider">${cards.map(c=>`<article><b>${esc(c[0])}</b><small>${esc(c[1])}</small></article>`).join('')}</div>
+  </div>`;
+  el.classList.add('show');
+}
+function hideAnalysisOverlay(){
+  const el = $('#analysis-overlay');
+  if(el) el.classList.remove('show');
+}
+
+function diagnosticLoadingBlock(){
+  return `<div class="diag-loading-card card">
+    <div class="diag-loading-visual"><span></span><span></span><span></span></div>
+    <div><strong>Preparando diagnóstico profesional...</strong><p class="muted">Consolidando montos, participación por secciones, alertas de mercado y prioridades del analista.</p></div>
+  </div>`;
+}
+
 const routes = {
   '': landing,
   'login': login,
@@ -85,6 +121,42 @@ function bindCommon(){
     state.theme = state.theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('apu:theme', state.theme);
     document.documentElement.dataset.theme = state.theme;
+
+
+function showAnalysisOverlay(title='Preparando diagnóstico profesional'){
+  let el = $('#analysis-overlay');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'analysis-overlay';
+    document.body.appendChild(el);
+  }
+  const cards = [
+    ['Mercado Construdata','Leyendo referencias y trazabilidad de precios.'],
+    ['Secciones APU','Separando Materiales, Mano de obra, Maquinaria e Indirectos.'],
+    ['Alertas económicas','Detectando desviaciones, concentración e insumos sin referencia.'],
+    ['Plan del analista','Ordenando acciones por impacto monetario.']
+  ];
+  el.innerHTML = `<div class="analysis-overlay-card">
+    <div class="analysis-orb"></div>
+    <div class="analysis-loader-head"><span></span><strong>${esc(title)}</strong></div>
+    <h2>Construyendo lectura económica de la corrida</h2>
+    <p>No cierres esta ventana. Estamos preparando KPIs, alertas de mercado, participación por secciones y el plan de revisión.</p>
+    <div class="analysis-progress"><i></i></div>
+    <div class="analysis-news-slider">${cards.map(c=>`<article><b>${esc(c[0])}</b><small>${esc(c[1])}</small></article>`).join('')}</div>
+  </div>`;
+  el.classList.add('show');
+}
+function hideAnalysisOverlay(){
+  const el = $('#analysis-overlay');
+  if(el) el.classList.remove('show');
+}
+
+function diagnosticLoadingBlock(){
+  return `<div class="diag-loading-card card">
+    <div class="diag-loading-visual"><span></span><span></span><span></span></div>
+    <div><strong>Preparando diagnóstico profesional...</strong><p class="muted">Consolidando montos, participación por secciones, alertas de mercado y prioridades del analista.</p></div>
+  </div>`;
+}
     $$('[data-theme-toggle]').forEach(btn => {
       btn.textContent = state.theme === 'dark' ? 'Tema claro' : 'Tema oscuro';
     });
@@ -491,6 +563,7 @@ function comparisonNew(){
     state.comparisonContractors = contractors.map(c => ({...c, name: shortProviderName(c.name)}));
     const btn = $('#runComparison');
     btn.disabled = true; btn.textContent = 'Procesando archivos reales...';
+    showAnalysisOverlay('Preparando diagnóstico profesional');
     try{
       const fd = new FormData();
       fd.append('projectName', 'Comparativo real');
@@ -503,8 +576,9 @@ function comparisonNew(){
       if(!res.ok){ const err = await res.json().catch(()=>({detail:'Error al procesar'})); throw new Error(err.detail || 'Error al procesar'); }
       state.lastComparisonRun = await res.json();
       localStorage.setItem('apu:lastComparisonRun', JSON.stringify(state.lastComparisonRun));
+      hideAnalysisOverlay();
       go('comparison-results');
-    }catch(err){ alert(err.message); btn.disabled = false; btn.textContent = 'Procesar con datos reales'; }
+    }catch(err){ hideAnalysisOverlay(); alert(err.message); btn.disabled = false; btn.textContent = 'Procesar con datos reales'; }
   };
 }
 
@@ -544,6 +618,46 @@ function statusLabel(status){
 function statusChip(status){
   const s = String(status || 'REVIEW').toUpperCase();
   return `<span class="badge ${statusClass(s)}">${statusLabel(s)}</span>`;
+}
+
+function riskLevelKeyFromDecision(decision, headline){
+  const raw = String(decision?.verdict || decision?.priority || headline?.general_status || 'REVIEW').toUpperCase();
+  if(raw.includes('HIGH') || raw.includes('CRITICAL')) return 'HIGH';
+  if(raw.includes('ACCEPT') || raw === 'OK' || raw === 'LOW') return 'LOW';
+  return 'MEDIUM';
+}
+function riskDriverRows(diag){
+  const rows = diag?.risk_metrics || [];
+  if(rows.length) return rows.slice(0,9).map(r=>[
+    esc(r.metric || r.label || 'Métrica'),
+    esc(r.value_label || r.value || 'N/A'),
+    statusChip(r.level || 'MEDIUM'),
+    shortText(r.why || r.reason || r.criteria || '', 120),
+    shortText(r.action || '', 120)
+  ]);
+  const alerts = diag?.market_alerts || [];
+  return alerts.slice(0,6).map(a=>[
+    shortText(a.alert_type || 'Alerta', 60),
+    a.deviation_pct == null ? 'N/A' : fmtPct(a.deviation_pct),
+    statusChip(a.severity || 'MEDIUM'),
+    shortText(a.item || a.section || '', 120),
+    shortText(a.analyst_check || '', 120)
+  ]);
+}
+function riskDecisionPanel(diag){
+  const h = diag?.headline || {};
+  const decision = diag?.final_decision || {};
+  const active = riskLevelKeyFromDecision(decision, h);
+  const levels = [
+    ['LOW','Bajo','Sin desviaciones materiales o alertas críticas.'],
+    ['MEDIUM','Medio','Existen variables a revisar antes del cierre.'],
+    ['HIGH','Alto','Hay impacto económico, trazabilidad o concentración crítica.']
+  ];
+  return `<div class="risk-decision-panel card">
+    <div class="risk-scale">${levels.map(([key,label,desc])=>`<div class="risk-step ${key===active?'active':''} ${statusClass(key)}"><span>${esc(label)}</span><small>${esc(desc)}</small></div>`).join('')}</div>
+    <div class="risk-driver-head"><h3>Variables que explican el dictamen</h3><p class="muted">El nivel se ubica por impacto económico, desviación contra mercado, trazabilidad e indirectos declarados.</p></div>
+    ${diagTable(['Variable','Valor','Nivel','Por qué pesa','Acción'], riskDriverRows(diag))}
+  </div>`;
 }
 function diagTable(headers, rows){
   const body = (rows && rows.length) ? rows.map(r=>`<tr>${r.map(c=>`<td>${c ?? '—'}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${headers.length}" class="muted">Sin datos calculados para esta sección</td></tr>`;
@@ -626,6 +740,7 @@ function renderProfessionalDiagnostic(diag, meta={}){
         <div class="risk-mini"><label>Alertas altas</label><strong>${criticalAlerts}</strong></div>
         <div class="risk-mini"><label>Acciones de revisión</label><strong>${reviewCount}</strong></div>
       </div>
+      ${riskDecisionPanel(diag)}
       <div class="diag-hero card ${riskClass}">
         <div>
           <div class="eyebrow"><span></span>${esc(meta.runType || h.run_type || 'Diagnóstico profesional')}</div>
@@ -674,7 +789,7 @@ function comparisonResults(){
     const aiReport = summary.aiReportUrl || real.aiReportUrl || (runId ? `/api/real-runs/${runId}/ai-report` : '#');
     const single = (summary.providersCount || providers.length) <= 1;
     shell(`${pageHead('Diagnóstico profesional', single?'Lectura individual contra mercado, con evidencias y acciones de revisión.':'Comparativa contra mercado con ranking, evidencias y acciones de revisión.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><a class="btn btn-secondary" href="${diagnosticReportUrl(aiReport)}" target="_blank">Abrir versión imprimible</a>`)}
-      <div id="diagnostic-root"><div class="card"><strong>Preparando diagnóstico profesional...</strong><br><span class="muted">Construyendo KPIs, tablas de evidencia y plan de revisión en la misma pantalla.</span></div></div>`, 'Diagnóstico profesional');
+      <div id="diagnostic-root">${diagnosticLoadingBlock()}</div>`, 'Diagnóstico profesional');
     if(!runId){
       $('#diagnostic-root').innerHTML = '<div class="callout"><strong>No se encontró el identificador de corrida.</strong> Ejecuta nuevamente la comparativa.</div>';
       return;

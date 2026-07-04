@@ -2086,35 +2086,87 @@ def _build_diagnostic_context(run: CanonicalRun | None, summary: dict[str, Any] 
 
 
 def _section_summary_from_diag(ctx: dict[str, Any]) -> list[dict[str, Any]]:
-    total = float(ctx.get("total_amount", 0) or 0)
-    values = ctx.get("section_values") or {}
-    mvalues = ctx.get("section_market_values") or {}
-    mapping = [("materials","Materiales"),("labor","Mano de obra"),("equipment","Maquinaria / equipo"),("basics","Básicos"),("indirect","Indirectos / financiero")]
-    rows = []
-    for key, label in mapping:
-        amount = float(values.get(key, 0) or 0)
-        mamount = mvalues.get(key)
-        if mamount is not None:
-            mamount = float(mamount or 0)
-        if amount == 0 and not mamount:
-            continue
-        diff = amount - mamount if mamount else None
-        diff_pct = diff / mamount * 100 if mamount else None
-        status = _difference_status(diff_pct)
-        if total and amount / total >= 0.35:
-            status = "REVIEW" if status == "OK" else status
-        rows.append({
-            "section": label,
-            "contractor_amount": round(amount,2),
-            "market_amount": round(mamount,2) if mamount is not None else None,
-            "difference_amount": round(diff,2) if diff is not None else None,
-            "difference_pct": round(diff_pct,2) if diff_pct is not None else None,
-            "participation_pct": round(amount/total*100,2) if total else 0,
-            "status": status,
-            "comment": "Alta participación; revisar drivers" if total and amount/total >= 0.30 else "Sin alerta mayor por participación",
-        })
-    return rows
+    """Build the commercial section summary.
 
+    The web tables "Participación por sección" and "Resumen por secciones APU"
+    must show the same complete set of economic buckets and sum to 100% for
+    the visible run. Avoid including synthetic subtotals such as direct_cost if
+    Materiales/MO/Maquinaria already exist, because that would double count.
+    """
+    values = dict(ctx.get("section_values") or {})
+    mvalues = dict(ctx.get("section_market_values") or {})
+
+    # Ensure financial/indirect bucket is visible whenever it was calculated.
+    if _safe_float(values.get("indirect")) <= 0 and ctx.get("indirect_cost") is not None:
+        if _safe_float(ctx.get("indirect_cost")):
+            values["indirect"] = round(_safe_float(ctx.get("indirect_cost")), 2)
+    if _safe_float(mvalues.get("indirect")) <= 0 and ctx.get("market_indirect_cost") is not None:
+        if _safe_float(ctx.get("market_indirect_cost")):
+            mvalues["indirect"] = round(_safe_float(ctx.get("market_indirect_cost")), 2)
+
+    label_map = {
+        "materials": "Materiales",
+        "labor": "Mano de obra",
+        "equipment": "Maquinaria / equipo",
+        "machinery": "Maquinaria / equipo",
+        "basics": "Básicos",
+        "basic": "Básicos",
+        "other": "Otros insumos",
+        "financial": "Sección financiera",
+        "indirect": "Indirectos / financiero",
+    }
+    preferred = ["materials", "labor", "equipment", "machinery", "basics", "basic", "other", "financial", "indirect"]
+    keys = []
+    for k in preferred:
+        if k in values or k in mvalues:
+            keys.append(k)
+    for k in list(values.keys()) + list(mvalues.keys()):
+        if k in {"direct", "total", "subtotal", "cost_direct", "direct_cost"}:
+            continue
+        if k not in keys:
+            keys.append(k)
+
+    raw_rows = []
+    for key in keys:
+        amount = _safe_float(values.get(key))
+        mamount_raw = mvalues.get(key)
+        mamount = _safe_float(mamount_raw) if mamount_raw is not None else None
+        if amount == 0 and (mamount is None or mamount == 0):
+            continue
+        raw_rows.append((key, amount, mamount))
+
+    # Participation must add to 100% over the displayed buckets.
+    participation_base = sum(abs(amount) for _, amount, _ in raw_rows)
+    if participation_base <= 0:
+        participation_base = _safe_float(ctx.get("total_amount"))
+
+    rows = []
+    for key, amount, mamount in raw_rows:
+        diff = amount - mamount if mamount not in (None, 0) else None
+        diff_pct = diff / mamount * 100 if mamount not in (None, 0) else None
+        status = _difference_status(diff_pct)
+        participation = (amount / participation_base * 100) if participation_base else 0
+        if participation >= 35:
+            status = "REVIEW" if status == "OK" else status
+        comment = "Alta participación; revisar drivers económicos" if participation >= 30 else "Participación controlada dentro del total"
+        if key in {"indirect", "financial"}:
+            comment = "Validar criterio financiero e indirecto declarado"
+        rows.append({
+            "section": label_map.get(key, str(key).replace("_", " ").title()),
+            "contractor_amount": round(amount, 2),
+            "market_amount": round(mamount, 2) if mamount is not None else None,
+            "difference_amount": round(diff, 2) if diff is not None else None,
+            "difference_pct": round(diff_pct, 2) if diff_pct is not None else None,
+            "participation_pct": round(participation, 2),
+            "status": status,
+            "comment": comment,
+        })
+    # Last row absorbs rounding drift so displayed percentages total 100%.
+    if rows:
+        drift = round(100 - sum(_safe_float(r.get("participation_pct")) for r in rows), 2)
+        if abs(drift) <= 0.05:
+            rows[-1]["participation_pct"] = round(_safe_float(rows[-1].get("participation_pct")) + drift, 2)
+    return rows
 
 def _kpis_from_diag(ctx: dict[str, Any], alerts_count: int = 0, priorities_count: int = 0) -> list[dict[str, Any]]:
     kpis = [
@@ -2469,14 +2521,45 @@ def _enforce_indirect_disclosure(diag: dict[str, Any], ctx: dict[str, Any]) -> d
         })
     return diag
 
+
+def _product_risk_metrics(diag: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = _risk_metric_rows_from_diag(diag)
+    metrics = []
+    for row in rows:
+        if len(row) < 6:
+            continue
+        label, value, level_label, criteria, why, action = row[:6]
+        level_text = str(level_label or "").lower()
+        if "alto" in level_text or "high" in level_text or "crítico" in level_text:
+            level = "HIGH"
+        elif "bajo" in level_text or "low" in level_text:
+            level = "LOW"
+        else:
+            level = "MEDIUM"
+        metrics.append({
+            "metric": label,
+            "value_label": value,
+            "level": level,
+            "criteria": criteria,
+            "why": why,
+            "action": action,
+        })
+    return metrics
+
 def generate_professional_diagnostic(run: CanonicalRun | None, summary: dict[str, Any] | None = None) -> dict[str, Any]:
     ctx = _build_diagnostic_context(run, summary)
     fallback = _local_professional_diagnostic(ctx)
     external = _call_external_professional_diagnostic(ctx, fallback)
     diag = _sanitize_professional_diagnostic(external or fallback)
     diag = _enforce_indirect_disclosure(diag, ctx)
-    # Never expose technical mode/provider/model in the commercial payload.
+    # Force commercial section summary from calculated context so both
+    # Participación por sección and Resumen por secciones APU show the same
+    # complete buckets and add to 100%, independent of IA wording.
+    diag["section_summary"] = _section_summary_from_diag(ctx)
+    # Add commercial risk metrics so web/Excel can show why the dictamen lands
+    # in Bajo / Medio / Alto without exposing technical implementation details.
     diag["_context"] = ctx
+    diag["risk_metrics"] = _product_risk_metrics(diag)
     return diag
 
 

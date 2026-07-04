@@ -21,6 +21,42 @@ const state = {
 
 document.documentElement.dataset.theme = state.theme;
 
+
+function showAnalysisOverlay(title='Preparando diagnóstico profesional'){
+  let el = $('#analysis-overlay');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'analysis-overlay';
+    document.body.appendChild(el);
+  }
+  const cards = [
+    ['Mercado Construdata','Leyendo referencias y trazabilidad de precios.'],
+    ['Secciones APU','Separando Materiales, Mano de obra, Maquinaria e Indirectos.'],
+    ['Alertas económicas','Detectando desviaciones, concentración e insumos sin referencia.'],
+    ['Plan del analista','Ordenando acciones por impacto monetario.']
+  ];
+  el.innerHTML = `<div class="analysis-overlay-card">
+    <div class="analysis-orb"></div>
+    <div class="analysis-loader-head"><span></span><strong>${esc(title)}</strong></div>
+    <h2>Construyendo lectura económica de la corrida</h2>
+    <p>No cierres esta ventana. Estamos preparando KPIs, alertas de mercado, participación por secciones y el plan de revisión.</p>
+    <div class="analysis-progress"><i></i></div>
+    <div class="analysis-news-slider">${cards.map(c=>`<article><b>${esc(c[0])}</b><small>${esc(c[1])}</small></article>`).join('')}</div>
+  </div>`;
+  el.classList.add('show');
+}
+function hideAnalysisOverlay(){
+  const el = $('#analysis-overlay');
+  if(el) el.classList.remove('show');
+}
+
+function diagnosticLoadingBlock(){
+  return `<div class="diag-loading-card card">
+    <div class="diag-loading-visual"><span></span><span></span><span></span></div>
+    <div><strong>Preparando diagnóstico profesional...</strong><p class="muted">Consolidando montos, participación por secciones, alertas de mercado y prioridades del analista.</p></div>
+  </div>`;
+}
+
 const routes = {
   '': landing,
   'login': login,
@@ -85,6 +121,42 @@ function bindCommon(){
     state.theme = state.theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('apu:theme', state.theme);
     document.documentElement.dataset.theme = state.theme;
+
+
+function showAnalysisOverlay(title='Preparando diagnóstico profesional'){
+  let el = $('#analysis-overlay');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'analysis-overlay';
+    document.body.appendChild(el);
+  }
+  const cards = [
+    ['Mercado Construdata','Leyendo referencias y trazabilidad de precios.'],
+    ['Secciones APU','Separando Materiales, Mano de obra, Maquinaria e Indirectos.'],
+    ['Alertas económicas','Detectando desviaciones, concentración e insumos sin referencia.'],
+    ['Plan del analista','Ordenando acciones por impacto monetario.']
+  ];
+  el.innerHTML = `<div class="analysis-overlay-card">
+    <div class="analysis-orb"></div>
+    <div class="analysis-loader-head"><span></span><strong>${esc(title)}</strong></div>
+    <h2>Construyendo lectura económica de la corrida</h2>
+    <p>No cierres esta ventana. Estamos preparando KPIs, alertas de mercado, participación por secciones y el plan de revisión.</p>
+    <div class="analysis-progress"><i></i></div>
+    <div class="analysis-news-slider">${cards.map(c=>`<article><b>${esc(c[0])}</b><small>${esc(c[1])}</small></article>`).join('')}</div>
+  </div>`;
+  el.classList.add('show');
+}
+function hideAnalysisOverlay(){
+  const el = $('#analysis-overlay');
+  if(el) el.classList.remove('show');
+}
+
+function diagnosticLoadingBlock(){
+  return `<div class="diag-loading-card card">
+    <div class="diag-loading-visual"><span></span><span></span><span></span></div>
+    <div><strong>Preparando diagnóstico profesional...</strong><p class="muted">Consolidando montos, participación por secciones, alertas de mercado y prioridades del analista.</p></div>
+  </div>`;
+}
     $$('[data-theme-toggle]').forEach(btn => {
       btn.textContent = state.theme === 'dark' ? 'Tema claro' : 'Tema oscuro';
     });
@@ -416,6 +488,7 @@ function baseBudgetResult(){
   if(real){
     const summary = summaryFromRun(real);
     const download = summary.downloadUrl || real.downloadUrl || '/api/real-runs/{run_id}/report';
+    const aiReport = summary.aiReportUrl || real.aiReportUrl || (summary.runId ? `/api/real-runs/${summary.runId}/ai-report` : '#');
     const coverage = summary.coverage || {};
     const breakdown = summary.costBreakdown || {};
     const breakdownItems = ['materials','labor','equipment','basics','indirect'].map(k=>breakdown[k]).filter(Boolean);
@@ -433,7 +506,7 @@ function baseBudgetResult(){
       ['Descarga', `<a href="${download}">${download}</a>`]
     ];
     const topRows = top.slice(0,8).map(c=>[c.code||'—', c.unit||'—', fmtMoney(c.unitPrice), fmtMoney(c.amount), `${Number(c.weightPct||0).toFixed(1)}%`, c.state||'—']);
-    shell(`${pageHead('Resultado presupuesto base', 'Tablero ejecutivo generado con datos reales.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><button class="btn btn-secondary" data-nav="base-budgets-new">Nuevo presupuesto base</button>`)}
+    shell(`${pageHead('Resultado presupuesto base', 'Tablero ejecutivo generado con datos reales.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><a class="btn btn-secondary" href="${aiReport}" target="_blank">Ver diagnóstico profesional</a><button class="btn btn-secondary" data-nav="base-budgets-new">Nuevo presupuesto base</button>`)}
       ${kpis([
         {label:'Monto total',value:fmtMoney(summary.totalAmount),text:'Presupuesto base'},
         {label:'Costo directo',value:fmtMoney(summary.directCost),text:'Antes de indirecto'},
@@ -490,6 +563,7 @@ function comparisonNew(){
     state.comparisonContractors = contractors.map(c => ({...c, name: shortProviderName(c.name)}));
     const btn = $('#runComparison');
     btn.disabled = true; btn.textContent = 'Procesando archivos reales...';
+    showAnalysisOverlay('Preparando diagnóstico profesional');
     try{
       const fd = new FormData();
       fd.append('projectName', 'Comparativo real');
@@ -502,8 +576,9 @@ function comparisonNew(){
       if(!res.ok){ const err = await res.json().catch(()=>({detail:'Error al procesar'})); throw new Error(err.detail || 'Error al procesar'); }
       state.lastComparisonRun = await res.json();
       localStorage.setItem('apu:lastComparisonRun', JSON.stringify(state.lastComparisonRun));
+      hideAnalysisOverlay();
       go('comparison-results');
-    }catch(err){ alert(err.message); btn.disabled = false; btn.textContent = 'Procesar con datos reales'; }
+    }catch(err){ hideAnalysisOverlay(); alert(err.message); btn.disabled = false; btn.textContent = 'Procesar con datos reales'; }
   };
 }
 
@@ -528,14 +603,61 @@ function diagVal(item){
   if(v === null || v === undefined || v === '') return '—';
   if(f === 'currency') return fmtMoney(v);
   if(f === 'percent') return fmtPct(v);
+  if(f === 'points') return `${Number(v||0).toFixed(1)} pts`;
   if(typeof v === 'number') return new Intl.NumberFormat('es-MX',{maximumFractionDigits:2}).format(v);
   return esc(v);
 }
+function statusClass(status){
+  const s = String(status || 'REVIEW').toUpperCase();
+  return s === 'OK' || s === 'LOW' || s === 'ACCEPTABLE' ? 'ok' : (s === 'CRITICAL' || s === 'HIGH' || s === 'HIGH_RISK' ? 'bad' : 'warn');
+}
+function statusLabel(status){
+  const s = String(status || 'REVIEW').toUpperCase();
+  return {OK:'Correcto', REVIEW:'Revisar', CRITICAL:'Crítico', LOW:'Bajo', MEDIUM:'Medio', HIGH:'Alto', ACCEPTABLE:'Aceptable', REVIEW_REQUIRED:'Requiere revisión', HIGH_RISK:'Alto riesgo'}[s] || esc(s);
+}
 function statusChip(status){
   const s = String(status || 'REVIEW').toUpperCase();
-  const cls = s === 'OK' || s === 'LOW' || s === 'ACCEPTABLE' ? 'ok' : (s === 'CRITICAL' || s === 'HIGH' || s === 'HIGH_RISK' ? 'bad' : 'warn');
-  const label = {OK:'Correcto', REVIEW:'Revisar', CRITICAL:'Crítico', LOW:'Bajo', MEDIUM:'Medio', HIGH:'Alto', ACCEPTABLE:'Aceptable', REVIEW_REQUIRED:'Requiere revisión', HIGH_RISK:'Alto riesgo'}[s] || esc(s);
-  return `<span class="badge ${cls}">${label}</span>`;
+  return `<span class="badge ${statusClass(s)}">${statusLabel(s)}</span>`;
+}
+
+function riskLevelKeyFromDecision(decision, headline){
+  const raw = String(decision?.verdict || decision?.priority || headline?.general_status || 'REVIEW').toUpperCase();
+  if(raw.includes('HIGH') || raw.includes('CRITICAL')) return 'HIGH';
+  if(raw.includes('ACCEPT') || raw === 'OK' || raw === 'LOW') return 'LOW';
+  return 'MEDIUM';
+}
+function riskDriverRows(diag){
+  const rows = diag?.risk_metrics || [];
+  if(rows.length) return rows.slice(0,9).map(r=>[
+    esc(r.metric || r.label || 'Métrica'),
+    esc(r.value_label || r.value || 'N/A'),
+    statusChip(r.level || 'MEDIUM'),
+    shortText(r.why || r.reason || r.criteria || '', 120),
+    shortText(r.action || '', 120)
+  ]);
+  const alerts = diag?.market_alerts || [];
+  return alerts.slice(0,6).map(a=>[
+    shortText(a.alert_type || 'Alerta', 60),
+    a.deviation_pct == null ? 'N/A' : fmtPct(a.deviation_pct),
+    statusChip(a.severity || 'MEDIUM'),
+    shortText(a.item || a.section || '', 120),
+    shortText(a.analyst_check || '', 120)
+  ]);
+}
+function riskDecisionPanel(diag){
+  const h = diag?.headline || {};
+  const decision = diag?.final_decision || {};
+  const active = riskLevelKeyFromDecision(decision, h);
+  const levels = [
+    ['LOW','Bajo','Sin desviaciones materiales o alertas críticas.'],
+    ['MEDIUM','Medio','Existen variables a revisar antes del cierre.'],
+    ['HIGH','Alto','Hay impacto económico, trazabilidad o concentración crítica.']
+  ];
+  return `<div class="risk-decision-panel card">
+    <div class="risk-scale">${levels.map(([key,label,desc])=>`<div class="risk-step ${key===active?'active':''} ${statusClass(key)}"><span>${esc(label)}</span><small>${esc(desc)}</small></div>`).join('')}</div>
+    <div class="risk-driver-head"><h3>Variables que explican el dictamen</h3><p class="muted">El nivel se ubica por impacto económico, desviación contra mercado, trazabilidad e indirectos declarados.</p></div>
+    ${diagTable(['Variable','Valor','Nivel','Por qué pesa','Acción'], riskDriverRows(diag))}
+  </div>`;
 }
 function diagTable(headers, rows){
   const body = (rows && rows.length) ? rows.map(r=>`<tr>${r.map(c=>`<td>${c ?? '—'}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${headers.length}" class="muted">Sin datos calculados para esta sección</td></tr>`;
@@ -584,13 +706,16 @@ function renderProfessionalDiagnostic(diag, meta={}){
     c.participation_pct==null?'N/A':fmtPct(c.participation_pct),
     shortText(c.probable_cause, 90), shortText(c.priority_action, 100)
   ]);
-  const alertRows = (diag?.market_alerts || []).slice(0,20).map(a=>[
-    statusChip(a.severity), shortText(a.alert_type, 70), shortText(a.item, 70), esc(a.section || '—'),
-    a.contractor_value==null?'N/A':fmtMoney(a.contractor_value),
-    a.market_value==null?'N/A':fmtMoney(a.market_value),
-    a.deviation_pct==null?'N/A':fmtPct(a.deviation_pct),
-    shortText(a.analyst_check, 120)
-  ]);
+  const alertRows = (diag?.market_alerts || []).slice(0,20).map(a=>{
+    const isIndirect = String(a.alert_type||'').toLowerCase().includes('indirect') || String(a.section||'').toLowerCase().includes('indirect');
+    return [
+      statusChip(a.severity), shortText(a.alert_type, 70), shortText(a.item, 70), esc(a.section || '—'),
+      a.contractor_value==null?'N/A':(isIndirect?fmtPct(a.contractor_value):fmtMoney(a.contractor_value)),
+      a.market_value==null?'N/A':(isIndirect?fmtPct(a.market_value):fmtMoney(a.market_value)),
+      a.deviation_pct==null?'N/A':(isIndirect?`${Number(a.deviation_pct||0).toFixed(1)} pts`:fmtPct(a.deviation_pct)),
+      shortText(a.analyst_check, 120)
+    ];
+  });
   const planRows = (diag?.analyst_review_plan || []).slice(0,10).map(p=>[
     `<strong>${esc(p.priority || '')}</strong>`, shortText(p.what_to_review, 100), shortText(p.why_it_matters, 130), shortText(p.where_to_check, 110), shortText(p.decision_needed, 120)
   ]);
@@ -598,20 +723,35 @@ function renderProfessionalDiagnostic(diag, meta={}){
   const diagRows = [['Riesgo principal', pd.risk_summary], ['Driver de costo', pd.main_cost_driver], ['Trazabilidad de mercado', pd.market_traceability], ['Recomendación', pd.recommendation]].map(r=>[r[0], shortText(r[1], 180)]);
   const title = h.title || 'Diagnóstico profesional APU';
   const line = h.executive_line || 'Revisar partidas de mayor impacto y referencias sin trazabilidad plena.';
+  const riskKey = String(decision.verdict || h.general_status || 'REVIEW_REQUIRED').toUpperCase();
+  const riskClass = statusClass(riskKey);
+  const riskTitle = riskClass === 'bad' ? 'Dictamen crítico' : (riskClass === 'warn' ? 'Dictamen en revisión' : 'Dictamen favorable');
+  const criticalAlerts = (diag?.market_alerts || []).filter(a => String(a.severity || '').toUpperCase() === 'HIGH').length;
+  const reviewCount = (diag?.analyst_review_plan || []).length;
   return `
     <div class="diagnostic-native">
-      <div class="diag-hero card">
+      <div class="risk-banner ${riskClass}">
+        <div class="risk-mark">${riskClass === 'bad' ? '!' : (riskClass === 'warn' ? 'i' : '✓')}</div>
+        <div class="risk-copy">
+          <span>${esc(riskTitle)}</span>
+          <strong>${statusLabel(riskKey)}</strong>
+          <p>${esc(decision.main_reason || line)}</p>
+        </div>
+        <div class="risk-mini"><label>Alertas altas</label><strong>${criticalAlerts}</strong></div>
+        <div class="risk-mini"><label>Acciones de revisión</label><strong>${reviewCount}</strong></div>
+      </div>
+      ${riskDecisionPanel(diag)}
+      <div class="diag-hero card ${riskClass}">
         <div>
           <div class="eyebrow"><span></span>${esc(meta.runType || h.run_type || 'Diagnóstico profesional')}</div>
           <h2>${esc(title)}</h2>
           <p>${esc(line)}</p>
-          <div class="actions"><a class="btn btn-primary" href="${esc(meta.download || '#')}">Descargar Excel</a>${meta.aiReport ? `<a class="btn btn-secondary" href="${esc(diagnosticReportUrl(meta.aiReport))}" target="_blank">Abrir versión imprimible</a>` : ''}</div>
         </div>
-        <div class="decision-card ${String(h.general_status||'REVIEW').toLowerCase()}">
-          <label>Dictamen</label>
-          ${statusChip(h.general_status)}
-          <strong>${esc(decision.verdict || 'REVIEW_REQUIRED')}</strong>
-          <p>${esc(decision.main_reason || line)}</p>
+        <div class="decision-card ${riskClass}">
+          <label>Dictamen general</label>
+          <strong>${statusLabel(riskKey)}</strong>
+          <p>${esc(decision.next_action || decision.main_reason || line)}</p>
+          <div class="decision-actions">${statusChip(riskKey)}<span>Prioridad: ${statusLabel(decision.priority || riskKey)}</span></div>
         </div>
       </div>
       <div class="grid cols-4 diag-kpi-grid">${kpiCards || '<div class="callout">Sin KPIs disponibles.</div>'}</div>
@@ -649,7 +789,7 @@ function comparisonResults(){
     const aiReport = summary.aiReportUrl || real.aiReportUrl || (runId ? `/api/real-runs/${runId}/ai-report` : '#');
     const single = (summary.providersCount || providers.length) <= 1;
     shell(`${pageHead('Diagnóstico profesional', single?'Lectura individual contra mercado, con evidencias y acciones de revisión.':'Comparativa contra mercado con ranking, evidencias y acciones de revisión.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><a class="btn btn-secondary" href="${diagnosticReportUrl(aiReport)}" target="_blank">Abrir versión imprimible</a>`)}
-      <div id="diagnostic-root"><div class="card"><strong>Preparando diagnóstico profesional...</strong><br><span class="muted">Construyendo KPIs, tablas de evidencia y plan de revisión en la misma pantalla.</span></div></div>`, 'Diagnóstico profesional');
+      <div id="diagnostic-root">${diagnosticLoadingBlock()}</div>`, 'Diagnóstico profesional');
     if(!runId){
       $('#diagnostic-root').innerHTML = '<div class="callout"><strong>No se encontró el identificador de corrida.</strong> Ejecuta nuevamente la comparativa.</div>';
       return;

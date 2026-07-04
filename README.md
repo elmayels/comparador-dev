@@ -423,3 +423,11 @@ Esta versión rehace la capa de diagnóstico profesional como producto comercial
 - Se traduce el código interno HIGH_RISK a etiqueta comercial Alto riesgo.
 - Se muestran alertas altas y acciones de revisión en el encabezado del diagnóstico.
 - No se modifican cálculos, mercado, operadores, indirectos ni Construdata.
+
+
+## V4.8 - Diagnóstico visual y loading inmediato
+
+- La comparativa muestra un overlay de preparación justo al dar clic en procesar.
+- El diagnóstico profesional incluye escala visual Bajo / Medio / Alto y variables que explican el dictamen.
+- `section_summary` se fuerza desde los datos calculados para que Participación por sección y Resumen por secciones APU muestren los mismos buckets y sumen 100%.
+- Se preservan cálculos existentes; solo cambia presentación, diagnóstico y exposición de métricas.
