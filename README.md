@@ -395,3 +395,8 @@ Esta versión rehace la capa de diagnóstico profesional como producto comercial
 - Para múltiples proveedores, sí se habilita comparación/ranking económico.
 - No se modifican cálculos de precios, operadores, indirectos, Construdata ni comparativa.
 
+
+## V4.2 - Diagnóstico profesional como resultado principal
+- En comparativas, la pantalla posterior a ejecutar ya no muestra "Resultados de comparación".
+- La ruta interna `comparison-results` ahora renderiza la vista "Diagnóstico profesional" como resultado principal.
+- El diagnóstico se muestra embebido desde `/api/real-runs/{run_id}/ai-report`, con botones para descargar Excel, abrir en nueva pestaña y consultar detalle APU.
