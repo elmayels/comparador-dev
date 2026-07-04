@@ -37,17 +37,75 @@ REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 # Optional AI analysis layer
 # ---------------------------------------------------------------------------
+def _load_local_env() -> None:
+    """Small .env loader with support for spaces around '='.
+
+    Railway/native environment variables still win. This only helps local runs
+    where the user writes lines such as `AI_ANALYSIS_MODEL = claude-haiku-4-5`
+    in a .env file and expects the app to pick them up without python-dotenv.
+    """
+    for env_path in (ROOT / ".env", Path.cwd() / ".env"):
+        if not env_path.exists():
+            continue
+        for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_local_env()
+
+
+def _normalize_ai_provider(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    aliases = {
+        "anthopic": "anthropic",
+        "antrophic": "anthropic",
+        "claude": "anthropic",
+        "open-ai": "openai",
+    }
+    return aliases.get(raw, raw)
+
+
+def _resolved_ai_provider() -> str:
+    explicit_provider = (os.getenv("AI_ANALYSIS_PROVIDER") or os.getenv("AI_PROVIDER") or "").strip()
+    if explicit_provider:
+        return _normalize_ai_provider(explicit_provider)
+    model_hint = (os.getenv("AI_ANALYSIS_MODEL") or os.getenv("AI_MODEL") or "").strip().lower()
+    if model_hint.startswith("claude"):
+        return "anthropic"
+    if os.getenv("ANTHROPIC_API_KEY") and not os.getenv("OPENAI_API_KEY"):
+        return "anthropic"
+    return "openai"
+
+
 # Single feature flag requested for the first real version. When disabled or
 # when credentials are not available, the application still generates a
 # deterministic expert analysis from the canonical calculated data. No amounts,
 # quantities or matches are invented by this layer.
 AI_ANALYSIS_ENABLED = os.getenv("ENABLE_AI_ANALYSIS", "0").strip().lower() in {"1", "true", "yes", "on"}
-AI_ANALYSIS_PROVIDER = os.getenv("AI_ANALYSIS_PROVIDER", os.getenv("AI_PROVIDER", "openai")).strip().lower()
-AI_ANALYSIS_MODEL = os.getenv("AI_ANALYSIS_MODEL", os.getenv("AI_MODEL", "gpt-4o-mini")).strip()
+AI_ANALYSIS_PROVIDER = _resolved_ai_provider()
+AI_ANALYSIS_MODEL = (os.getenv("AI_ANALYSIS_MODEL") or os.getenv("AI_MODEL") or "").strip()
 AI_ANALYSIS_TIMEOUT = float(os.getenv("AI_ANALYSIS_TIMEOUT", "25") or 25)
 AI_ANALYSIS_MAX_INPUT_ITEMS = int(os.getenv("AI_ANALYSIS_MAX_INPUT_ITEMS", "12") or 12)
 AI_ANALYSIS_LAST_ERROR: str | None = None
 AI_ANALYSIS_LAST_PROVIDER_RESPONSE: str | None = None
+
+
+def _configured_ai_model() -> str:
+    """Return a provider-compatible model unless the deploy explicitly overrides it."""
+    explicit = (os.getenv("AI_ANALYSIS_MODEL") or os.getenv("AI_MODEL") or "").strip()
+    if explicit:
+        return explicit
+    if AI_ANALYSIS_PROVIDER == "anthropic":
+        # Cheap/fast Anthropic default for the current prototype.
+        return "claude-haiku-4-5"
+    return "gpt-4o-mini"
 
 
 app = FastAPI(title="Quantia APU Canonical", version="1.0.0")
@@ -985,11 +1043,12 @@ def _analysis_feature_status() -> dict[str, Any]:
         "enabled": True,
         "mode": "EXTERNAL_AI" if has_key else "LOCAL_EXPERT_FALLBACK_NO_KEY",
         "provider": AI_ANALYSIS_PROVIDER,
-        "model": AI_ANALYSIS_MODEL,
+        "model": _configured_ai_model(),
         "hasKey": has_key,
         "timeoutSeconds": AI_ANALYSIS_TIMEOUT,
         "maxInputItems": AI_ANALYSIS_MAX_INPUT_ITEMS,
         "lastError": AI_ANALYSIS_LAST_ERROR,
+        "lastProviderResponsePreview": AI_ANALYSIS_LAST_PROVIDER_RESPONSE,
     }
 
 
@@ -1282,18 +1341,76 @@ def _local_expert_analysis(context: dict[str, Any]) -> list[dict[str, str]]:
 
 def _ai_system_prompt() -> str:
     return (
-        "Eres un experto senior en análisis de precios unitarios (APU). "
-        "Redacta en español natural, técnico-ejecutivo y útil para un analista de precios unitarios. "
-        "Usa únicamente los datos del JSON proporcionado; está prohibido inventar montos, porcentajes, contratistas, partidas, causas o referencias. "
-        "El análisis debe ser específico: menciona nombres cortos de contratistas cuando existan, montos totales, monto mercado, sobrecosto monetario y porcentual, cobertura Construdata, Materiales, Mano de obra, Maquinaria/equipo, Básicos e Indirectos cuando esos datos estén en el JSON. "
-        "Debes señalar alertas de mercado: fallback, sin referencia, conceptos sin matriz directa, sobrecostos por partida o insumo, y partidas de mayor impacto económico. "
+        "Eres un experto senior en análisis de precios unitarios (APU), Neodata y Construdata. "
+        "Redacta en español natural, profesional y accionable para un analista de precios unitarios. "
+        "Usa únicamente los datos del JSON proporcionado. Está prohibido inventar montos, porcentajes, contratistas, partidas, causas, matches o referencias. "
+        "Tu análisis debe usar cifras concretas cuando existan: nombres de contratistas, monto ofertado, monto mercado, sobrecosto monetario y porcentual, cobertura Construdata, Materiales, Mano de obra, Maquinaria/equipo, Básicos e Indirectos. "
+        "Señala alertas de mercado: fallback, sin referencia, conceptos sin matriz directa, sobrecostos por partida/insumo, partidas de mayor impacto y concentración 80/20. "
         "No copies nombres largos completos de servicios; usa códigos y descripciones cortas. No repitas la misma idea entre secciones. "
-        "La IA no calcula ni corrige importes; solo interpreta los valores ya calculados. Si un dato no está en el JSON, omítelo. "
-        "Devuelve SOLO JSON válido con la forma: {\"sections\":[{\"section\":\"...\",\"content\":\"...\"}]} . "
-        "Usa exactamente 6 secciones: Resumen ejecutivo APU, Sobrecostos contra mercado, Resumen por sección, Partidas críticas, Referencias y trazabilidad, Riesgo y acciones. "
-        "Cada content debe tener entre 55 y 130 palabras e incluir cifras concretas siempre que estén disponibles. "
-        "No escribas frases genéricas como 'revisar partidas importantes' sin decir cuáles, cuánto representan o por qué son relevantes."
+        "La IA no calcula ni corrige importes; solo interpreta valores ya calculados. Si un dato no está en el JSON, omítelo. "
+        "Devuelve SOLO un objeto JSON válido. No uses markdown, no uses backticks, no agregues texto antes o después del JSON. "
+        "La forma exacta debe ser: {\"sections\":[{\"section\":\"...\",\"content\":\"...\"}]}. "
+        "Usa exactamente 6 secciones con estos nombres: Resumen ejecutivo APU, Sobrecostos contra mercado, Resumen por sección, Partidas críticas, Referencias y trazabilidad, Riesgo y acciones. "
+        "Cada content debe tener entre 80 y 160 palabras, con cifras concretas si están disponibles. "
+        "Evita frases genéricas como 'revisar partidas importantes' sin indicar cuáles, cuánto representan y por qué son relevantes."
     )
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """Parse provider output even if it arrives wrapped in markdown or with prose.
+
+    Anthropic and some OpenAI models may return ```json fences or explanatory
+    text despite instructions. This parser prevents JSONDecodeError from killing
+    the run and allows the fallback to take over only when extraction truly fails.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    candidates = [raw]
+    if "```" in raw:
+        parts = raw.split("```")
+        for part in parts:
+            cleaned = part.strip()
+            if cleaned.lower().startswith("json"):
+                cleaned = cleaned[4:].strip()
+            if cleaned.startswith("{") and cleaned.endswith("}"):
+                candidates.insert(0, cleaned)
+    first = raw.find("{")
+    last = raw.rfind("}")
+    if first >= 0 and last > first:
+        candidates.append(raw[first:last + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _normalize_ai_sections(parsed: dict[str, Any] | None) -> list[dict[str, str]]:
+    if not isinstance(parsed, dict):
+        return []
+    sections = parsed.get("sections")
+    if sections is None and isinstance(parsed.get("analysis"), list):
+        sections = parsed.get("analysis")
+    if sections is None and isinstance(parsed.get("items"), list):
+        sections = parsed.get("items")
+    if isinstance(sections, dict):
+        sections = [{"section": k, "content": v} for k, v in sections.items()]
+    if not isinstance(sections, list):
+        return []
+    clean: list[dict[str, str]] = []
+    for item in sections[:6]:
+        if not isinstance(item, dict):
+            continue
+        section = str(item.get("section") or item.get("title") or "").strip()[:80]
+        content = str(item.get("content") or item.get("text") or item.get("body") or "").strip()
+        if section and content:
+            clean.append({"section": section, "content": content})
+    return clean
+
 
 def _call_external_ai_analysis(context: dict[str, Any]) -> list[dict[str, str]] | None:
     global AI_ANALYSIS_LAST_ERROR, AI_ANALYSIS_LAST_PROVIDER_RESPONSE
@@ -1302,16 +1419,17 @@ def _call_external_ai_analysis(context: dict[str, Any]) -> list[dict[str, str]] 
     status = _analysis_feature_status()
     if not status.get("enabled") or status.get("mode") != "EXTERNAL_AI":
         return None
-    payload_context = json.dumps(context, ensure_ascii=False, default=str)[:24000]
+    payload_context = json.dumps(context, ensure_ascii=False, default=str)[:26000]
+    model = _configured_ai_model()
     try:
         if AI_ANALYSIS_PROVIDER == "anthropic":
             key = os.getenv("ANTHROPIC_API_KEY")
             if not key:
                 return None
             body = {
-                "model": AI_ANALYSIS_MODEL or "claude-3-5-sonnet-latest",
-                "max_tokens": 900,
-                "temperature": 0.1,
+                "model": model,
+                "max_tokens": 1800,
+                "temperature": 0.05,
                 "system": _ai_system_prompt(),
                 "messages": [{"role": "user", "content": payload_context}],
             }
@@ -1322,15 +1440,28 @@ def _call_external_ai_analysis(context: dict[str, Any]) -> list[dict[str, str]] 
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=AI_ANALYSIS_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            text = "".join([part.get("text", "") for part in data.get("content", []) if part.get("type") == "text"])
-        else:
+                raw_response = resp.read().decode("utf-8", errors="replace")
+            AI_ANALYSIS_LAST_PROVIDER_RESPONSE = raw_response[:4000]
+            try:
+                data = json.loads(raw_response)
+            except Exception as exc:
+                AI_ANALYSIS_LAST_ERROR = f"Anthropic returned non-JSON HTTP payload ({type(exc).__name__}). Preview: {raw_response[:500]}"
+                return None
+            chunks: list[str] = []
+            for part in data.get("content", []) or []:
+                if isinstance(part, dict):
+                    if part.get("type") == "text" and part.get("text"):
+                        chunks.append(str(part.get("text")))
+                    elif part.get("text"):
+                        chunks.append(str(part.get("text")))
+            text = "".join(chunks).strip()
+        elif AI_ANALYSIS_PROVIDER == "openai":
             key = os.getenv("OPENAI_API_KEY")
             if not key:
                 return None
             body = {
-                "model": AI_ANALYSIS_MODEL or "gpt-4o-mini",
-                "temperature": 0.1,
+                "model": model,
+                "temperature": 0.05,
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": _ai_system_prompt()},
@@ -1344,26 +1475,32 @@ def _call_external_ai_analysis(context: dict[str, Any]) -> list[dict[str, str]] 
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=AI_ANALYSIS_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        AI_ANALYSIS_LAST_PROVIDER_RESPONSE = str(text)[:4000]
-        parsed = json.loads(text)
-        sections = parsed.get("sections") or []
-        clean: list[dict[str, str]] = []
-        for item in sections[:6]:
-            section = str(item.get("section", "")).strip()[:80]
-            content = str(item.get("content", "")).strip()
-            if section and content:
-                clean.append({"section": section, "content": content})
+                raw_response = resp.read().decode("utf-8", errors="replace")
+            AI_ANALYSIS_LAST_PROVIDER_RESPONSE = raw_response[:4000]
+            try:
+                data = json.loads(raw_response)
+            except Exception as exc:
+                AI_ANALYSIS_LAST_ERROR = f"OpenAI returned non-JSON HTTP payload ({type(exc).__name__}). Preview: {raw_response[:500]}"
+                return None
+            text = str(data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+        else:
+            AI_ANALYSIS_LAST_ERROR = f"Proveedor IA no soportado: {AI_ANALYSIS_PROVIDER}"
+            return None
+
+        if text:
+            AI_ANALYSIS_LAST_PROVIDER_RESPONSE = str(text)[:4000]
+        parsed = _extract_json_object(text)
+        clean = _normalize_ai_sections(parsed)
         if not clean:
-            AI_ANALYSIS_LAST_ERROR = "AI provider returned no valid sections"
+            preview = (text or "").replace("\n", " ")[:500]
+            AI_ANALYSIS_LAST_ERROR = f"AI provider returned non-JSON or no valid sections. Preview: {preview}"
         return clean or None
     except urllib.error.HTTPError as exc:
         try:
-            body = exc.read().decode("utf-8", errors="replace")[:1200]
+            body = exc.read().decode("utf-8", errors="replace")[:1600]
         except Exception:
             body = ""
-        AI_ANALYSIS_LAST_ERROR = f"HTTP {exc.code} from {AI_ANALYSIS_PROVIDER}: {body}"
+        AI_ANALYSIS_LAST_ERROR = f"HTTP {exc.code} from {AI_ANALYSIS_PROVIDER} using model {model}: {body}"
         return None
     except Exception as exc:
         AI_ANALYSIS_LAST_ERROR = f"{type(exc).__name__}: {exc}"
@@ -1384,7 +1521,7 @@ def generate_expert_ai_analysis(run: CanonicalRun | None, summary: dict[str, Any
     return {
         "mode": mode,
         "provider": status.get("provider"),
-        "model": status.get("model"),
+        "model": _configured_ai_model(),
         "enabled": bool(status.get("enabled")),
         "sections": sections,
         "context": context,
@@ -2531,7 +2668,7 @@ def _execute_ai_analysis_for_context(context: dict[str, Any]) -> dict[str, Any]:
     return {
         "mode": mode,
         "provider": status.get("provider"),
-        "model": status.get("model"),
+        "model": _configured_ai_model(),
         "enabled": bool(status.get("enabled")),
         "hasKey": bool(status.get("hasKey")),
         "error": AI_ANALYSIS_LAST_ERROR,

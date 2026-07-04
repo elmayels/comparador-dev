@@ -237,7 +237,7 @@ O bien:
 ```bash
 AI_ANALYSIS_PROVIDER=anthropic
 ANTHROPIC_API_KEY=...
-AI_ANALYSIS_MODEL=claude-3-5-sonnet-latest
+AI_ANALYSIS_MODEL=claude-haiku-4-5
 ```
 
 ### Regla canónica
@@ -293,7 +293,7 @@ Configuración Anthropic:
 export ENABLE_AI_ANALYSIS=1
 export AI_ANALYSIS_PROVIDER=anthropic
 export ANTHROPIC_API_KEY="tu_api_key"
-export AI_ANALYSIS_MODEL="claude-3-5-sonnet-latest"
+export AI_ANALYSIS_MODEL="claude-haiku-4-5"
 python run.py
 ```
 
@@ -327,3 +327,54 @@ Resultado esperado con API key válida:
 ```
 
 Si la API falla o no hay key, el sistema no rompe el Excel y devuelve fallback local con `LOCAL_EXPERT_FALLBACK_NO_KEY` o `LOCAL_EXPERT_FALLBACK_AI_ERROR`. Cuando ocurra un error, el tab `Análisis IA` y `/api/ai-analysis/status` muestran el motivo sin exponer secretos.
+
+## V3.7 - AI analysis hard fix
+
+Corrections for the APU AI analysis layer:
+
+- Provider-specific default model resolution. If `AI_ANALYSIS_PROVIDER=anthropic` and no model is explicitly set, the backend now uses `claude-haiku-4-5` instead of sending the OpenAI default `gpt-4o-mini` to Anthropic.
+- Robust JSON extraction for AI responses. The backend now accepts strict JSON, fenced JSON, or responses with accidental leading/trailing text, and extracts the JSON object safely.
+- JSONDecodeError no longer breaks the run. Invalid/non-JSON provider output is captured in `AI_ANALYSIS_LAST_ERROR` and the workbook uses the local expert fallback.
+- `GET /api/ai-analysis/status` exposes `lastError` and `lastProviderResponsePreview` for troubleshooting without leaking API keys.
+- The AI prompt is stricter: it must behave as an APU / Neodata / Construdata analyst, use calculated values, contractor names, overcosts, section breakdowns and market alerts.
+
+Recommended Anthropic configuration:
+
+```bash
+ENABLE_AI_ANALYSIS=1
+AI_ANALYSIS_PROVIDER=anthropic
+ANTHROPIC_API_KEY=...
+# Optional. If omitted, provider-compatible default is used.
+AI_ANALYSIS_MODEL=claude-haiku-4-5
+```
+
+Recommended smoke test:
+
+```bash
+curl http://localhost:8000/api/ai-analysis/status
+curl -X POST http://localhost:8000/api/ai-analysis/test -H "Content-Type: application/json" -d '{}'
+```
+
+Expected external mode:
+
+```json
+{"mode":"EXTERNAL_AI","provider":"anthropic","hasKey":true,"sections":[...]}
+```
+
+
+### V3.7.1 - Anthropic Haiku and env resolution fix
+
+- `claude-haiku-4-5` is now the default Anthropic model when no explicit model is provided.
+- If `AI_ANALYSIS_MODEL` starts with `claude` and no provider is defined, the backend resolves `AI_ANALYSIS_PROVIDER=anthropic` automatically.
+- Added local `.env` loading with support for spaces around `=`, for example `AI_ANALYSIS_MODEL = claude-haiku-4-5`.
+- Added common provider alias handling (`anthopic`, `claude` -> `anthropic`).
+- Provider HTTP responses are parsed defensively; non-JSON provider payloads no longer throw raw `JSONDecodeError` to the user.
+
+Recommended cheap Anthropic setup:
+
+```bash
+ENABLE_AI_ANALYSIS=1
+AI_ANALYSIS_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your_key
+AI_ANALYSIS_MODEL=claude-haiku-4-5
+```
