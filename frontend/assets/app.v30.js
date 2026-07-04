@@ -507,6 +507,34 @@ function comparisonProcessing(){
   shell(`${pageHead('Generando análisis profesional', 'Procesamiento de archivos XLSX, cálculo APU y preparación del diagnóstico profesional.')}<div class="card"><div class="progress"><span></span></div><div class="grid cols-2" style="margin-top:18px"><div><h3>Etapas</h3><p>✓ Recepción de archivos .xlsx<br>✓ Parser de conceptos<br>✓ Parser de matriz/APU<br>✓ Modelo de análisis<br>✓ Comparación económica inicial<br>✓ Generación de Excel</p></div><div><h3>Mensaje actual</h3><p>Identificando componentes que explican diferencias: materiales, mano de obra, maquinaria, porcentajes e indirectos.</p><button class="btn btn-primary" data-nav="comparison-results">Ver diagnóstico profesional</button></div></div></div>`, 'Procesamiento');
 }
 
+function diagnosticReportUrl(url){
+  if(!url || url === '#') return '#';
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}theme=${encodeURIComponent(state.theme)}`;
+}
+
+async function mountDiagnosticReport(url){
+  const frame = $('#diagnostic-report-frame');
+  const status = $('#diagnostic-report-status');
+  if(!frame) return;
+  if(status) status.innerHTML = '<strong>Preparando diagnóstico profesional...</strong><br><span class="muted">Cargando KPIs, tablas de evidencia y plan de revisión.</span>';
+  try{
+    const themedUrl = diagnosticReportUrl(url);
+    const res = await fetch(themedUrl, {cache:'no-store'});
+    if(!res.ok) throw new Error(`No fue posible cargar el diagnóstico (${res.status})`);
+    const html = await res.text();
+    frame.srcdoc = html;
+    frame.classList.remove('hidden');
+    if(status) status.classList.add('hidden');
+  }catch(err){
+    frame.classList.add('hidden');
+    if(status){
+      status.classList.remove('hidden');
+      status.innerHTML = `<strong>No fue posible embeber el diagnóstico.</strong><br><span class="muted">${err.message}</span><div class="actions" style="margin-top:12px"><a class="btn btn-primary" href="${diagnosticReportUrl(url)}" target="_blank">Abrir diagnóstico profesional</a></div>`;
+    }
+  }
+}
+
 function comparisonResults(){
   const real = state.lastComparisonRun;
   const multi = state.comparisonMode !== 'SINGLE';
@@ -515,10 +543,13 @@ function comparisonResults(){
     const summary = real.summary || {};
     const download = real.downloadUrl || reportUrl();
     const aiReport = summary.aiReportUrl || real.aiReportUrl || (real.id ? `/api/real-runs/${real.id}/ai-report` : '#');
+    const themedReport = diagnosticReportUrl(aiReport);
     const single = (summary.providersCount || providers.length) <= 1;
-    shell(`${pageHead('Diagnóstico profesional', single?'Lectura individual contra mercado, con evidencias y acciones de revisión.':'Comparativa contra mercado con ranking, evidencias y acciones de revisión.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><a class="btn btn-secondary" href="${aiReport}" target="_blank">Abrir en nueva pestaña</a><button class="btn btn-secondary" data-nav="matrix-detail">Ver detalle APU</button>`)}
-      <div class="callout" style="margin-bottom:16px"><strong>Resultado principal:</strong> esta vista reemplaza la pantalla anterior de resultados. El diagnóstico profesional concentra KPIs, tablas de evidencia, alertas contra mercado, top insumos y plan de revisión para el analista.</div>
-      <iframe title="Diagnóstico profesional" src="${aiReport}" style="width:100%;height:calc(100vh - 260px);min-height:720px;border:1px solid rgba(148,163,184,.25);border-radius:22px;background:#fff;box-shadow:var(--shadow);"></iframe>`, 'Diagnóstico profesional');
+    shell(`${pageHead('Diagnóstico profesional', single?'Lectura individual contra mercado, con evidencias y acciones de revisión.':'Comparativa contra mercado con ranking, evidencias y acciones de revisión.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><a class="btn btn-secondary" href="${themedReport}" target="_blank">Abrir en nueva pestaña</a>`)}
+      <div class="callout" style="margin-bottom:16px"><strong>Resultado principal:</strong> este tablero concentra KPIs, tablas de evidencia, alertas contra mercado, top insumos y plan de revisión para el analista.</div>
+      <div id="diagnostic-report-status" class="card" style="margin-bottom:16px"></div>
+      <iframe id="diagnostic-report-frame" title="Diagnóstico profesional" class="hidden" style="width:100%;height:calc(100vh - 220px);min-height:820px;border:1px solid var(--line);border-radius:22px;background:var(--panel);box-shadow:var(--shadow);"></iframe>`, 'Diagnóstico profesional');
+    mountDiagnosticReport(aiReport);
     return;
   }
   shell(`${pageHead('Diagnóstico profesional', multi?'Genera una comparativa para ver el diagnóstico profesional.':'Genera una comparativa individual para ver el diagnóstico profesional.', `<button class="btn btn-primary" data-nav="comparison-new">Nueva comparación</button>`)}<div class="callout"><strong>Sin corrida real:</strong> carga archivos .xlsx y ejecuta el análisis para generar el diagnóstico profesional.</div>`, 'Diagnóstico profesional');
