@@ -533,11 +533,17 @@ function diagVal(item){
   if(typeof v === 'number') return new Intl.NumberFormat('es-MX',{maximumFractionDigits:2}).format(v);
   return esc(v);
 }
+function statusClass(status){
+  const s = String(status || 'REVIEW').toUpperCase();
+  return s === 'OK' || s === 'LOW' || s === 'ACCEPTABLE' ? 'ok' : (s === 'CRITICAL' || s === 'HIGH' || s === 'HIGH_RISK' ? 'bad' : 'warn');
+}
+function statusLabel(status){
+  const s = String(status || 'REVIEW').toUpperCase();
+  return {OK:'Correcto', REVIEW:'Revisar', CRITICAL:'Crítico', LOW:'Bajo', MEDIUM:'Medio', HIGH:'Alto', ACCEPTABLE:'Aceptable', REVIEW_REQUIRED:'Requiere revisión', HIGH_RISK:'Alto riesgo'}[s] || esc(s);
+}
 function statusChip(status){
   const s = String(status || 'REVIEW').toUpperCase();
-  const cls = s === 'OK' || s === 'LOW' || s === 'ACCEPTABLE' ? 'ok' : (s === 'CRITICAL' || s === 'HIGH' || s === 'HIGH_RISK' ? 'bad' : 'warn');
-  const label = {OK:'Correcto', REVIEW:'Revisar', CRITICAL:'Crítico', LOW:'Bajo', MEDIUM:'Medio', HIGH:'Alto', ACCEPTABLE:'Aceptable', REVIEW_REQUIRED:'Requiere revisión', HIGH_RISK:'Alto riesgo'}[s] || esc(s);
-  return `<span class="badge ${cls}">${label}</span>`;
+  return `<span class="badge ${statusClass(s)}">${statusLabel(s)}</span>`;
 }
 function diagTable(headers, rows){
   const body = (rows && rows.length) ? rows.map(r=>`<tr>${r.map(c=>`<td>${c ?? '—'}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${headers.length}" class="muted">Sin datos calculados para esta sección</td></tr>`;
@@ -603,20 +609,34 @@ function renderProfessionalDiagnostic(diag, meta={}){
   const diagRows = [['Riesgo principal', pd.risk_summary], ['Driver de costo', pd.main_cost_driver], ['Trazabilidad de mercado', pd.market_traceability], ['Recomendación', pd.recommendation]].map(r=>[r[0], shortText(r[1], 180)]);
   const title = h.title || 'Diagnóstico profesional APU';
   const line = h.executive_line || 'Revisar partidas de mayor impacto y referencias sin trazabilidad plena.';
+  const riskKey = String(decision.verdict || h.general_status || 'REVIEW_REQUIRED').toUpperCase();
+  const riskClass = statusClass(riskKey);
+  const riskTitle = riskClass === 'bad' ? 'Dictamen crítico' : (riskClass === 'warn' ? 'Dictamen en revisión' : 'Dictamen favorable');
+  const criticalAlerts = (diag?.market_alerts || []).filter(a => String(a.severity || '').toUpperCase() === 'HIGH').length;
+  const reviewCount = (diag?.analyst_review_plan || []).length;
   return `
     <div class="diagnostic-native">
-      <div class="diag-hero card">
+      <div class="risk-banner ${riskClass}">
+        <div class="risk-mark">${riskClass === 'bad' ? '!' : (riskClass === 'warn' ? 'i' : '✓')}</div>
+        <div class="risk-copy">
+          <span>${esc(riskTitle)}</span>
+          <strong>${statusLabel(riskKey)}</strong>
+          <p>${esc(decision.main_reason || line)}</p>
+        </div>
+        <div class="risk-mini"><label>Alertas altas</label><strong>${criticalAlerts}</strong></div>
+        <div class="risk-mini"><label>Acciones de revisión</label><strong>${reviewCount}</strong></div>
+      </div>
+      <div class="diag-hero card ${riskClass}">
         <div>
           <div class="eyebrow"><span></span>${esc(meta.runType || h.run_type || 'Diagnóstico profesional')}</div>
           <h2>${esc(title)}</h2>
           <p>${esc(line)}</p>
-          <div class="actions"><a class="btn btn-primary" href="${esc(meta.download || '#')}">Descargar Excel</a>${meta.aiReport ? `<a class="btn btn-secondary" href="${esc(diagnosticReportUrl(meta.aiReport))}" target="_blank">Abrir versión imprimible</a>` : ''}</div>
         </div>
-        <div class="decision-card ${String(h.general_status||'REVIEW').toLowerCase()}">
-          <label>Dictamen</label>
-          ${statusChip(h.general_status)}
-          <strong>${esc(decision.verdict || 'REVIEW_REQUIRED')}</strong>
-          <p>${esc(decision.main_reason || line)}</p>
+        <div class="decision-card ${riskClass}">
+          <label>Dictamen general</label>
+          <strong>${statusLabel(riskKey)}</strong>
+          <p>${esc(decision.next_action || decision.main_reason || line)}</p>
+          <div class="decision-actions">${statusChip(riskKey)}<span>Prioridad: ${statusLabel(decision.priority || riskKey)}</span></div>
         </div>
       </div>
       <div class="grid cols-4 diag-kpi-grid">${kpiCards || '<div class="callout">Sin KPIs disponibles.</div>'}</div>

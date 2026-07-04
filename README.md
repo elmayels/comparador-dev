@@ -415,3 +415,11 @@ Esta versión rehace la capa de diagnóstico profesional como producto comercial
 - La diferencia se muestra en KPIs, alertas contra mercado, plan de revisión, tab `Análisis IA` y `Métricas de Riesgo`.
 - El carril de mercado conserva la regla canónica: indirecto de mercado fijo 25%.
 - No se modifican cálculos de importes, operadores, Construdata ni comparativa.
+
+
+## V4.7 - Dictamen destacado en diagnóstico profesional
+
+- Se agregó una banda ejecutiva de riesgo para que dictámenes Crítico / Alto riesgo sean visibles de forma dominante.
+- Se traduce el código interno HIGH_RISK a etiqueta comercial Alto riesgo.
+- Se muestran alertas altas y acciones de revisión en el encabezado del diagnóstico.
+- No se modifican cálculos, mercado, operadores, indirectos ni Construdata.
