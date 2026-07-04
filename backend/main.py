@@ -1844,6 +1844,64 @@ def _items_by_section(items: list[Any], qty_by_key: dict[str, float], source: st
     return buckets
 
 
+
+def _declared_indirect_pct_from_item(item: Any) -> float | None:
+    """Return contractor-declared indirect percentage as percent points (25.0 = 25%)."""
+    desc = _normalize_text(str(getattr(item, "description", "") or ""))
+    code = _normalize_text(str(getattr(item, "code", "") or ""))
+    if "indirect" not in desc and "indirect" not in code and code not in {"ind", "%ind"}:
+        return None
+    if "precio unitario" in desc or "total" in desc:
+        return None
+    candidates = [getattr(item, "quantity", None), getattr(item, "percent", None)]
+    for raw in candidates:
+        if raw is None:
+            continue
+        val = _safe_float(raw, None)
+        if val is None or val <= 0:
+            continue
+        # Matrix rows usually store 0.25 for 25%, but tolerate 25 as well.
+        pct = val * 100 if val <= 1 else val
+        if 0 < pct <= 100:
+            return round(pct, 4)
+    return None
+
+
+def _extract_contractor_indirects(run: CanonicalRun | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not run:
+        return out
+    for provider in getattr(run, "providers", []) or []:
+        provider_name = getattr(provider, "name", "") or "Contratista"
+        found: list[float] = []
+        for item in getattr(provider, "apu_items", []) or []:
+            pct = _declared_indirect_pct_from_item(item)
+            if pct is None:
+                continue
+            found.append(pct)
+        if not found:
+            continue
+        # If multiple indirect rows exist, expose the most frequent/first meaningful value.
+        pct = found[0]
+        diff = round(pct - 25.0, 4)
+        out.append({
+            "provider": provider_name,
+            "declared_pct": pct,
+            "market_pct": 25.0,
+            "difference_points": diff,
+            "differs_from_market": abs(diff) > 0.01,
+            "occurrences": len(found),
+        })
+    return out
+
+
+def _indirect_alert_text(row: dict[str, Any]) -> str:
+    provider = row.get("provider") or "El contratista"
+    declared = _pct_text(row.get("declared_pct"))
+    diff = _safe_float(row.get("difference_points"))
+    direction = "por arriba" if diff > 0 else "por debajo"
+    return f"{provider} declara indirecto de {declared}, {abs(diff):.1f} pts {direction} del criterio de mercado 25%."
+
 def _section_totals_from_items(items: dict[str, list[dict[str, Any]]]) -> tuple[dict[str, float], dict[str, float]]:
     values: dict[str, float] = {}
     market_values: dict[str, float] = {}
@@ -1929,6 +1987,7 @@ def _build_base_diagnostic_context(run: CanonicalRun, context: dict[str, Any]) -
         "direct_cost": context.get("direct_cost", 0),
         "indirect_cost": context.get("indirect_cost", 0),
         "indirect_pct": context.get("indirect_pct", 25),
+        "contractor_indirects": [],
         "concepts_processed": context.get("concepts_executable", 0),
         "with_reference": context.get("matched_matrices", 0),
         "without_full_reference": context.get("unmatched_matrices", 0),
@@ -2002,6 +2061,7 @@ def _build_comparison_diagnostic_context(run: CanonicalRun, context: dict[str, A
         "direct_cost": br.get("direct"),
         "indirect_cost": br.get("indirect"),
         "indirect_pct": 25,
+        "contractor_indirects": _extract_contractor_indirects(run),
         "concepts_processed": provider.get("concepts_executable", 0),
         "with_reference": provider.get("reference_items", 0),
         "without_full_reference": int(provider.get("fallback_items", 0) or 0) + int(provider.get("no_reference_items", 0) or 0),
@@ -2064,7 +2124,17 @@ def _kpis_from_diag(ctx: dict[str, Any], alerts_count: int = 0, priorities_count
         {"label":"% diferencia contra mercado", "value":ctx.get("difference_pct"), "format":"percent", "status":"review"},
         {"label":"Costo directo", "value":ctx.get("direct_cost"), "format":"currency", "status":"neutral"},
         {"label":"Indirecto", "value":ctx.get("indirect_cost"), "format":"currency", "status":"neutral"},
-        {"label":"% indirecto aplicado", "value":ctx.get("indirect_pct"), "format":"percent", "status":"neutral"},
+        {"label":"% indirecto mercado", "value":ctx.get("indirect_pct"), "format":"percent", "status":"neutral"},
+    ]
+    indirects = ctx.get("contractor_indirects") or []
+    differing_indirects = [r for r in indirects if r.get("differs_from_market")]
+    if indirects:
+        if len(indirects) == 1:
+            row = indirects[0]
+            kpis.append({"label":"% indirecto declarado", "value":row.get("declared_pct"), "format":"percent", "status":"review" if row.get("differs_from_market") else "ok"})
+        else:
+            kpis.append({"label":"Contratistas con indirecto distinto", "value":len(differing_indirects), "format":"number", "status":"review" if differing_indirects else "ok"})
+    kpis += [
         {"label":"Conceptos procesados", "value":ctx.get("concepts_processed"), "format":"number", "status":"neutral"},
         {"label":"Con referencia", "value":ctx.get("with_reference"), "format":"number", "status":"ok"},
         {"label":"Sin referencia plena", "value":ctx.get("without_full_reference"), "format":"number", "status":"review"},
@@ -2105,6 +2175,20 @@ def _build_market_alerts(ctx: dict[str, Any], section_rows: list[dict[str, Any]]
             no_ref = not item.get("market_reference")
             if no_ref or (diff_pct is not None and abs(float(diff_pct or 0)) >= 15):
                 alerts.append({"severity":"HIGH" if diff_pct is not None and abs(float(diff_pct or 0)) >= 25 else "MEDIUM", "alert_type":label if not no_ref else "Sin referencia Construdata", "item":item.get("code") or item.get("description"), "section":item.get("section"), "contractor_value":item.get("contractor_unit_price"), "market_value":item.get("market_unit_price"), "deviation_pct":diff_pct, "analyst_check":_recommended_action(item)})
+    for row in ctx.get("contractor_indirects") or []:
+        if not row.get("differs_from_market"):
+            continue
+        diff_pts = abs(_safe_float(row.get("difference_points")))
+        alerts.append({
+            "severity":"HIGH" if diff_pts >= 10 else "MEDIUM",
+            "alert_type":"Indirecto distinto al criterio 25%",
+            "item":row.get("provider") or "Contratista",
+            "section":"Indirectos / financiero",
+            "contractor_value":row.get("declared_pct"),
+            "market_value":row.get("market_pct"),
+            "deviation_pct":row.get("difference_points"),
+            "analyst_check":"Confirmar si el indirecto declarado es aceptable; para mercado se conserva el criterio estándar 25% y la diferencia debe explicarse en negociación.",
+        })
     return _dedupe_rows(alerts, ["alert_type", "item", "section"], 20)
 
 
@@ -2162,6 +2246,7 @@ def _professional_diagnostic_prompt() -> str:
         "Si run_type es multi_provider_comparison, sí puedes comparar contratistas. "
         "Usa tablas y acciones, no párrafos largos. Las descripciones deben ser cortas. "
         "No repitas insumos: top_materials, top_labor y top_equipment deben estar consolidados por código/descripción/referencia, ordenados por impacto económico agregado. "
+        "Si el contexto incluye contractor_indirects con differs_from_market=true, debes reflejarlo como KPI, alerta financiera y acción de revisión; el mercado usa 25% aunque el contratista declare otro indirecto. "
         "Respeta exactamente la estructura: headline, kpis, section_summary, top_materials, top_labor, top_equipment, critical_concepts, market_alerts, analyst_review_plan, professional_diagnosis, final_decision. "
         "Cada acción del plan debe decir qué revisar, por qué importa, dónde buscarlo y qué decisión tomar. "
         "Si falta evidencia, usa null, [] o 'requiere validación'."
@@ -2340,11 +2425,56 @@ def _call_external_professional_diagnostic(ctx: dict[str, Any], fallback: dict[s
         return None
 
 
+
+def _enforce_indirect_disclosure(diag: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Guarantee contractor indirect deviations are visible in product payloads."""
+    indirects = [r for r in (ctx.get("contractor_indirects") or []) if r.get("differs_from_market")]
+    if not indirects or not isinstance(diag, dict):
+        return diag
+    kpis = diag.setdefault("kpis", [])
+    existing_labels = {_normalize_text(str(k.get("label", ""))) for k in kpis if isinstance(k, dict)}
+    if len(indirects) == 1:
+        row = indirects[0]
+        if _normalize_text("% indirecto declarado") not in existing_labels:
+            kpis.append({"label":"% indirecto declarado", "value":row.get("declared_pct"), "format":"percent", "status":"review"})
+        if _normalize_text("Diferencia indirecto vs 25%") not in existing_labels:
+            kpis.append({"label":"Diferencia indirecto vs 25%", "value":row.get("difference_points"), "format":"points", "status":"review"})
+    else:
+        if _normalize_text("Contratistas con indirecto distinto") not in existing_labels:
+            kpis.append({"label":"Contratistas con indirecto distinto", "value":len(indirects), "format":"number", "status":"review"})
+    alerts = diag.setdefault("market_alerts", [])
+    for row in indirects:
+        exists = any(_normalize_text(str(a.get("alert_type", ""))) == _normalize_text("Indirecto distinto al criterio 25%") and _normalize_text(str(a.get("item", ""))) == _normalize_text(str(row.get("provider", ""))) for a in alerts if isinstance(a, dict))
+        if not exists:
+            diff_pts = abs(_safe_float(row.get("difference_points")))
+            alerts.append({
+                "severity":"HIGH" if diff_pts >= 10 else "MEDIUM",
+                "alert_type":"Indirecto distinto al criterio 25%",
+                "item":row.get("provider") or "Contratista",
+                "section":"Indirectos / financiero",
+                "contractor_value":row.get("declared_pct"),
+                "market_value":row.get("market_pct"),
+                "deviation_pct":row.get("difference_points"),
+                "analyst_check":"Confirmar si el indirecto declarado es aceptable; para mercado se conserva el criterio estándar 25% y la diferencia debe explicarse en negociación.",
+            })
+    plan = diag.setdefault("analyst_review_plan", [])
+    if not any("indirect" in _normalize_text(str(p.get("what_to_review", ""))) for p in plan if isinstance(p, dict)):
+        row = indirects[0]
+        plan.append({
+            "priority": len(plan) + 1,
+            "what_to_review":"Revisar indirecto declarado",
+            "why_it_matters":_indirect_alert_text(row),
+            "where_to_check":"Detalle del proveedor, sección financiera / indirectos",
+            "decision_needed":"Definir si el indirecto declarado se acepta, se negocia o se documenta como desviación financiera contra el 25% de mercado.",
+        })
+    return diag
+
 def generate_professional_diagnostic(run: CanonicalRun | None, summary: dict[str, Any] | None = None) -> dict[str, Any]:
     ctx = _build_diagnostic_context(run, summary)
     fallback = _local_professional_diagnostic(ctx)
     external = _call_external_professional_diagnostic(ctx, fallback)
     diag = _sanitize_professional_diagnostic(external or fallback)
+    diag = _enforce_indirect_disclosure(diag, ctx)
     # Never expose technical mode/provider/model in the commercial payload.
     diag["_context"] = ctx
     return diag
@@ -2389,56 +2519,256 @@ def _write_table_block(ws, row: int, title: str, headers: list[str], rows: list[
     return start + 2
 
 
+
+def _diag_short(v: Any, limit: int = 90) -> str:
+    text = str(v or "").strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _formal_analysis_paragraphs(diag: dict[str, Any], run: CanonicalRun | None = None) -> list[tuple[str, str]]:
+    """Formal narrative for Excel only.
+
+    The web diagnosis is intentionally table/dashboard oriented. The Excel tab
+    `Análisis IA` is now a short formal document for the analyst, written from
+    the same diagnostic JSON but not duplicating the HTML tables.
+    """
+    ctx = diag.get("_context") or {}
+    h = diag.get("headline") or {}
+    decision = diag.get("final_decision") or {}
+    pd = diag.get("professional_diagnosis") or {}
+    sections = diag.get("section_summary") or []
+    concepts = diag.get("critical_concepts") or []
+    alerts = diag.get("market_alerts") or []
+    plan = diag.get("analyst_review_plan") or []
+    run_type = ctx.get("run_type") or h.get("run_type") or "comparison"
+    title_kind = _diagnostic_run_label(run_type)
+    total = _money_text(ctx.get("total_amount")) if ctx.get("total_amount") is not None else "N/A"
+    market = _money_text(ctx.get("market_amount")) if ctx.get("market_amount") is not None else "N/A"
+    diff = _money_text(ctx.get("difference_amount")) if ctx.get("difference_amount") is not None else "N/A"
+    diff_pct = _pct_text(ctx.get("difference_pct")) if ctx.get("difference_pct") is not None else "N/A"
+    coverage = _pct_text(ctx.get("coverage_pct")) if ctx.get("coverage_pct") is not None else "N/A"
+    without_ref = int(ctx.get("without_full_reference") or 0)
+    with_ref = int(ctx.get("with_reference") or 0)
+    status = _status_label((h.get("general_status") or "REVIEW"))
+    top_concept = concepts[0] if concepts else {}
+    top_concept_text = ""
+    if top_concept:
+        top_concept_text = f"La partida {top_concept.get('concept_code') or top_concept.get('code')} concentra {_money_text(top_concept.get('contractor_amount') or top_concept.get('impact_amount'))} ({_pct_text(top_concept.get('participation_pct'))} del total), por lo que debe revisarse antes que observaciones de bajo importe."
+    main_section = None
+    if sections:
+        main_section = max(sections, key=lambda s: float(s.get("participation_pct") or 0))
+    section_text = ""
+    if main_section:
+        section_text = f"La sección con mayor peso es {main_section.get('section')}, con {_money_text(main_section.get('contractor_amount'))} y {_pct_text(main_section.get('participation_pct'))} de participación."
+    alert_text = ""
+    high_alerts = [a for a in alerts if str(a.get("severity", "")).upper() == "HIGH"]
+    if high_alerts:
+        first = high_alerts[0]
+        alert_text = f"La alerta crítica principal corresponde a {first.get('item') or first.get('alert_type')}; el analista debe validar {first.get('analyst_check') or 'su referencia y composición técnica'}."
+    elif alerts:
+        first = alerts[0]
+        alert_text = f"La primera alerta de revisión corresponde a {first.get('item') or first.get('alert_type')}; se recomienda confirmar trazabilidad antes del cierre."
+    else:
+        alert_text = "No se identificaron alertas críticas en la evidencia consolidada, aunque debe mantenerse la revisión de las partidas principales."
+
+    indirect_note = ""
+    differing_indirects = [r for r in (ctx.get("contractor_indirects") or []) if r.get("differs_from_market")]
+    if differing_indirects:
+        if len(differing_indirects) == 1:
+            indirect_note = _indirect_alert_text(differing_indirects[0]) + " Para el carril de mercado se mantiene 25%, por lo que esta diferencia debe revisarse como criterio financiero del contratista."
+        else:
+            indirect_note = f"Se detectaron {len(differing_indirects)} contratistas con indirecto distinto al 25%. Para el carril de mercado se mantiene 25%, por lo que las diferencias deben revisarse en el apartado financiero."
+
+    if run_type == "single_provider_comparison":
+        provider = (ctx.get("provider_names") or ctx.get("providers") or [None])[0]
+        if isinstance(provider, dict):
+            provider = provider.get("name")
+        provider = provider or "el proveedor evaluado"
+        summary = (
+            f"La corrida corresponde a una lectura individual contra mercado. No existe ranking entre contratistas; el análisis se centra en validar si la propuesta de {provider} es razonable frente a referencias de mercado. "
+            f"El monto identificado es {total}, el monto de mercado consolidado es {market} y la diferencia estimada es {diff} ({diff_pct}). "
+            f"El dictamen preliminar es {status}."
+        )
+    elif run_type == "multi_provider_comparison":
+        summary = (
+            f"La corrida corresponde a una comparativa múltiple. El objetivo es identificar posición económica, dispersión entre propuestas y desviaciones contra mercado sin perder la trazabilidad por sección APU. "
+            f"El monto total de referencia calculado para la corrida es {total}; el mercado consolidado disponible es {market}, con diferencia {diff} ({diff_pct}). "
+            f"El dictamen preliminar es {status}."
+        )
+    else:
+        summary = (
+            f"La corrida corresponde a un presupuesto base. El monto calculado es {total}, integrado por costo directo e indirecto bajo las reglas configuradas del modelo. "
+            f"La cobertura de referencia es {coverage}, con {with_ref} elementos con referencia y {without_ref} sin referencia plena. "
+            f"El dictamen preliminar es {status}."
+        )
+
+    sections_reading = (
+        f"El análisis por secciones permite ubicar la fuente del riesgo económico. {section_text} "
+        "Las secciones de Materiales, Mano de obra, Maquinaria/equipo, Básicos e Indirectos deben revisarse por separado, porque una diferencia global puede tener causas técnicas distintas: precio de insumo, rendimiento, equipo asignado, operador o porcentaje financiero. "
+        + (indirect_note or "")
+    )
+    traceability = (
+        f"La trazabilidad de mercado muestra {with_ref} registros con referencia y {without_ref} sin referencia plena. "
+        "Los valores sin referencia plena no deben interpretarse como validación de mercado; deben confirmarse en Detalle APU mediante la columna de referencia Construdata, soporte técnico o cotización complementaria."
+    )
+    priorities = (
+        f"{top_concept_text} {alert_text} "
+        "El orden de revisión debe seguir impacto económico primero, desviación contra mercado después y trazabilidad finalmente. Esto evita consumir tiempo en diferencias porcentuales altas pero sin efecto económico relevante."
+    )
+    recommendation = pd.get("recommendation") or decision.get("next_action") or "Atender las prioridades marcadas antes de liberar el resultado."
+    closing = (
+        f"La siguiente acción recomendada es: {recommendation} "
+        "El resultado puede utilizarse como guía de revisión y negociación, pero cualquier partida marcada como crítica o sin referencia plena debe quedar documentada antes de usar el análisis como soporte final."
+    )
+    return [
+        ("Resumen ejecutivo", summary),
+        ("Lectura por secciones APU", sections_reading),
+        ("Trazabilidad de mercado", traceability),
+        ("Prioridades de revisión", priorities),
+        ("Conclusión para el analista", closing),
+    ]
+
+
+def _write_text_block(ws, row: int, title: str, body: str, max_col: int = 10) -> int:
+    _section_label(ws, row, title, max_col)
+    row += 1
+    ws.cell(row, 1, body)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row + 2, end_column=max_col)
+    cell = ws.cell(row, 1)
+    cell.alignment = Alignment(wrap_text=True, vertical="top")
+    cell.font = Font(size=11, color="344054")
+    cell.fill = PatternFill("solid", fgColor="F8FAFC")
+    for rr in range(row, row + 3):
+        ws.row_dimensions[rr].height = 34
+    return row + 4
+
+
 def _write_analisis_ia(ws, run: CanonicalRun | None = None):
     diag = generate_professional_diagnostic(run)
-    _setup_sheet(ws, "Análisis IA", "Diagnóstico profesional para revisión de precios unitarios.", 10)
-    _set_widths(ws, {"A": 20, "B": 42, "C": 18, "D": 18, "E": 18, "F": 18, "G": 18, "H": 20, "I": 22, "J": 32})
+    _setup_sheet(ws, "Análisis IA", "Documento formal del diagnóstico profesional para el analista de precios unitarios.", 10)
+    _set_widths(ws, {"A": 18, "B": 24, "C": 18, "D": 18, "E": 18, "F": 18, "G": 18, "H": 18, "I": 18, "J": 18})
     headline = diag.get("headline", {})
     decision = diag.get("final_decision", {})
+    ctx = diag.get("_context") or {}
     row = 3
-    ws.cell(row, 1, "Tipo de corrida"); ws.cell(row, 2, _diagnostic_run_label(headline.get("run_type", "")))
-    ws.cell(row, 4, "Estado general"); ws.cell(row, 5, _status_label(headline.get("general_status", "REVIEW")))
-    ws.cell(row + 1, 1, "Lectura ejecutiva"); ws.cell(row + 1, 2, headline.get("executive_line", ""))
-    ws.merge_cells(start_row=row+1, start_column=2, end_row=row+1, end_column=10)
-    for c in [1,4]: ws.cell(row, c).font = Font(bold=True, color=BRAND["navy"])
-    ws.cell(row+1, 1).font = Font(bold=True, color=BRAND["navy"])
-    ws.cell(row+1, 2).alignment = Alignment(wrap_text=True)
-    row += 4
-
-    # KPI table
-    kpi_rows = [[k.get("label"), _diag_value(k.get("value"), k.get("format")), k.get("status", "")] for k in diag.get("kpis", [])]
-    row = _write_table_block(ws, row, "KPIs principales", ["Indicador", "Valor", "Estado"], kpi_rows, table_name="DiagKpis")
-
-    section_rows = []
-    for s in diag.get("section_summary", []):
-        section_rows.append([s.get("section"), s.get("contractor_amount"), s.get("market_amount"), s.get("difference_amount"), (float(s.get("difference_pct") or 0)/100 if s.get("difference_pct") is not None else None), (float(s.get("participation_pct") or 0)/100), _status_label(s.get("status")), s.get("comment")])
-    row = _write_table_block(ws, row, "Resumen por secciones APU", ["Sección", "Importe", "Mercado", "Diferencia $", "Diferencia %", "% total", "Estado", "Comentario"], section_rows, money_cols=[2,3,4], pct_cols=[5,6], table_name="DiagSections")
-
-    mat_rows = [[i.get("code"), i.get("description"), i.get("unit"), i.get("quantity"), i.get("contractor_unit_price"), i.get("market_unit_price"), i.get("difference_amount"), (float(i.get("difference_pct") or 0)/100 if i.get("difference_pct") is not None else None), i.get("impact_amount"), i.get("market_reference"), i.get("recommended_action")] for i in diag.get("top_materials", [])[:10]]
-    row = _write_table_block(ws, row, "Top 10 materiales por impacto", ["Código", "Descripción", "Unidad", "Cantidad", "P.U.", "P.U. mercado", "Dif. $", "Dif. %", "Importe", "Referencia", "Acción"], mat_rows, money_cols=[5,6,7,9], pct_cols=[8], table_name="DiagMaterials")
-
-    lab_rows = [[i.get("code"), i.get("description"), i.get("unit"), i.get("operator"), i.get("quantity"), i.get("contractor_unit_price"), i.get("market_unit_price"), i.get("difference_amount"), (float(i.get("difference_pct") or 0)/100 if i.get("difference_pct") is not None else None), i.get("impact_amount"), i.get("recommended_action")] for i in diag.get("top_labor", [])[:10]]
-    row = _write_table_block(ws, row, "Top 10 mano de obra / cuadrillas", ["Código", "Descripción", "Unidad", "Op.", "Rend./Cant.", "P.U.", "P.U. mercado", "Dif. $", "Dif. %", "Importe", "Acción"], lab_rows, money_cols=[6,7,8,10], pct_cols=[9], table_name="DiagLabor")
-
-    eq_rows = [[i.get("code"), i.get("description"), i.get("unit"), i.get("quantity"), i.get("contractor_unit_price"), i.get("market_unit_price"), i.get("difference_amount"), (float(i.get("difference_pct") or 0)/100 if i.get("difference_pct") is not None else None), i.get("impact_amount"), i.get("recommended_action")] for i in diag.get("top_equipment", [])[:10]]
-    row = _write_table_block(ws, row, "Top 10 maquinaria / equipo", ["Código", "Descripción", "Unidad", "Cantidad", "P.U.", "P.U. mercado", "Dif. $", "Dif. %", "Importe", "Acción"], eq_rows, money_cols=[5,6,7,9], pct_cols=[8], table_name="DiagEquipment")
-
-    concept_rows = [[c.get("concept_code"), c.get("description"), c.get("contractor_amount"), c.get("market_amount"), c.get("difference_amount"), (float(c.get("difference_pct") or 0)/100 if c.get("difference_pct") is not None else None), (float(c.get("participation_pct") or 0)/100), c.get("probable_cause"), c.get("priority_action")] for c in diag.get("critical_concepts", [])[:10]]
-    row = _write_table_block(ws, row, "Partidas críticas del catálogo", ["Partida", "Descripción", "Importe", "Mercado", "Dif. $", "Dif. %", "% total", "Causa probable", "Acción prioritaria"], concept_rows, money_cols=[3,4,5], pct_cols=[6,7], table_name="DiagConcepts")
-
-    alert_rows = [[a.get("severity"), a.get("alert_type"), a.get("item"), a.get("section"), a.get("contractor_value"), a.get("market_value"), (float(a.get("deviation_pct") or 0)/100 if a.get("deviation_pct") is not None else None), a.get("analyst_check")] for a in diag.get("market_alerts", [])[:20]]
-    row = _write_table_block(ws, row, "Alertas contra mercado", ["Severidad", "Tipo", "Partida/Insumo", "Sección", "Valor", "Mercado", "Desviación", "Qué revisar"], alert_rows, money_cols=[5,6], pct_cols=[7], table_name="DiagAlerts")
-
-    plan_rows = [[p.get("priority"), p.get("what_to_review"), p.get("why_it_matters"), p.get("where_to_check"), p.get("decision_needed")] for p in diag.get("analyst_review_plan", [])[:10]]
-    row = _write_table_block(ws, row, "Plan de revisión para el analista", ["Prioridad", "Qué revisar", "Por qué importa", "Dónde buscar", "Decisión requerida"], plan_rows, int_cols=[1], table_name="DiagPlan")
-
-    pd = diag.get("professional_diagnosis", {})
-    diagnosis_rows = [["Riesgo principal", pd.get("risk_summary")], ["Driver de costo", pd.get("main_cost_driver")], ["Trazabilidad", pd.get("market_traceability")], ["Recomendación", pd.get("recommendation")]]
-    row = _write_table_block(ws, row, "Diagnóstico profesional breve", ["Tema", "Lectura"], diagnosis_rows, table_name="DiagBrief")
-
-    final_rows = [[_status_label(headline.get("general_status", "REVIEW")), decision.get("main_reason"), decision.get("next_action"), decision.get("priority")]]
-    row = _write_table_block(ws, row, "Conclusión ejecutiva", ["Dictamen", "Motivo principal", "Próxima acción", "Prioridad"], final_rows, table_name="DiagDecision")
+    meta_rows = [
+        ["Tipo de corrida", _diagnostic_run_label(headline.get("run_type") or ctx.get("run_type") or "")],
+        ["Dictamen", _status_label(headline.get("general_status", "REVIEW"))],
+        ["Próxima acción", decision.get("next_action", "Revisar prioridades del diagnóstico")],
+    ]
+    for idx, (label, value) in enumerate(meta_rows, row):
+        ws.cell(idx, 1, label)
+        ws.cell(idx, 2, value)
+        ws.cell(idx, 1).font = Font(bold=True, color=BRAND["navy"])
+        ws.cell(idx, 2).alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=idx, start_column=2, end_row=idx, end_column=10)
+    row += len(meta_rows) + 2
+    for title, body in _formal_analysis_paragraphs(diag, run):
+        row = _write_text_block(ws, row, title, body, 10)
+    # Compact appendix with only the most important actions, not a duplicate of the web dashboard.
+    plan_rows = []
+    for p in (diag.get("analyst_review_plan") or [])[:6]:
+        plan_rows.append([p.get("priority"), p.get("what_to_review"), p.get("why_it_matters"), p.get("where_to_check"), p.get("decision_needed")])
+    row = _write_table_block(ws, row, "Plan de revisión resumido", ["Prioridad", "Qué revisar", "Por qué importa", "Dónde buscar", "Decisión requerida"], plan_rows, int_cols=[1], table_name="AnalisisPlanResumen")
     ws.freeze_panes = "A7"
+
+
+def _risk_metric_level(metric: str, value: Any) -> tuple[str, str]:
+    v = _safe_float(value)
+    if metric == "coverage":
+        if v >= 90: return "LOW", "Cobertura igual o mayor a 90%"
+        if v >= 70: return "MEDIUM", "Cobertura entre 70% y 89.99%"
+        return "HIGH", "Cobertura menor a 70%"
+    if metric in {"difference_pct", "section_deviation_pct"}:
+        av = abs(v)
+        if av < 8: return "LOW", "Desviación menor a 8%"
+        if av < 20: return "MEDIUM", "Desviación entre 8% y 19.99%"
+        return "HIGH", "Desviación igual o mayor a 20%"
+    if metric == "critical_alerts":
+        if v <= 0: return "LOW", "Sin alertas críticas"
+        if v <= 2: return "MEDIUM", "Entre 1 y 2 alertas críticas"
+        return "HIGH", "Tres o más alertas críticas"
+    if metric == "without_reference":
+        if v <= 0: return "LOW", "Sin elementos sin referencia plena"
+        if v <= 10: return "MEDIUM", "Entre 1 y 10 elementos sin referencia plena"
+        return "HIGH", "Más de 10 elementos sin referencia plena"
+    if metric == "concentration_pct":
+        if v < 20: return "LOW", "La partida principal pesa menos de 20%"
+        if v < 35: return "MEDIUM", "La partida principal pesa entre 20% y 34.99%"
+        return "HIGH", "La partida principal concentra 35% o más"
+    if metric == "indirect_pct":
+        if abs(v - 25) <= 0.01: return "LOW", "Indirecto alineado al criterio 25%"
+        if 15 <= v <= 35: return "MEDIUM", "Indirecto fuera de 25%, pero dentro de rango razonable 15%-35%"
+        return "HIGH", "Indirecto fuera de rango razonable"
+    if metric == "contractor_indirect_delta":
+        av = abs(v)
+        if av <= 0.01: return "LOW", "El contratista declara 25% o no existe diferencia relevante"
+        if av < 10: return "MEDIUM", "El indirecto declarado difiere menos de 10 puntos contra el criterio 25%"
+        return "HIGH", "El indirecto declarado difiere 10 puntos o más contra el criterio 25%"
+    return "MEDIUM", "Requiere validación del analista"
+
+
+def _risk_metric_rows_from_diag(diag: dict[str, Any]) -> list[list[Any]]:
+    ctx = diag.get("_context") or {}
+    alerts = diag.get("market_alerts") or []
+    sections = diag.get("section_summary") or []
+    concepts = diag.get("critical_concepts") or []
+    critical_alerts = len([a for a in alerts if str(a.get("severity", "")).upper() == "HIGH"])
+    max_section_dev = 0.0
+    for s in sections:
+        if s.get("difference_pct") is not None:
+            max_section_dev = max(max_section_dev, abs(_safe_float(s.get("difference_pct"))))
+    max_concentration = 0.0
+    if concepts:
+        max_concentration = max(_safe_float(c.get("participation_pct")) for c in concepts)
+    metrics = [
+        ("Cobertura de mercado", "coverage", ctx.get("coverage_pct"), "Mide qué tanto del análisis cuenta con referencia o matriz trazable.", "Validar elementos sin referencia plena antes del cierre."),
+        ("Diferencia global contra mercado", "difference_pct", ctx.get("difference_pct"), "Mide la desviación total disponible frente a mercado.", "Priorizar partidas que expliquen la diferencia monetaria."),
+        ("Alertas críticas", "critical_alerts", critical_alerts, "Cuenta alertas de severidad alta generadas por impacto, desviación o trazabilidad.", "Atender alertas críticas antes que observaciones menores."),
+        ("Elementos sin referencia plena", "without_reference", ctx.get("without_full_reference"), "Identifica precios o insumos que no tienen respaldo completo de mercado.", "Confirmar con Construdata, matriz equivalente o soporte documental."),
+        ("Concentración de partida principal", "concentration_pct", max_concentration, "Mide si una sola partida domina el presupuesto o la propuesta.", "Revisar alcance, matriz, rendimiento y cantidad de esa partida."),
+        ("Mayor desviación por sección", "section_deviation_pct", max_section_dev, "Detecta si Materiales, MO, Maquinaria o Indirectos concentran la desviación.", "Revisar la sección con mayor desviación y sus insumos principales."),
+        ("Indirecto aplicado en mercado", "indirect_pct", ctx.get("indirect_pct"), "Evalúa si el porcentaje financiero de mercado está alineado con el criterio definido.", "Confirmar criterio financiero aplicable antes de emitir cierre."),
+    ]
+    differing_indirects = [r for r in (ctx.get("contractor_indirects") or []) if r.get("differs_from_market")]
+    if differing_indirects:
+        max_delta = max(abs(_safe_float(r.get("difference_points"))) for r in differing_indirects)
+        metrics.append(("Indirecto declarado por contratista", "contractor_indirect_delta", max_delta, "Compara el indirecto declarado por el contratista contra el criterio estándar 25% usado en mercado.", "Revisar si el indirecto declarado debe aceptarse, negociarse o documentarse como diferencia financiera."))
+    rows = []
+    for label, key, value, why, action in metrics:
+        level, rule = _risk_metric_level(key, value)
+        if value is None:
+            display = "N/A"
+        elif key in {"coverage", "difference_pct", "concentration_pct", "section_deviation_pct", "indirect_pct"}:
+            display = _pct_text(value)
+        elif key == "contractor_indirect_delta":
+            display = f"{_safe_float(value):.1f} pts"
+        else:
+            display = int(_safe_float(value))
+        rows.append([label, display, _status_label(level), rule, why, action])
+    decision = diag.get("final_decision") or {}
+    rows.append(["Dictamen final", decision.get("verdict", "REVIEW_REQUIRED"), _status_label(decision.get("priority", "MEDIUM")), "Resultado consolidado de métricas y alertas", decision.get("main_reason", "Requiere revisión del analista."), decision.get("next_action", "Atender plan de revisión.")])
+    return rows
+
+
+def _write_metricas_riesgo(ws, run: CanonicalRun | None = None):
+    diag = generate_professional_diagnostic(run)
+    _setup_sheet(ws, "Métricas de Riesgo", "Explicación de los criterios usados para clasificar el riesgo del diagnóstico.", 8)
+    _set_widths(ws, {"A": 28, "B": 16, "C": 16, "D": 38, "E": 56, "F": 52})
+    rows = _risk_metric_rows_from_diag(diag)
+    headers = ["Métrica", "Valor", "Nivel", "Criterio", "Por qué importa", "Acción esperada"]
+    for c, h in enumerate(headers, 1): ws.cell(5, c, h)
+    _header_style(ws, 5, 1, len(headers))
+    for r, row in enumerate(rows, 6):
+        for c, v in enumerate(row, 1):
+            ws.cell(r, c, v)
+            ws.cell(r, c).alignment = Alignment(wrap_text=True, vertical="top")
+        level = str(row[2]).lower()
+        fill = "FCE4D6" if "alto" in level or "high" in level else "FFF2CC" if "medio" in level or "revis" in level else "E2F0D9"
+        ws.cell(r, 3).fill = PatternFill("solid", fgColor=fill)
+    _body_style(ws, 6, 5 + len(rows), 1, len(headers))
+    _add_table(ws, f"A5:F{5+len(rows)}", "MetricasRiesgoTable", "TableStyleMedium2")
+    ws.freeze_panes = "A6"
 
 def _write_base_budget_report(wb):
     """Generate the independent base-budget workbook.
@@ -2498,6 +2828,7 @@ def _write_comparison_report(wb, provider_names: Optional[List[str]] = None):
     _write_insumos_criticos(wb.create_sheet("Insumos Críticos"))
     _write_validaciones(wb.create_sheet("Validaciones"))
     _write_analisis_ia(wb.create_sheet("Análisis IA"))
+    _write_metricas_riesgo(wb.create_sheet("Métricas de Riesgo"))
 
 
 def build_report(kind: str, provider_names: Optional[List[str]] = None) -> Path:
@@ -3139,6 +3470,7 @@ def build_real_comparison_report(run: CanonicalRun) -> Path:
         _write_real_canonical_detail(wb.create_sheet(sheet_name), f"Detalle APU - {p.name}", rows, include_market=True, theme_color=palette[idx % len(palette)])
     _write_real_validaciones(wb.create_sheet("Validaciones"), run)
     _write_analisis_ia(wb.create_sheet("Análisis IA"), run)
+    _write_metricas_riesgo(wb.create_sheet("Métricas de Riesgo"), run)
     for sheet in wb.worksheets:
         sheet.sheet_view.showGridLines = False
     out = REPORTS_DIR / f"apu_v1_real_comparison_{run.run_id}.xlsx"
@@ -3192,6 +3524,7 @@ def build_real_base_report(run: CanonicalRun) -> Path:
         _add_table(val, f"A5:D{5+min(len(rows_v),500)}", "BaseValidacionesTable", "TableStyleMedium2")
     _set_widths(val, {"A":14,"B":24,"C":80,"D":18})
     _write_analisis_ia(wb.create_sheet("Análisis IA"), run)
+    _write_metricas_riesgo(wb.create_sheet("Métricas de Riesgo"), run)
     out = REPORTS_DIR / f"apu_v1_real_base_{run.run_id}.xlsx"
     wb.save(out)
     return out

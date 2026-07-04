@@ -13,7 +13,7 @@ const state = {
     { id: 1, name: 'PROV-A', conceptsFile: null, matrixFile: null },
     { id: 2, name: 'PROV-B', conceptsFile: null, matrixFile: null },
   ],
-  lastComparisonRun: null,
+  lastComparisonRun: JSON.parse(localStorage.getItem('apu:lastComparisonRun') || 'null'),
   lastBaseBudgetRun: null,
   pendingBaseBudget: null,
   lastBaseError: null,
@@ -80,10 +80,14 @@ window.addEventListener('hashchange', render);
 function bindCommon(){
   $$('[data-nav]').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.nav); });
   $$('[data-theme-toggle]').forEach(b => b.onclick = () => {
+    // El cambio de tema no debe reconstruir la ruta ni perder la pantalla de resultados.
+    // Solo actualiza el atributo global y el texto de los botones.
     state.theme = state.theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('apu:theme', state.theme);
     document.documentElement.dataset.theme = state.theme;
-    render();
+    $$('[data-theme-toggle]').forEach(btn => {
+      btn.textContent = state.theme === 'dark' ? 'Tema claro' : 'Tema oscuro';
+    });
   });
   $$('[data-logout]').forEach(b => b.onclick = () => {
     localStorage.removeItem('apu:user'); localStorage.removeItem('apu:token'); state.user=null; state.token=null; go('');
@@ -498,6 +502,7 @@ function comparisonNew(){
       const res = await fetch('/api/comparisons/real-run', {method:'POST', body:fd});
       if(!res.ok){ const err = await res.json().catch(()=>({detail:'Error al procesar'})); throw new Error(err.detail || 'Error al procesar'); }
       state.lastComparisonRun = await res.json();
+      localStorage.setItem('apu:lastComparisonRun', JSON.stringify(state.lastComparisonRun));
       go('comparison-results');
     }catch(err){ alert(err.message); btn.disabled = false; btn.textContent = 'Procesar con datos reales'; }
   };
@@ -524,6 +529,7 @@ function diagVal(item){
   if(v === null || v === undefined || v === '') return '—';
   if(f === 'currency') return fmtMoney(v);
   if(f === 'percent') return fmtPct(v);
+  if(f === 'points') return `${Number(v||0).toFixed(1)} pts`;
   if(typeof v === 'number') return new Intl.NumberFormat('es-MX',{maximumFractionDigits:2}).format(v);
   return esc(v);
 }
@@ -580,13 +586,16 @@ function renderProfessionalDiagnostic(diag, meta={}){
     c.participation_pct==null?'N/A':fmtPct(c.participation_pct),
     shortText(c.probable_cause, 90), shortText(c.priority_action, 100)
   ]);
-  const alertRows = (diag?.market_alerts || []).slice(0,20).map(a=>[
-    statusChip(a.severity), shortText(a.alert_type, 70), shortText(a.item, 70), esc(a.section || '—'),
-    a.contractor_value==null?'N/A':fmtMoney(a.contractor_value),
-    a.market_value==null?'N/A':fmtMoney(a.market_value),
-    a.deviation_pct==null?'N/A':fmtPct(a.deviation_pct),
-    shortText(a.analyst_check, 120)
-  ]);
+  const alertRows = (diag?.market_alerts || []).slice(0,20).map(a=>{
+    const isIndirect = String(a.alert_type||'').toLowerCase().includes('indirect') || String(a.section||'').toLowerCase().includes('indirect');
+    return [
+      statusChip(a.severity), shortText(a.alert_type, 70), shortText(a.item, 70), esc(a.section || '—'),
+      a.contractor_value==null?'N/A':(isIndirect?fmtPct(a.contractor_value):fmtMoney(a.contractor_value)),
+      a.market_value==null?'N/A':(isIndirect?fmtPct(a.market_value):fmtMoney(a.market_value)),
+      a.deviation_pct==null?'N/A':(isIndirect?`${Number(a.deviation_pct||0).toFixed(1)} pts`:fmtPct(a.deviation_pct)),
+      shortText(a.analyst_check, 120)
+    ];
+  });
   const planRows = (diag?.analyst_review_plan || []).slice(0,10).map(p=>[
     `<strong>${esc(p.priority || '')}</strong>`, shortText(p.what_to_review, 100), shortText(p.why_it_matters, 130), shortText(p.where_to_check, 110), shortText(p.decision_needed, 120)
   ]);

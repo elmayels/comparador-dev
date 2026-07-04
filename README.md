@@ -400,3 +400,18 @@ Esta versión rehace la capa de diagnóstico profesional como producto comercial
 - En comparativas, la pantalla posterior a ejecutar ya no muestra "Resultados de comparación".
 - La ruta interna `comparison-results` ahora renderiza la vista "Diagnóstico profesional" como resultado principal.
 - El diagnóstico se muestra embebido desde `/api/real-runs/{run_id}/ai-report`, con botones para descargar Excel, abrir en nueva pestaña y consultar detalle APU.
+
+## V4.5 - Diagnóstico estable, Excel formal y métricas de riesgo
+
+- La pantalla de resultados de comparativa mantiene el diagnóstico nativo al cambiar tema claro/oscuro; ya no reconstruye la ruta ni pierde la corrida.
+- Se persiste la última corrida de comparativa en localStorage para evitar pérdida accidental de botones/enlaces después de cambios visuales.
+- El tab `Análisis IA` del Excel ahora funciona como documento formal para el analista de precios unitarios, distinto a la vista HTML/dashboard.
+- Se agrega el tab `Métricas de Riesgo`, con el valor, criterio, nivel, razón y acción esperada para justificar por qué el dictamen queda bajo, medio/revisión o alto.
+- La vista web sigue siendo el diagnóstico visual principal; el Excel conserva una lectura documental y una explicación auditable de riesgo.
+
+## V4.6 - Indirecto declarado por contratista
+
+- El diagnóstico profesional ahora detecta si el contratista declara un indirecto distinto al 25%.
+- La diferencia se muestra en KPIs, alertas contra mercado, plan de revisión, tab `Análisis IA` y `Métricas de Riesgo`.
+- El carril de mercado conserva la regla canónica: indirecto de mercado fijo 25%.
+- No se modifican cálculos de importes, operadores, Construdata ni comparativa.
