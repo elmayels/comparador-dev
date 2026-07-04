@@ -6,6 +6,8 @@ import time
 import urllib.request
 import urllib.error
 import html
+import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Any
@@ -1583,6 +1585,14 @@ def _traffic_from_status(code: str) -> str:
     return {"OK":"green", "REVIEW":"yellow", "CRITICAL":"red"}.get(str(code or "").upper(), "yellow")
 
 
+def _normalize_text(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^A-Z0-9%./ -]+", " ", text.upper())
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def _section_display_name(section: str) -> str:
     s = (section or "").upper()
     if "MATERIAL" in s:
@@ -1665,6 +1675,160 @@ def _item_row(item: Any, qty_by_key: dict[str, float], *, source: str = "compari
     }
 
 
+def _aggregate_diagnostic_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse repeated APU inputs before building diagnostic tables.
+
+    The same material, cuadrilla or equipment can appear in many service matrices.
+    For the professional diagnostic we need one business row per input/reference,
+    ordered by total economic impact, not one row per occurrence in the APU detail.
+    """
+    grouped: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for row in rows or []:
+        key = (
+            str(row.get("section") or ""),
+            str(row.get("code") or "").strip().upper(),
+            str(row.get("description") or "").strip().upper(),
+            str(row.get("unit") or "").strip().upper(),
+            str(row.get("market_reference") or "").strip().upper(),
+        )
+        base = grouped.get(key)
+        if base is None:
+            base = dict(row)
+            base["occurrences"] = 0
+            base["impact_amount"] = 0.0
+            base["contractor_amount"] = 0.0
+            base["market_amount"] = 0.0 if row.get("market_amount") is not None else None
+            base["difference_amount"] = 0.0 if row.get("difference_amount") is not None else None
+            base["quantity_total"] = 0.0
+            grouped[key] = base
+        base["occurrences"] = int(base.get("occurrences") or 0) + 1
+        base["impact_amount"] = float(base.get("impact_amount") or 0) + float(row.get("impact_amount") or 0)
+        base["contractor_amount"] = float(base.get("contractor_amount") or 0) + float(row.get("contractor_amount") or row.get("impact_amount") or 0)
+        if row.get("market_amount") is not None:
+            base["market_amount"] = float(base.get("market_amount") or 0) + float(row.get("market_amount") or 0)
+        if row.get("difference_amount") is not None:
+            base["difference_amount"] = float(base.get("difference_amount") or 0) + float(row.get("difference_amount") or 0)
+        try:
+            base["quantity_total"] = float(base.get("quantity_total") or 0) + float(row.get("quantity") or 0)
+        except Exception:
+            pass
+        # Keep the largest unit-price deviation as a signal when the same input appears
+        # with multiple quantities across matrices.
+        old_abs = abs(float(base.get("difference_pct") or 0)) if base.get("difference_pct") is not None else -1
+        new_abs = abs(float(row.get("difference_pct") or 0)) if row.get("difference_pct") is not None else -1
+        if new_abs > old_abs:
+            base["difference_pct"] = row.get("difference_pct")
+            base["contractor_unit_price"] = row.get("contractor_unit_price")
+            base["market_unit_price"] = row.get("market_unit_price")
+            base["operator"] = row.get("operator")
+            base["quantity"] = row.get("quantity")
+    out = []
+    for row in grouped.values():
+        for field in ["impact_amount", "contractor_amount", "market_amount", "difference_amount", "quantity_total"]:
+            if row.get(field) is not None:
+                row[field] = round(float(row.get(field) or 0), 2)
+        if row.get("market_amount") not in (None, 0):
+            row["difference_pct"] = round((float(row.get("contractor_amount") or 0) - float(row.get("market_amount") or 0)) / float(row.get("market_amount") or 1) * 100, 2)
+        row["recommended_action"] = _recommended_action(row)
+        out.append(row)
+    return sorted(out, key=lambda r: float(r.get("impact_amount") or 0), reverse=True)
+
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _item_identity(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    """Stable key for diagnostic aggregation.
+
+    APU matrices repeat the same material/cuadrilla/equipment in many partidas.
+    The diagnostic must show one consolidated line per technical item, not one
+    row per occurrence. Use code first, then normalized short text/reference.
+    """
+    code = _normalize_text(str(row.get("code") or ""))
+    desc = _normalize_text(str(row.get("description") or ""))
+    unit = _normalize_text(str(row.get("unit") or ""))
+    op = _normalize_text(str(row.get("operator") or ""))
+    ref = _normalize_text(str(row.get("market_reference") or ""))
+    # If there is a Construdata reference, it is the strongest identity.
+    if ref:
+        return (ref, unit, op, "", "")
+    return (code, desc, unit, op, "")
+
+
+def _aggregate_item_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Consolidate repeated APU rows for product-grade diagnostics.
+
+    The same material/MO/equipment can appear in several concepts. Showing it
+    repeatedly looks like a bug. This aggregates by technical identity and sorts
+    by accumulated impact. Monetary values are summed; unit prices are kept as a
+    weighted/representative value when possible.
+    """
+    grouped: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for row in rows or []:
+        key = _item_identity(row)
+        if key not in grouped:
+            new = dict(row)
+            new["impact_amount"] = _safe_float(row.get("impact_amount"))
+            new["contractor_amount"] = _safe_float(row.get("contractor_amount"), _safe_float(row.get("impact_amount")))
+            ma = row.get("market_amount")
+            new["market_amount"] = _safe_float(ma) if ma is not None else None
+            new["quantity"] = _safe_float(row.get("quantity"))
+            new["_weighted_price_amount"] = _safe_float(row.get("contractor_unit_price")) * max(_safe_float(row.get("impact_amount")), 0.0)
+            new["_weighted_market_price_amount"] = _safe_float(row.get("market_unit_price")) * max(_safe_float(row.get("impact_amount")), 0.0)
+            new["_weight"] = max(_safe_float(row.get("impact_amount")), 0.0)
+            new["occurrences"] = 1
+            grouped[key] = new
+            continue
+        agg = grouped[key]
+        agg["impact_amount"] = _safe_float(agg.get("impact_amount")) + _safe_float(row.get("impact_amount"))
+        agg["contractor_amount"] = _safe_float(agg.get("contractor_amount")) + _safe_float(row.get("contractor_amount"), _safe_float(row.get("impact_amount")))
+        if row.get("market_amount") is not None:
+            agg["market_amount"] = _safe_float(agg.get("market_amount")) + _safe_float(row.get("market_amount")) if agg.get("market_amount") is not None else _safe_float(row.get("market_amount"))
+        agg["quantity"] = _safe_float(agg.get("quantity")) + _safe_float(row.get("quantity"))
+        w = max(_safe_float(row.get("impact_amount")), 0.0)
+        agg["_weighted_price_amount"] = _safe_float(agg.get("_weighted_price_amount")) + _safe_float(row.get("contractor_unit_price")) * w
+        agg["_weighted_market_price_amount"] = _safe_float(agg.get("_weighted_market_price_amount")) + _safe_float(row.get("market_unit_price")) * w
+        agg["_weight"] = _safe_float(agg.get("_weight")) + w
+        agg["occurrences"] = int(agg.get("occurrences", 1) or 1) + 1
+        if not agg.get("market_reference") and row.get("market_reference"):
+            agg["market_reference"] = row.get("market_reference")
+        # Prefer a row with a non-empty action/state/source.
+        for field in ["state", "source", "section"]:
+            if not agg.get(field) and row.get(field):
+                agg[field] = row.get(field)
+    out = []
+    for row in grouped.values():
+        weight = _safe_float(row.get("_weight"))
+        if weight > 0:
+            row["contractor_unit_price"] = round(_safe_float(row.get("_weighted_price_amount")) / weight, 2)
+            row["market_unit_price"] = round(_safe_float(row.get("_weighted_market_price_amount")) / weight, 2) if row.get("market_unit_price") is not None else None
+        contractor_amount = _safe_float(row.get("contractor_amount"), _safe_float(row.get("impact_amount")))
+        market_amount = row.get("market_amount")
+        if market_amount is not None and _safe_float(market_amount) != 0:
+            diff = contractor_amount - _safe_float(market_amount)
+            row["difference_amount"] = round(diff, 2)
+            row["difference_pct"] = round((diff / _safe_float(market_amount)) * 100, 2)
+        else:
+            row["difference_amount"] = row.get("difference_amount")
+            row["difference_pct"] = row.get("difference_pct")
+        row["impact_amount"] = round(_safe_float(row.get("impact_amount")), 2)
+        row["contractor_amount"] = round(contractor_amount, 2)
+        if row.get("market_amount") is not None:
+            row["market_amount"] = round(_safe_float(row.get("market_amount")), 2)
+        row["quantity"] = round(_safe_float(row.get("quantity")), 6)
+        for private in ["_weighted_price_amount", "_weighted_market_price_amount", "_weight"]:
+            row.pop(private, None)
+        out.append(row)
+    return sorted(out, key=lambda r: _safe_float(r.get("impact_amount")), reverse=True)
+
+
 def _items_by_section(items: list[Any], qty_by_key: dict[str, float], source: str = "comparison") -> dict[str, list[dict[str, Any]]]:
     buckets = {"materials": [], "labor": [], "equipment": [], "basics": [], "financial": [], "other": []}
     for item in items or []:
@@ -1676,8 +1840,23 @@ def _items_by_section(items: list[Any], qty_by_key: dict[str, float], source: st
             continue
         buckets.setdefault(key, []).append(row)
     for key in buckets:
-        buckets[key] = sorted(buckets[key], key=lambda r: float(r.get("impact_amount") or 0), reverse=True)
+        buckets[key] = _aggregate_item_rows(buckets[key])
     return buckets
+
+
+def _section_totals_from_items(items: dict[str, list[dict[str, Any]]]) -> tuple[dict[str, float], dict[str, float]]:
+    values: dict[str, float] = {}
+    market_values: dict[str, float] = {}
+    for key, rows in (items or {}).items():
+        if key in {"other", "financial"}:
+            continue
+        amount = sum(_safe_float(r.get("contractor_amount"), _safe_float(r.get("impact_amount"))) for r in rows or [])
+        market_amount = sum(_safe_float(r.get("market_amount")) for r in rows or [] if r.get("market_amount") is not None)
+        if amount:
+            values[key] = round(amount, 2)
+        if market_amount:
+            market_values[key] = round(market_amount, 2)
+    return values, market_values
 
 
 def _difference_status(diff_pct: Any, no_ref: bool = False) -> str:
@@ -1737,6 +1916,9 @@ def _build_base_diagnostic_context(run: CanonicalRun, context: dict[str, Any]) -
     items = _items_by_section(run.base_apu_items, qty_by_key, source="base")
     top_concepts = [_concept_row_from_context(c, total) for c in (context.get("top_concepts") or [])[:10]]
     section_breakdown = context.get("section_breakdown") or {}
+    item_section_values, item_market_values = _section_totals_from_items(items)
+    if not section_breakdown:
+        section_breakdown = item_section_values
     return {
         "run_type": "base_budget",
         "run_label": "Presupuesto base",
@@ -1752,6 +1934,7 @@ def _build_base_diagnostic_context(run: CanonicalRun, context: dict[str, Any]) -
         "without_full_reference": context.get("unmatched_matrices", 0),
         "coverage_pct": context.get("coverage_pct", 0),
         "section_values": section_breakdown,
+        "section_market_values": item_market_values,
         "top_materials": items.get("materials", [])[:10],
         "top_labor": items.get("labor", [])[:10],
         "top_equipment": items.get("equipment", [])[:10],
@@ -1766,9 +1949,29 @@ def _build_comparison_diagnostic_context(run: CanonicalRun, context: dict[str, A
     provider_obj = (run.providers or [None])[0] if (run.providers or []) else None
     valid_concepts = [c for c in getattr(provider_obj, "concepts", []) if _is_valid_comparativa_concept(c)] if provider_obj else []
     qty_by_key = {canonical_key(c.code, c.description): float(c.quantity or 0) for c in valid_concepts}
+    # Matrix/APU analysis codes often differ from catalog codes (e.g. catalog
+    # 1.1.1 vs PU BS.01). For diagnostics, section and input impacts must be
+    # scaled by the catalog quantity. Build an order-based bridge from PARTIDA
+    # rows in the PU to valid catalog concepts, matching the same canonical rule
+    # already used to lift market P.U. into Comparativa.
+    apu_items_for_provider = getattr(provider_obj, "apu_items", []) if provider_obj else []
+    analysis_keys: list[str] = []
+    seen_analysis = set()
+    for apu in apu_items_for_provider:
+        sec = str(getattr(apu, "section", "") or "").upper()
+        code = str(getattr(apu, "code", "") or "").strip()
+        if sec == "PARTIDA" and code:
+            key = str(getattr(apu, "concept_key", "") or canonical_key(code, getattr(apu, "description", "")))
+            if key and key not in seen_analysis:
+                seen_analysis.add(key)
+                analysis_keys.append(key)
+    for idx, key in enumerate(analysis_keys):
+        if idx < len(valid_concepts):
+            qty_by_key[key] = float(getattr(valid_concepts[idx], "quantity", 0) or 0)
     total = float(provider.get("total_amount", context.get("max_amount", 0)) or 0)
     market_total = float(provider.get("market_total_amount", 0) or 0) or None
-    items = _items_by_section(getattr(provider_obj, "apu_items", []) if provider_obj else [], qty_by_key, source="comparison")
+    items = _items_by_section(apu_items_for_provider, qty_by_key, source="comparison")
+    item_section_values, item_market_values = _section_totals_from_items(items)
     # Critical concepts: for one provider use its top concepts; for multi, aggregate best available rows by provider.
     crit = []
     if len(providers) <= 1:
@@ -1782,6 +1985,10 @@ def _build_comparison_diagnostic_context(run: CanonicalRun, context: dict[str, A
         crit = sorted(crit, key=lambda r: float(r.get("contractor_amount") or 0), reverse=True)[:10]
     br = (provider.get("section_breakdown") or {}).get("contractor", {}) if provider else {}
     br_market = (provider.get("section_breakdown") or {}).get("market", {}) if provider else {}
+    if (not br) or sum(float(v or 0) for v in br.values()) <= 0:
+        br = item_section_values
+    if (not br_market) or sum(float(v or 0) for v in br_market.values()) <= 0:
+        br_market = item_market_values
     return {
         "run_type": "single_provider_comparison" if len(providers) <= 1 else "multi_provider_comparison",
         "run_label": "Comparativa individual contra mercado" if len(providers) <= 1 else "Comparativa múltiple de contratistas",
@@ -1868,6 +2075,21 @@ def _kpis_from_diag(ctx: dict[str, Any], alerts_count: int = 0, priorities_count
     return [k for k in kpis if k.get("value") is not None]
 
 
+
+
+def _dedupe_rows(rows: list[dict[str, Any]], key_fields: list[str], limit: int | None = None) -> list[dict[str, Any]]:
+    seen: set[tuple[str, ...]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        key = tuple(str(row.get(f, "")).strip().upper() for f in key_fields)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+        if limit and len(out) >= limit:
+            break
+    return out
+
 def _build_market_alerts(ctx: dict[str, Any], section_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     alerts = []
     total = float(ctx.get("total_amount", 0) or 0)
@@ -1883,7 +2105,7 @@ def _build_market_alerts(ctx: dict[str, Any], section_rows: list[dict[str, Any]]
             no_ref = not item.get("market_reference")
             if no_ref or (diff_pct is not None and abs(float(diff_pct or 0)) >= 15):
                 alerts.append({"severity":"HIGH" if diff_pct is not None and abs(float(diff_pct or 0)) >= 25 else "MEDIUM", "alert_type":label if not no_ref else "Sin referencia Construdata", "item":item.get("code") or item.get("description"), "section":item.get("section"), "contractor_value":item.get("contractor_unit_price"), "market_value":item.get("market_unit_price"), "deviation_pct":diff_pct, "analyst_check":_recommended_action(item)})
-    return alerts[:20]
+    return _dedupe_rows(alerts, ["alert_type", "item", "section"], 20)
 
 
 def _build_review_plan(ctx: dict[str, Any], alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1897,7 +2119,7 @@ def _build_review_plan(ctx: dict[str, Any], alerts: list[dict[str, Any]]) -> lis
             break
         plan.append({"priority":start, "what_to_review":str(alert.get("item") or alert.get("alert_type") or "alerta"), "why_it_matters":str(alert.get("alert_type") or "alerta contra mercado"), "where_to_check":"Tabla de alertas y columna Match Construdata en Detalle", "decision_needed":str(alert.get("analyst_check") or "Validar técnicamente antes de cierre.")})
         start += 1
-    return plan
+    return _dedupe_rows(plan, ["what_to_review", "where_to_check"], 10)
 
 
 def _local_professional_diagnostic(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -1926,7 +2148,7 @@ def _local_professional_diagnostic(ctx: dict[str, Any]) -> dict[str, Any]:
         "recommendation":"Usar el diagnóstico como guía de revisión y negociación; no liberar versión final sin atender las prioridades marcadas.",
     }
     decision = {"verdict":"ACCEPTABLE" if status == "OK" else "REVIEW_REQUIRED" if status == "REVIEW" else "HIGH_RISK", "main_reason":headline["executive_line"], "next_action":plan[0]["what_to_review"] if plan else "Mantener control de trazabilidad.", "priority":"HIGH" if status == "CRITICAL" else "MEDIUM" if status == "REVIEW" else "LOW"}
-    return {"headline":headline, "kpis":_kpis_from_diag(ctx, critical_count, len(plan)), "section_summary":section_rows, "top_materials":ctx.get("top_materials", [])[:10], "top_labor":ctx.get("top_labor", [])[:10], "top_equipment":ctx.get("top_equipment", [])[:10], "critical_concepts":ctx.get("critical_concepts", [])[:10], "market_alerts":alerts, "analyst_review_plan":plan, "professional_diagnosis":diagnosis, "final_decision":decision}
+    return {"headline":headline, "kpis":_kpis_from_diag(ctx, critical_count, len(plan)), "section_summary":section_rows, "top_materials":_dedupe_rows(ctx.get("top_materials", []), ["code", "description", "unit", "market_reference"], 10), "top_labor":_dedupe_rows(ctx.get("top_labor", []), ["code", "description", "unit", "market_reference"], 10), "top_equipment":_dedupe_rows(ctx.get("top_equipment", []), ["code", "description", "unit", "market_reference"], 10), "critical_concepts":ctx.get("critical_concepts", [])[:10], "market_alerts":alerts, "analyst_review_plan":plan, "professional_diagnosis":diagnosis, "final_decision":decision}
 
 
 def _professional_diagnostic_prompt() -> str:
@@ -1939,11 +2161,117 @@ def _professional_diagnostic_prompt() -> str:
         "Si run_type es single_provider_comparison, NO hagas ranking; usa lectura individual contra mercado. "
         "Si run_type es multi_provider_comparison, sí puedes comparar contratistas. "
         "Usa tablas y acciones, no párrafos largos. Las descripciones deben ser cortas. "
+        "No repitas insumos: top_materials, top_labor y top_equipment deben estar consolidados por código/descripción/referencia, ordenados por impacto económico agregado. "
         "Respeta exactamente la estructura: headline, kpis, section_summary, top_materials, top_labor, top_equipment, critical_concepts, market_alerts, analyst_review_plan, professional_diagnosis, final_decision. "
         "Cada acción del plan debe decir qué revisar, por qué importa, dónde buscarlo y qué decisión tomar. "
         "Si falta evidencia, usa null, [] o 'requiere validación'."
     )
 
+
+
+def _diag_row_key(row: dict[str, Any], kind: str) -> tuple[str, ...]:
+    if kind == "critical_concepts":
+        return (_normalize_text(str(row.get("concept_code") or row.get("code") or row.get("description") or "")),)
+    if kind == "market_alerts":
+        return (_normalize_text(str(row.get("severity") or "")), _normalize_text(str(row.get("alert_type") or "")), _normalize_text(str(row.get("item") or "")), _normalize_text(str(row.get("section") or "")))
+    if kind == "analyst_review_plan":
+        return (_normalize_text(str(row.get("what_to_review") or "")), _normalize_text(str(row.get("where_to_check") or "")))
+    # Top materials/labor/equipment: consolidate by Construdata reference when it exists;
+    # otherwise by code + short technical description + unit + operator. This prevents
+    # repeated rows when the same input appears in multiple matrices or when Anthropic
+    # returns duplicated evidence rows.
+    ref = _normalize_text(str(row.get("market_reference") or ""))
+    if ref:
+        return (ref, _normalize_text(str(row.get("unit") or "")), _normalize_text(str(row.get("operator") or "")))
+    return (
+        _normalize_text(str(row.get("code") or row.get("concept_code") or "")),
+        _normalize_text(str(row.get("description") or "")),
+        _normalize_text(str(row.get("unit") or "")),
+        _normalize_text(str(row.get("operator") or "")),
+    )
+
+
+def _merge_diag_rows(rows: list[dict[str, Any]], kind: str, limit: int | None = None) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    if kind in {"market_alerts", "analyst_review_plan", "critical_concepts"}:
+        seen = set()
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = _diag_row_key(row, kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+        if kind == "analyst_review_plan":
+            for idx, row in enumerate(out, 1):
+                row["priority"] = idx
+        return out[:limit] if limit else out
+    grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = _diag_row_key(row, kind)
+        if not any(key):
+            key = (str(len(grouped)),)
+        if key not in grouped:
+            new = dict(row)
+            new["impact_amount"] = _safe_float(row.get("impact_amount"), _safe_float(row.get("contractor_amount")))
+            new["contractor_amount"] = _safe_float(row.get("contractor_amount"), _safe_float(row.get("impact_amount")))
+            new["market_amount"] = _safe_float(row.get("market_amount")) if row.get("market_amount") is not None else None
+            new["difference_amount"] = _safe_float(row.get("difference_amount")) if row.get("difference_amount") is not None else None
+            new["quantity"] = _safe_float(row.get("quantity"))
+            new["occurrences"] = int(row.get("occurrences") or 1)
+            grouped[key] = new
+            continue
+        agg = grouped[key]
+        agg["impact_amount"] = _safe_float(agg.get("impact_amount")) + _safe_float(row.get("impact_amount"), _safe_float(row.get("contractor_amount")))
+        agg["contractor_amount"] = _safe_float(agg.get("contractor_amount")) + _safe_float(row.get("contractor_amount"), _safe_float(row.get("impact_amount")))
+        if row.get("market_amount") is not None:
+            agg["market_amount"] = (_safe_float(agg.get("market_amount")) if agg.get("market_amount") is not None else 0.0) + _safe_float(row.get("market_amount"))
+        if row.get("difference_amount") is not None:
+            agg["difference_amount"] = (_safe_float(agg.get("difference_amount")) if agg.get("difference_amount") is not None else 0.0) + _safe_float(row.get("difference_amount"))
+        agg["quantity"] = _safe_float(agg.get("quantity")) + _safe_float(row.get("quantity"))
+        agg["occurrences"] = int(agg.get("occurrences") or 1) + int(row.get("occurrences") or 1)
+        # Keep strongest deviation row for displayed unit price/operator.
+        old_abs = abs(_safe_float(agg.get("difference_pct"), -999999)) if agg.get("difference_pct") is not None else -1
+        new_abs = abs(_safe_float(row.get("difference_pct"), -999999)) if row.get("difference_pct") is not None else -1
+        if new_abs > old_abs:
+            for field in ["contractor_unit_price", "market_unit_price", "operator", "unit"]:
+                if row.get(field) is not None:
+                    agg[field] = row.get(field)
+        if not agg.get("market_reference") and row.get("market_reference"):
+            agg["market_reference"] = row.get("market_reference")
+        if not agg.get("recommended_action") and row.get("recommended_action"):
+            agg["recommended_action"] = row.get("recommended_action")
+    out = []
+    for row in grouped.values():
+        market_amount = row.get("market_amount")
+        contractor_amount = _safe_float(row.get("contractor_amount"), _safe_float(row.get("impact_amount")))
+        if market_amount is not None and _safe_float(market_amount) != 0:
+            diff = contractor_amount - _safe_float(market_amount)
+            row["difference_amount"] = round(diff, 2)
+            row["difference_pct"] = round(diff / _safe_float(market_amount) * 100, 2)
+        for field in ["impact_amount", "contractor_amount", "market_amount", "difference_amount", "quantity"]:
+            if row.get(field) is not None:
+                row[field] = round(_safe_float(row.get(field)), 2)
+        row["recommended_action"] = row.get("recommended_action") or _recommended_action(row)
+        out.append(row)
+    out.sort(key=lambda r: _safe_float(r.get("impact_amount"), _safe_float(r.get("contractor_amount"))), reverse=True)
+    return out[:limit] if limit else out
+
+
+def _sanitize_professional_diagnostic(diag: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(diag, dict):
+        return diag
+    for key in ["top_materials", "top_labor", "top_equipment"]:
+        diag[key] = _merge_diag_rows(diag.get(key, []), key, 10)
+    diag["critical_concepts"] = _merge_diag_rows(diag.get("critical_concepts", []), "critical_concepts", 10)
+    diag["market_alerts"] = _merge_diag_rows(diag.get("market_alerts", []), "market_alerts", 20)
+    diag["analyst_review_plan"] = _merge_diag_rows(diag.get("analyst_review_plan", []), "analyst_review_plan", 10)
+    return diag
 
 def _normalize_professional_diagnostic(parsed: dict[str, Any] | None, fallback: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(parsed, dict):
@@ -1958,7 +2286,7 @@ def _normalize_professional_diagnostic(parsed: dict[str, Any] | None, fallback: 
     for key in ["headline", "professional_diagnosis", "final_decision"]:
         if not isinstance(parsed.get(key), dict):
             parsed[key] = fallback.get(key, {})
-    return parsed
+    return _sanitize_professional_diagnostic(parsed)
 
 
 def _call_external_professional_diagnostic(ctx: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any] | None:
@@ -2016,7 +2344,7 @@ def generate_professional_diagnostic(run: CanonicalRun | None, summary: dict[str
     ctx = _build_diagnostic_context(run, summary)
     fallback = _local_professional_diagnostic(ctx)
     external = _call_external_professional_diagnostic(ctx, fallback)
-    diag = external or fallback
+    diag = _sanitize_professional_diagnostic(external or fallback)
     # Never expose technical mode/provider/model in the commercial payload.
     diag["_context"] = ctx
     return diag
