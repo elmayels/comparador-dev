@@ -383,3 +383,15 @@ AI_ANALYSIS_MODEL=claude-haiku-4-5
 ## V3.8.1 Product-facing diagnostic cleanup
 - Product UI and Excel no longer expose AI provider/model/fallback/error technical details.
 - Diagnostic remains available in Excel and HTML, but commercial wording focuses on KPIs, market evidence, overcosts, references and review priorities.
+
+## V3.9 - Diagnóstico profesional estructurado
+
+Esta versión rehace la capa de diagnóstico profesional como producto comercial:
+
+- El diagnóstico se genera como JSON estructurado y se renderiza en HTML y Excel.
+- La hoja `Análisis IA` ya no depende de texto largo; usa KPIs, tablas, alertas y plan de revisión.
+- La vista web `/api/real-runs/{run_id}/ai-report` se presenta como `Diagnóstico profesional`, sin mostrar proveedor IA, modelo, fallback, errores técnicos ni JSON.
+- Para comparativa de un solo proveedor, el diagnóstico usa lectura individual contra mercado y no genera ranking artificial.
+- Para múltiples proveedores, sí se habilita comparación/ranking económico.
+- No se modifican cálculos de precios, operadores, indirectos, Construdata ni comparativa.
+

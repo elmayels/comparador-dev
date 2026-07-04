@@ -1547,184 +1547,571 @@ def generate_expert_ai_analysis(run: CanonicalRun | None, summary: dict[str, Any
 
 
 
-def _write_analisis_ia(ws, run: CanonicalRun | None = None):
-    """Write a professional APU analysis sheet.
 
-    The sheet now has two layers:
-    1) narrative expert analysis, either external AI or local expert fallback;
-    2) auditable evidence tables with the same canonical values used by the AI.
-    This prevents the tab from becoming a generic paragraph and gives the price
-    analyst concrete amounts, percentages, contractors, sections and alerts.
-    """
-    analysis = generate_expert_ai_analysis(run)
-    sections = analysis.get("sections", [])
-    mode = analysis.get("mode", "LOCAL_EXPERT")
-    provider = analysis.get("provider", "local") or "local"
-    model = analysis.get("model", "deterministic") or "deterministic"
-    context = analysis.get("context", {}) or {}
+# ---------------------------------------------------------------------------
+# Professional diagnostic layer (commercial output)
+# ---------------------------------------------------------------------------
+def _status_from_severity(sev: str) -> tuple[str, str]:
+    s = (sev or "").upper()
+    if s in {"HIGH", "CRITICAL", "CRITICO", "CRÍTICO"}:
+        return "Crítico", "red"
+    if s in {"MEDIUM", "REVIEW", "WARNING", "MEDIO", "REVISAR"}:
+        return "Revisar", "yellow"
+    return "OK", "green"
 
-    _setup_sheet(ws, "Análisis IA", "Diagnóstico profesional para revisión de precios unitarios.", 10)
-    _set_widths(ws, {"A": 26, "B": 92, "C": 18, "D": 18, "E": 18, "F": 18, "G": 18, "H": 18, "I": 18, "J": 18})
 
-    ws.cell(3, 1, "Tipo de análisis")
-    ws.cell(3, 2, "Diagnóstico profesional automatizado")
-    ws.cell(3, 1).font = Font(bold=True, color=BRAND["navy"])
-    ws.cell(3, 2).font = Font(color=BRAND["muted"])
-    # Detalles técnicos de proveedor/modelo/error no se muestran en el Excel comercial.
-    ws.cell(4, 1, "Alcance")
-    ws.cell(4, 2, "El diagnóstico usa únicamente los datos calculados de la corrida; no modifica importes, operadores, cantidades, precios unitarios ni referencias de mercado.")
-    ws.cell(4, 1).font = Font(bold=True, color=BRAND["navy"])
-    ws.cell(4, 2).alignment = Alignment(wrap_text=True)
-
-    headers = ["Sección", "Diagnóstico experto"]
-    for c, h in enumerate(headers, 1):
-        ws.cell(6, c, h)
-    _header_style(ws, 6, 1, 2)
-    for r, item in enumerate(sections, 7):
-        ws.cell(r, 1, item.get("section", ""))
-        ws.cell(r, 2, item.get("content", ""))
-        ws.cell(r, 1).font = Font(bold=True, color=BRAND["navy"])
-        ws.cell(r, 2).alignment = Alignment(wrap_text=True, vertical="top")
-        ws.row_dimensions[r].height = 72
-    if sections:
-        _body_style(ws, 7, 6 + len(sections), 1, 2)
-        _add_table(ws, f"A6:B{6+len(sections)}", "AnalisisIATable", "TableStyleMedium2")
-
-    row = 8 + len(sections)
-    _section_label(ws, row, "Evidencia usada por el análisis", 10)
-    row += 2
-
+def _diagnostic_run_type(context: dict[str, Any]) -> str:
     if context.get("kind") == "base_budget":
-        # KPI block
-        kpis = [
-            ("Monto total", context.get("total_amount", 0), "Presupuesto base"),
-            ("Costo directo", context.get("direct_cost", 0), "Calculado"),
-            ("Indirecto 25%", context.get("indirect_cost", 0), "Regla estándar"),
-            ("Cobertura", context.get("coverage_pct", 0), "Construdata"),
-            ("Conceptos", context.get("concepts_executable", 0), "Ejecutables"),
-        ]
-        for idx, (title, value, foot) in enumerate(kpis):
-            col = 1 + idx * 2
-            _write_kpi(ws, row, col, title, value, foot, "F8FAFC")
-            if title in {"Monto total", "Costo directo", "Indirecto 25%"}:
-                ws.cell(row + 1, col).number_format = MONEY_FMT
-            if title == "Cobertura":
-                ws.cell(row + 1, col).number_format = PCT_FMT
-                try:
-                    ws.cell(row + 1, col).value = float(value or 0) / 100
-                except Exception:
-                    pass
-        row += 5
+        return "base_budget"
+    count = int(context.get("providers_count", 0) or 0)
+    return "single_provider_comparison" if count <= 1 else "multi_provider_comparison"
 
-        # Section mix table
-        _section_label(ws, row, "Resumen por sección", 6)
-        row += 1
-        for c, h in enumerate(["Sección", "Monto", "% del total", "Lectura APU"], 1):
-            ws.cell(row, c, h)
-        _header_style(ws, row, 1, 4)
-        start = row + 1
-        total = float(context.get("total_amount", 0) or 0)
-        labels = [("materials", "Materiales"), ("labor", "Mano de obra"), ("equipment", "Maquinaria / equipo"), ("basics", "Básicos"), ("indirect", "Indirectos")]
-        breakdown = context.get("section_breakdown") or {}
-        for key, label in labels:
-            amount = float(breakdown.get(key, 0) or 0)
-            if amount == 0:
-                continue
-            ws.cell(start, 1, label)
-            ws.cell(start, 2, amount)
-            ws.cell(start, 3, amount / total if total else 0)
-            lectura = "Impacto directo en el costo" if key in {"materials", "labor", "equipment", "basics"} else "Regla financiera fija al 25%"
-            ws.cell(start, 4, lectura)
-            start += 1
-        if start > row + 1:
-            _body_style(ws, row + 1, start - 1, 1, 4)
-            _apply_formats(ws, money_cols=[2], pct_cols=[3], start_row=row+1, end_row=start-1)
-            _add_table(ws, f"A{row}:D{start-1}", "AnalisisIASectionMix", "TableStyleMedium4")
-        row = start + 2
 
-        # Top concepts table
-        _section_label(ws, row, "Partidas críticas por impacto", 8)
-        row += 1
-        top_headers = ["Código", "Descripción corta", "Unidad", "Cantidad", "P.U.", "Importe", "%", "Estado"]
-        for c, h in enumerate(top_headers, 1):
-            ws.cell(row, c, h)
-        _header_style(ws, row, 1, len(top_headers))
-        start = row + 1
-        for item in (context.get("top_concepts") or [])[:10]:
-            vals = [item.get("code"), item.get("description"), item.get("unit"), item.get("quantity"), item.get("unit_price"), item.get("amount"), float(item.get("weight_pct", 0) or 0)/100, item.get("state")]
+def _diagnostic_run_label(run_type: str) -> str:
+    return {
+        "base_budget": "Presupuesto base",
+        "single_provider_comparison": "Comparativa individual contra mercado",
+        "multi_provider_comparison": "Comparativa múltiple de contratistas",
+    }.get(run_type, "Diagnóstico profesional")
+
+
+def _status_label(code: str) -> str:
+    return {"OK":"Aceptable", "REVIEW":"Revisar", "CRITICAL":"Alto riesgo"}.get(str(code or "").upper(), "Revisar")
+
+
+def _traffic_from_status(code: str) -> str:
+    return {"OK":"green", "REVIEW":"yellow", "CRITICAL":"red"}.get(str(code or "").upper(), "yellow")
+
+
+def _section_display_name(section: str) -> str:
+    s = (section or "").upper()
+    if "MATERIAL" in s:
+        return "Materiales"
+    if "MANO" in s or s == "MO" or "CUADRILLA" in s:
+        return "Mano de obra"
+    if "MAQUIN" in s or "EQUIPO" in s or "HERRAM" in s:
+        return "Maquinaria / equipo"
+    if "BASIC" in s:
+        return "Básicos"
+    if "INDIRECT" in s or "FINAN" in s or "TOTAL" in s or "DIRECT" in s:
+        return "Indirectos / financiero"
+    return str(section or "Otros")[:60]
+
+
+def _section_key(section: str) -> str:
+    label = _section_display_name(section)
+    if label == "Materiales": return "materials"
+    if label == "Mano de obra": return "labor"
+    if label == "Maquinaria / equipo": return "equipment"
+    if label == "Básicos": return "basics"
+    if label == "Indirectos / financiero": return "financial"
+    return "other"
+
+
+def _is_real_apu_item(item: Any) -> bool:
+    desc = str(getattr(item, "description", "") or "").strip()
+    code = str(getattr(item, "code", "") or "").strip()
+    sec = str(getattr(item, "section", "") or "").upper()
+    label = (desc or code).upper()
+    if not (desc or code):
+        return False
+    blocked = ["SUBTOTAL", "COSTO DIRECTO", "TOTAL POR SERVICIO", "PRECIO UNITARIO", "SECCION FINANCIERA", "SECCIÓN FINANCIERA"]
+    if any(b in label for b in blocked):
+        return False
+    if any(b in sec for b in ["SUBTOTAL", "COSTO DIRECTO", "TOTAL POR SERVICIO"]):
+        return False
+    return getattr(item, "amount", None) is not None or getattr(item, "market_amount", None) is not None
+
+
+def _impact_multiplier(item: Any, qty_by_key: dict[str, float]) -> float:
+    key = str(getattr(item, "concept_key", "") or "")
+    qty = float(qty_by_key.get(key, 1) or 1)
+    return qty if qty > 0 else 1.0
+
+
+def _item_row(item: Any, qty_by_key: dict[str, float], *, source: str = "comparison") -> dict[str, Any]:
+    mult = _impact_multiplier(item, qty_by_key)
+    amount = float(getattr(item, "amount", 0) or 0) * mult
+    market_amount_raw = getattr(item, "market_amount", None)
+    market_amount = float(market_amount_raw or 0) * mult if market_amount_raw is not None else None
+    unit_price = float(getattr(item, "unit_price", 0) or 0)
+    market_unit_price = getattr(item, "market_unit_price", None)
+    if market_unit_price is not None:
+        market_unit_price = float(market_unit_price or 0)
+    diff = None
+    diff_pct = None
+    if market_amount is not None and market_amount:
+        diff = amount - market_amount
+        diff_pct = diff / market_amount * 100
+    ref_code = str(getattr(item, "matched_reference_code", "") or "").strip()
+    ref_desc = str(getattr(item, "matched_reference_description", "") or "").strip()
+    return {
+        "code": str(getattr(item, "code", "") or ""),
+        "description": _short_desc(str(getattr(item, "description", "") or ""), 70),
+        "unit": str(getattr(item, "unit", "") or ""),
+        "operator": str(getattr(item, "operator", "") or getattr(item, "market_operator", "") or ""),
+        "quantity": float(getattr(item, "quantity", 0) or 0),
+        "contractor_unit_price": round(unit_price, 2),
+        "market_unit_price": round(market_unit_price, 2) if market_unit_price is not None else None,
+        "contractor_amount": round(amount, 2),
+        "market_amount": round(market_amount, 2) if market_amount is not None else None,
+        "difference_amount": round(diff, 2) if diff is not None else None,
+        "difference_pct": round(diff_pct, 2) if diff_pct is not None else None,
+        "impact_amount": round(amount, 2),
+        "section": _section_display_name(str(getattr(item, "section", "") or "")),
+        "market_reference": (ref_code + " - " + ref_desc).strip(" -"),
+        "state": str(getattr(item, "state", "") or ""),
+        "source": source,
+    }
+
+
+def _items_by_section(items: list[Any], qty_by_key: dict[str, float], source: str = "comparison") -> dict[str, list[dict[str, Any]]]:
+    buckets = {"materials": [], "labor": [], "equipment": [], "basics": [], "financial": [], "other": []}
+    for item in items or []:
+        if not _is_real_apu_item(item):
+            continue
+        key = _section_key(str(getattr(item, "section", "") or ""))
+        row = _item_row(item, qty_by_key, source=source)
+        if key == "financial":
+            continue
+        buckets.setdefault(key, []).append(row)
+    for key in buckets:
+        buckets[key] = sorted(buckets[key], key=lambda r: float(r.get("impact_amount") or 0), reverse=True)
+    return buckets
+
+
+def _difference_status(diff_pct: Any, no_ref: bool = False) -> str:
+    if no_ref:
+        return "REVIEW"
+    if diff_pct is None:
+        return "REVIEW"
+    try:
+        v = abs(float(diff_pct or 0))
+    except Exception:
+        return "REVIEW"
+    if v >= 20:
+        return "CRITICAL"
+    if v >= 8:
+        return "REVIEW"
+    return "OK"
+
+
+def _recommended_action(row: dict[str, Any]) -> str:
+    ref = row.get("market_reference")
+    diff_pct = row.get("difference_pct")
+    desc = row.get("description") or row.get("code") or "insumo"
+    if not ref:
+        return "Validar referencia Construdata o solicitar soporte del precio."
+    if diff_pct is None:
+        return "Revisar cantidad, rendimiento y referencia asociada."
+    if float(diff_pct or 0) > 20:
+        return "Revisar sobrecosto y negociar contra referencia de mercado."
+    if float(diff_pct or 0) < -20:
+        return "Validar que el precio bajo no omita alcance, rendimiento o insumos."
+    return "Confirmar que la referencia corresponda técnicamente al alcance."
+
+
+def _concept_row_from_context(item: dict[str, Any], total: float) -> dict[str, Any]:
+    amount = float(item.get("amount", 0) or item.get("contractor_amount", 0) or 0)
+    market = item.get("market_amount")
+    market = float(market or 0) if market is not None else None
+    diff = amount - market if market else None
+    diff_pct = diff / market * 100 if market else None
+    return {
+        "concept_code": item.get("code", ""),
+        "description": _short_desc(str(item.get("description", "") or ""), 70),
+        "contractor_amount": round(amount, 2),
+        "market_amount": round(market, 2) if market is not None else None,
+        "difference_amount": round(diff, 2) if diff is not None else None,
+        "difference_pct": round(diff_pct, 2) if diff_pct is not None else None,
+        "participation_pct": round(amount / total * 100, 2) if total else 0,
+        "probable_cause": "Alta concentración del importe" if total and amount / total >= 0.15 else "Partida relevante por impacto económico",
+        "priority_action": "Revisar matriz, cantidades, rendimientos y referencia de mercado.",
+    }
+
+
+def _build_base_diagnostic_context(run: CanonicalRun, context: dict[str, Any]) -> dict[str, Any]:
+    exec_concepts = [c for c in run.base_concepts if getattr(c, "is_executable", False)]
+    qty_by_key = {canonical_key(c.code, c.description): float(c.quantity or 0) for c in exec_concepts}
+    total = float(context.get("total_amount", 0) or 0)
+    items = _items_by_section(run.base_apu_items, qty_by_key, source="base")
+    top_concepts = [_concept_row_from_context(c, total) for c in (context.get("top_concepts") or [])[:10]]
+    section_breakdown = context.get("section_breakdown") or {}
+    return {
+        "run_type": "base_budget",
+        "run_label": "Presupuesto base",
+        "name": run.project_name or "Presupuesto base",
+        "date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "total_amount": total,
+        "market_amount": None,
+        "direct_cost": context.get("direct_cost", 0),
+        "indirect_cost": context.get("indirect_cost", 0),
+        "indirect_pct": context.get("indirect_pct", 25),
+        "concepts_processed": context.get("concepts_executable", 0),
+        "with_reference": context.get("matched_matrices", 0),
+        "without_full_reference": context.get("unmatched_matrices", 0),
+        "coverage_pct": context.get("coverage_pct", 0),
+        "section_values": section_breakdown,
+        "top_materials": items.get("materials", [])[:10],
+        "top_labor": items.get("labor", [])[:10],
+        "top_equipment": items.get("equipment", [])[:10],
+        "critical_concepts": top_concepts,
+        "validations": context.get("validation_samples", []),
+    }
+
+
+def _build_comparison_diagnostic_context(run: CanonicalRun, context: dict[str, Any]) -> dict[str, Any]:
+    providers = context.get("providers") or []
+    provider = providers[0] if providers else {}
+    provider_obj = (run.providers or [None])[0] if (run.providers or []) else None
+    valid_concepts = [c for c in getattr(provider_obj, "concepts", []) if _is_valid_comparativa_concept(c)] if provider_obj else []
+    qty_by_key = {canonical_key(c.code, c.description): float(c.quantity or 0) for c in valid_concepts}
+    total = float(provider.get("total_amount", context.get("max_amount", 0)) or 0)
+    market_total = float(provider.get("market_total_amount", 0) or 0) or None
+    items = _items_by_section(getattr(provider_obj, "apu_items", []) if provider_obj else [], qty_by_key, source="comparison")
+    # Critical concepts: for one provider use its top concepts; for multi, aggregate best available rows by provider.
+    crit = []
+    if len(providers) <= 1:
+        crit = [_concept_row_from_context(c, total) for c in (provider.get("top_concepts") or [])[:10]]
+    else:
+        for pctx in providers:
+            for c in (pctx.get("top_concepts") or [])[:4]:
+                row = _concept_row_from_context(c, float(pctx.get("total_amount", 0) or 0))
+                row["provider"] = pctx.get("name", "")
+                crit.append(row)
+        crit = sorted(crit, key=lambda r: float(r.get("contractor_amount") or 0), reverse=True)[:10]
+    br = (provider.get("section_breakdown") or {}).get("contractor", {}) if provider else {}
+    br_market = (provider.get("section_breakdown") or {}).get("market", {}) if provider else {}
+    return {
+        "run_type": "single_provider_comparison" if len(providers) <= 1 else "multi_provider_comparison",
+        "run_label": "Comparativa individual contra mercado" if len(providers) <= 1 else "Comparativa múltiple de contratistas",
+        "name": run.project_name or "Comparativa APU",
+        "date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "providers": providers,
+        "total_amount": total,
+        "market_amount": market_total,
+        "difference_amount": round(total - market_total, 2) if market_total is not None else None,
+        "difference_pct": round(((total / market_total) - 1) * 100, 2) if market_total else None,
+        "direct_cost": br.get("direct"),
+        "indirect_cost": br.get("indirect"),
+        "indirect_pct": 25,
+        "concepts_processed": provider.get("concepts_executable", 0),
+        "with_reference": provider.get("reference_items", 0),
+        "without_full_reference": int(provider.get("fallback_items", 0) or 0) + int(provider.get("no_reference_items", 0) or 0),
+        "coverage_pct": round((float(provider.get("reference_items",0) or 0) / max(1, len(getattr(provider_obj, "apu_items", []) if provider_obj else []))) * 100, 2),
+        "section_values": br,
+        "section_market_values": br_market,
+        "top_materials": items.get("materials", [])[:10],
+        "top_labor": items.get("labor", [])[:10],
+        "top_equipment": items.get("equipment", [])[:10],
+        "critical_concepts": crit,
+        "validations": [],
+    }
+
+
+def _build_diagnostic_context(run: CanonicalRun | None, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    base_context = _run_analysis_context(run, summary)
+    if not run:
+        return {"run_type":"unknown", "run_label":"Diagnóstico profesional", "name":"", "date":datetime.utcnow().strftime("%Y-%m-%d")}
+    if base_context.get("kind") == "base_budget":
+        return _build_base_diagnostic_context(run, base_context)
+    return _build_comparison_diagnostic_context(run, base_context)
+
+
+def _section_summary_from_diag(ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    total = float(ctx.get("total_amount", 0) or 0)
+    values = ctx.get("section_values") or {}
+    mvalues = ctx.get("section_market_values") or {}
+    mapping = [("materials","Materiales"),("labor","Mano de obra"),("equipment","Maquinaria / equipo"),("basics","Básicos"),("indirect","Indirectos / financiero")]
+    rows = []
+    for key, label in mapping:
+        amount = float(values.get(key, 0) or 0)
+        mamount = mvalues.get(key)
+        if mamount is not None:
+            mamount = float(mamount or 0)
+        if amount == 0 and not mamount:
+            continue
+        diff = amount - mamount if mamount else None
+        diff_pct = diff / mamount * 100 if mamount else None
+        status = _difference_status(diff_pct)
+        if total and amount / total >= 0.35:
+            status = "REVIEW" if status == "OK" else status
+        rows.append({
+            "section": label,
+            "contractor_amount": round(amount,2),
+            "market_amount": round(mamount,2) if mamount is not None else None,
+            "difference_amount": round(diff,2) if diff is not None else None,
+            "difference_pct": round(diff_pct,2) if diff_pct is not None else None,
+            "participation_pct": round(amount/total*100,2) if total else 0,
+            "status": status,
+            "comment": "Alta participación; revisar drivers" if total and amount/total >= 0.30 else "Sin alerta mayor por participación",
+        })
+    return rows
+
+
+def _kpis_from_diag(ctx: dict[str, Any], alerts_count: int = 0, priorities_count: int = 0) -> list[dict[str, Any]]:
+    kpis = [
+        {"label":"Monto total", "value":ctx.get("total_amount"), "format":"currency", "status":"neutral"},
+        {"label":"Monto mercado", "value":ctx.get("market_amount"), "format":"currency", "status":"neutral"},
+        {"label":"Diferencia contra mercado", "value":ctx.get("difference_amount"), "format":"currency", "status":"review"},
+        {"label":"% diferencia contra mercado", "value":ctx.get("difference_pct"), "format":"percent", "status":"review"},
+        {"label":"Costo directo", "value":ctx.get("direct_cost"), "format":"currency", "status":"neutral"},
+        {"label":"Indirecto", "value":ctx.get("indirect_cost"), "format":"currency", "status":"neutral"},
+        {"label":"% indirecto aplicado", "value":ctx.get("indirect_pct"), "format":"percent", "status":"neutral"},
+        {"label":"Conceptos procesados", "value":ctx.get("concepts_processed"), "format":"number", "status":"neutral"},
+        {"label":"Con referencia", "value":ctx.get("with_reference"), "format":"number", "status":"ok"},
+        {"label":"Sin referencia plena", "value":ctx.get("without_full_reference"), "format":"number", "status":"review"},
+        {"label":"Cobertura de mercado", "value":ctx.get("coverage_pct"), "format":"percent", "status":"ok" if float(ctx.get("coverage_pct",0) or 0) >= 90 else "review"},
+        {"label":"Alertas críticas", "value":alerts_count, "format":"number", "status":"critical" if alerts_count else "ok"},
+        {"label":"Partidas prioritarias", "value":priorities_count, "format":"number", "status":"review" if priorities_count else "ok"},
+    ]
+    return [k for k in kpis if k.get("value") is not None]
+
+
+def _build_market_alerts(ctx: dict[str, Any], section_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    alerts = []
+    total = float(ctx.get("total_amount", 0) or 0)
+    for row in section_rows:
+        if row.get("status") in {"REVIEW", "CRITICAL"}:
+            alerts.append({"severity":"HIGH" if row.get("status") == "CRITICAL" else "MEDIUM", "alert_type":"Sección con desviación o alta participación", "item":row.get("section"), "section":row.get("section"), "contractor_value":row.get("contractor_amount"), "market_value":row.get("market_amount"), "deviation_pct":row.get("difference_pct"), "analyst_check":"Validar composición, rendimientos y referencias principales de la sección."})
+    for concept in (ctx.get("critical_concepts") or [])[:10]:
+        if float(concept.get("participation_pct") or 0) >= 15:
+            alerts.append({"severity":"HIGH", "alert_type":"Partida con alta concentración", "item":concept.get("concept_code"), "section":"Catálogo", "contractor_value":concept.get("contractor_amount"), "market_value":concept.get("market_amount"), "deviation_pct":concept.get("difference_pct"), "analyst_check":"Revisar matriz completa, cantidad, rendimiento y referencia asociada."})
+    for key, label in [("top_materials","Material crítico con diferencia relevante"),("top_labor","Mano de obra con rendimiento sensible"),("top_equipment","Maquinaria con peso elevado")]:
+        for item in (ctx.get(key) or [])[:10]:
+            diff_pct = item.get("difference_pct")
+            no_ref = not item.get("market_reference")
+            if no_ref or (diff_pct is not None and abs(float(diff_pct or 0)) >= 15):
+                alerts.append({"severity":"HIGH" if diff_pct is not None and abs(float(diff_pct or 0)) >= 25 else "MEDIUM", "alert_type":label if not no_ref else "Sin referencia Construdata", "item":item.get("code") or item.get("description"), "section":item.get("section"), "contractor_value":item.get("contractor_unit_price"), "market_value":item.get("market_unit_price"), "deviation_pct":diff_pct, "analyst_check":_recommended_action(item)})
+    return alerts[:20]
+
+
+def _build_review_plan(ctx: dict[str, Any], alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    plan = []
+    for idx, concept in enumerate((ctx.get("critical_concepts") or [])[:5], 1):
+        code = concept.get("concept_code") or "partida prioritaria"
+        plan.append({"priority":idx, "what_to_review":f"Revisar partida {code}", "why_it_matters":f"Participa con {_pct_text(concept.get('participation_pct',0))} del total y tiene impacto de {_money_text(concept.get('contractor_amount',0))}.", "where_to_check":"Comparativa y Detalle del proveedor / Detalle Base", "decision_needed":"Confirmar matriz, alcance, cantidad, rendimiento y referencia de mercado."})
+    start = len(plan) + 1
+    for alert in alerts[:5]:
+        if len(plan) >= 10:
+            break
+        plan.append({"priority":start, "what_to_review":str(alert.get("item") or alert.get("alert_type") or "alerta"), "why_it_matters":str(alert.get("alert_type") or "alerta contra mercado"), "where_to_check":"Tabla de alertas y columna Match Construdata en Detalle", "decision_needed":str(alert.get("analyst_check") or "Validar técnicamente antes de cierre.")})
+        start += 1
+    return plan
+
+
+def _local_professional_diagnostic(ctx: dict[str, Any]) -> dict[str, Any]:
+    section_rows = _section_summary_from_diag(ctx)
+    alerts = _build_market_alerts(ctx, section_rows)
+    plan = _build_review_plan(ctx, alerts)
+    critical_count = len([a for a in alerts if a.get("severity") == "HIGH"])
+    coverage = float(ctx.get("coverage_pct", 0) or 0)
+    diff_pct = ctx.get("difference_pct")
+    high_concentration = any(float(c.get("participation_pct") or 0) >= 30 for c in (ctx.get("critical_concepts") or []))
+    if critical_count >= 3 or (diff_pct is not None and abs(float(diff_pct or 0)) >= 20):
+        status = "CRITICAL"
+    elif critical_count or high_concentration or coverage < 90 or int(ctx.get("without_full_reference",0) or 0) > 0:
+        status = "REVIEW"
+    else:
+        status = "OK"
+    headline = {"title":"Diagnóstico profesional APU", "run_type":ctx.get("run_type"), "general_status":status, "traffic_light":_traffic_from_status(status), "executive_line":"Revisar primero las partidas de mayor impacto y las referencias sin trazabilidad plena." if status != "OK" else "Resultado consistente; mantener revisión de trazabilidad en partidas principales."}
+    # Add actions to top items.
+    for key in ["top_materials", "top_labor", "top_equipment"]:
+        for row in ctx.get(key, []) or []:
+            row["recommended_action"] = _recommended_action(row)
+    diagnosis = {
+        "risk_summary":"El riesgo principal se concentra en partidas de alto impacto, desviaciones contra mercado y conceptos sin referencia plena.",
+        "main_cost_driver":"La prioridad se determina por participación económica y por desviación contra mercado, no por número de observaciones.",
+        "market_traceability":"Los valores sin referencia plena deben validarse contra Construdata o soporte documental antes del cierre.",
+        "recommendation":"Usar el diagnóstico como guía de revisión y negociación; no liberar versión final sin atender las prioridades marcadas.",
+    }
+    decision = {"verdict":"ACCEPTABLE" if status == "OK" else "REVIEW_REQUIRED" if status == "REVIEW" else "HIGH_RISK", "main_reason":headline["executive_line"], "next_action":plan[0]["what_to_review"] if plan else "Mantener control de trazabilidad.", "priority":"HIGH" if status == "CRITICAL" else "MEDIUM" if status == "REVIEW" else "LOW"}
+    return {"headline":headline, "kpis":_kpis_from_diag(ctx, critical_count, len(plan)), "section_summary":section_rows, "top_materials":ctx.get("top_materials", [])[:10], "top_labor":ctx.get("top_labor", [])[:10], "top_equipment":ctx.get("top_equipment", [])[:10], "critical_concepts":ctx.get("critical_concepts", [])[:10], "market_alerts":alerts, "analyst_review_plan":plan, "professional_diagnosis":diagnosis, "final_decision":decision}
+
+
+def _professional_diagnostic_prompt() -> str:
+    return (
+        "Actúa como experto senior en análisis de precios unitarios, Neodata y Construdata. "
+        "Recibirás un JSON con datos ya calculados. No calcules importes nuevos ni inventes datos. "
+        "Devuelve únicamente JSON válido, sin markdown y sin texto fuera del JSON. "
+        "No menciones IA, proveedor, modelo, motor, prompt, fallback ni detalles técnicos. "
+        "El objetivo es producir un diagnóstico comercial, visual y accionable para un analista APU. "
+        "Si run_type es single_provider_comparison, NO hagas ranking; usa lectura individual contra mercado. "
+        "Si run_type es multi_provider_comparison, sí puedes comparar contratistas. "
+        "Usa tablas y acciones, no párrafos largos. Las descripciones deben ser cortas. "
+        "Respeta exactamente la estructura: headline, kpis, section_summary, top_materials, top_labor, top_equipment, critical_concepts, market_alerts, analyst_review_plan, professional_diagnosis, final_decision. "
+        "Cada acción del plan debe decir qué revisar, por qué importa, dónde buscarlo y qué decisión tomar. "
+        "Si falta evidencia, usa null, [] o 'requiere validación'."
+    )
+
+
+def _normalize_professional_diagnostic(parsed: dict[str, Any] | None, fallback: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(parsed, dict):
+        return None
+    required = ["headline", "kpis", "section_summary", "critical_concepts", "market_alerts", "analyst_review_plan", "professional_diagnosis", "final_decision"]
+    if not all(k in parsed for k in required):
+        return None
+    # Ensure arrays exist.
+    for key in ["kpis", "section_summary", "top_materials", "top_labor", "top_equipment", "critical_concepts", "market_alerts", "analyst_review_plan"]:
+        if not isinstance(parsed.get(key), list):
+            parsed[key] = fallback.get(key, [])
+    for key in ["headline", "professional_diagnosis", "final_decision"]:
+        if not isinstance(parsed.get(key), dict):
+            parsed[key] = fallback.get(key, {})
+    return parsed
+
+
+def _call_external_professional_diagnostic(ctx: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any] | None:
+    global AI_ANALYSIS_LAST_ERROR, AI_ANALYSIS_LAST_PROVIDER_RESPONSE
+    status = _analysis_feature_status()
+    if not status.get("enabled") or status.get("mode") != "EXTERNAL_AI":
+        return None
+    model = _configured_ai_model()
+    payload_context = json.dumps({"context": ctx, "fallback_schema": fallback}, ensure_ascii=False, default=str)[:36000]
+    try:
+        if AI_ANALYSIS_PROVIDER == "anthropic":
+            key = os.getenv("ANTHROPIC_API_KEY")
+            if not key:
+                return None
+            body = {"model": model, "max_tokens": 3500, "temperature": 0.05, "system": _professional_diagnostic_prompt(), "messages": [{"role":"user", "content": payload_context}]}
+            req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode("utf-8"), headers={"content-type":"application/json", "x-api-key":key, "anthropic-version":"2023-06-01"}, method="POST")
+            with urllib.request.urlopen(req, timeout=AI_ANALYSIS_TIMEOUT) as resp:
+                raw_response = resp.read().decode("utf-8", errors="replace")
+            AI_ANALYSIS_LAST_PROVIDER_RESPONSE = raw_response[:4000]
+            data = json.loads(raw_response)
+            text = "".join(str(part.get("text", "")) for part in data.get("content", []) if isinstance(part, dict)).strip()
+        elif AI_ANALYSIS_PROVIDER == "openai":
+            key = os.getenv("OPENAI_API_KEY")
+            if not key:
+                return None
+            body = {"model": model, "temperature": 0.05, "response_format": {"type":"json_object"}, "messages":[{"role":"system", "content":_professional_diagnostic_prompt()}, {"role":"user", "content": payload_context}]}
+            req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=json.dumps(body).encode("utf-8"), headers={"content-type":"application/json", "authorization":f"Bearer {key}"}, method="POST")
+            with urllib.request.urlopen(req, timeout=AI_ANALYSIS_TIMEOUT) as resp:
+                raw_response = resp.read().decode("utf-8", errors="replace")
+            AI_ANALYSIS_LAST_PROVIDER_RESPONSE = raw_response[:4000]
+            data = json.loads(raw_response)
+            text = str(data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+        else:
+            return None
+        parsed = _extract_json_object(text)
+        if text:
+            AI_ANALYSIS_LAST_PROVIDER_RESPONSE = text[:4000]
+        diag = _normalize_professional_diagnostic(parsed, fallback)
+        if not diag:
+            AI_ANALYSIS_LAST_ERROR = "El proveedor no devolvió la estructura de diagnóstico esperada."
+        return diag
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:1200]
+        except Exception:
+            body = ""
+        AI_ANALYSIS_LAST_ERROR = f"HTTP {exc.code}: {body}"
+        return None
+    except Exception as exc:
+        AI_ANALYSIS_LAST_ERROR = f"{type(exc).__name__}: {exc}"
+        return None
+
+
+def generate_professional_diagnostic(run: CanonicalRun | None, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    ctx = _build_diagnostic_context(run, summary)
+    fallback = _local_professional_diagnostic(ctx)
+    external = _call_external_professional_diagnostic(ctx, fallback)
+    diag = external or fallback
+    # Never expose technical mode/provider/model in the commercial payload.
+    diag["_context"] = ctx
+    return diag
+
+
+def _diag_value(value: Any, fmt: str | None = None) -> str:
+    if value is None or value == "":
+        return "N/A"
+    if fmt == "currency":
+        return _money_text(value)
+    if fmt == "percent":
+        return _pct_text(value)
+    return str(value)
+
+
+def _write_diag_section_title(ws, row: int, title: str, max_col: int = 10) -> int:
+    _section_label(ws, row, title, max_col)
+    return row + 1
+
+
+def _write_table_block(ws, row: int, title: str, headers: list[str], rows: list[list[Any]], *, money_cols: list[int] | None = None, pct_cols: list[int] | None = None, int_cols: list[int] | None = None, table_name: str = "DiagTable") -> int:
+    row = _write_diag_section_title(ws, row, title, max(10, len(headers)))
+    for c, h in enumerate(headers, 1):
+        ws.cell(row, c, h)
+    _header_style(ws, row, 1, len(headers))
+    start = row + 1
+    if not rows:
+        ws.cell(start, 1, "Sin datos calculados para esta sección")
+        ws.merge_cells(start_row=start, start_column=1, end_row=start, end_column=len(headers))
+        start += 1
+    else:
+        for vals in rows:
             for c, v in enumerate(vals, 1):
                 ws.cell(start, c, v)
             start += 1
-        if start > row + 1:
-            _body_style(ws, row + 1, start - 1, 1, len(top_headers))
-            _apply_formats(ws, money_cols=[5,6], pct_cols=[7], start_row=row+1, end_row=start-1)
-            _add_table(ws, f"A{row}:H{start-1}", "AnalisisIATopConcepts", "TableStyleMedium2")
-        row = start + 2
+    _body_style(ws, row + 1, start - 1, 1, len(headers))
+    _apply_formats(ws, money_cols=money_cols or [], pct_cols=pct_cols or [], int_cols=int_cols or [], start_row=row+1, end_row=start-1)
+    try:
+        _add_table(ws, f"A{row}:{get_column_letter(len(headers))}{start-1}", table_name, "TableStyleMedium2")
+    except Exception:
+        pass
+    return start + 2
 
-        # Market alerts table
-        _section_label(ws, row, "Alertas contra mercado / Construdata", 8)
-        row += 1
-        alert_headers = ["Código", "Descripción", "Sección", "Importe", "Mercado", "Sobrecosto", "%", "Match Construdata"]
-        for c, h in enumerate(alert_headers, 1):
-            ws.cell(row, c, h)
-        _header_style(ws, row, 1, len(alert_headers))
-        start = row + 1
-        alerts = context.get("top_overcost_items") or []
-        if alerts:
-            for item in alerts[:12]:
-                vals = [item.get("code"), item.get("description"), item.get("section"), item.get("amount"), item.get("market_amount"), item.get("delta"), float(item.get("delta_pct", 0) or 0)/100, item.get("match")]
-                for c, v in enumerate(vals, 1):
-                    ws.cell(start, c, v)
-                start += 1
-        else:
-            ws.cell(start, 1, "Sin alertas monetarias priorizadas")
-            ws.merge_cells(start_row=start, start_column=1, end_row=start, end_column=8)
-            start += 1
-        _body_style(ws, row + 1, start - 1, 1, len(alert_headers))
-        _apply_formats(ws, money_cols=[4,5,6], pct_cols=[7], start_row=row+1, end_row=start-1)
-        _add_table(ws, f"A{row}:H{start-1}", "AnalisisIAMarketAlerts", "TableStyleMedium3")
 
-    elif context.get("kind") == "comparison":
-        # Provider ranking table
-        label_p = "Lectura económica del proveedor" if len((context.get("providers") or [])) <= 1 else "Ranking económico por proveedor"
-        _section_label(ws, row, label_p, 9)
-        row += 1
-        headers_p = ["Proveedor", "Monto", "Mercado", "Diferencia", "%", "Conceptos", "Referencias", "Sin ref. plena", "Sin referencia"]
-        for c, h in enumerate(headers_p, 1): ws.cell(row, c, h)
-        _header_style(ws, row, 1, len(headers_p))
-        start = row + 1
-        for p in (context.get("providers") or []):
-            vals = [p.get("name"), p.get("total_amount"), p.get("market_total_amount"), p.get("overcost_amount"), float(p.get("overcost_pct",0) or 0)/100, p.get("concepts_executable"), p.get("reference_items"), p.get("fallback_items"), p.get("no_reference_items")]
-            for c, v in enumerate(vals, 1): ws.cell(start, c, v)
-            start += 1
-        if start > row + 1:
-            _body_style(ws, row + 1, start - 1, 1, len(headers_p))
-            _apply_formats(ws, money_cols=[2,3,4], pct_cols=[5], int_cols=[6,7,8,9], start_row=row+1, end_row=start-1)
-            _add_table(ws, f"A{row}:I{start-1}", "AnalisisIAProviders", "TableStyleMedium4")
-        row = start + 2
+def _write_analisis_ia(ws, run: CanonicalRun | None = None):
+    diag = generate_professional_diagnostic(run)
+    _setup_sheet(ws, "Análisis IA", "Diagnóstico profesional para revisión de precios unitarios.", 10)
+    _set_widths(ws, {"A": 20, "B": 42, "C": 18, "D": 18, "E": 18, "F": 18, "G": 18, "H": 20, "I": 22, "J": 32})
+    headline = diag.get("headline", {})
+    decision = diag.get("final_decision", {})
+    row = 3
+    ws.cell(row, 1, "Tipo de corrida"); ws.cell(row, 2, _diagnostic_run_label(headline.get("run_type", "")))
+    ws.cell(row, 4, "Estado general"); ws.cell(row, 5, _status_label(headline.get("general_status", "REVIEW")))
+    ws.cell(row + 1, 1, "Lectura ejecutiva"); ws.cell(row + 1, 2, headline.get("executive_line", ""))
+    ws.merge_cells(start_row=row+1, start_column=2, end_row=row+1, end_column=10)
+    for c in [1,4]: ws.cell(row, c).font = Font(bold=True, color=BRAND["navy"])
+    ws.cell(row+1, 1).font = Font(bold=True, color=BRAND["navy"])
+    ws.cell(row+1, 2).alignment = Alignment(wrap_text=True)
+    row += 4
 
-        _section_label(ws, row, "Alertas de sobrecosto por contratista", 8)
-        row += 1
-        headers_a = ["Contratista", "Código", "Descripción", "Sección", "Importe", "Mercado", "Sobrecosto", "%"]
-        for c, h in enumerate(headers_a, 1): ws.cell(row, c, h)
-        _header_style(ws, row, 1, len(headers_a))
-        start = row + 1
-        found = False
-        for p in (context.get("providers") or []):
-            for item in (p.get("top_overcost_items") or [])[:6]:
-                vals = [p.get("name"), item.get("code"), item.get("description"), item.get("section"), item.get("amount"), item.get("market_amount"), item.get("delta"), float(item.get("delta_pct",0) or 0)/100]
-                for c, v in enumerate(vals, 1): ws.cell(start, c, v)
-                start += 1; found = True
-        if not found:
-            ws.cell(start, 1, "Sin alertas monetarias priorizadas")
-            ws.merge_cells(start_row=start, start_column=1, end_row=start, end_column=8)
-            start += 1
-        _body_style(ws, row + 1, start - 1, 1, len(headers_a))
-        _apply_formats(ws, money_cols=[5,6,7], pct_cols=[8], start_row=row+1, end_row=start-1)
-        _add_table(ws, f"A{row}:H{start-1}", "AnalisisIAProviderAlerts", "TableStyleMedium3")
+    # KPI table
+    kpi_rows = [[k.get("label"), _diag_value(k.get("value"), k.get("format")), k.get("status", "")] for k in diag.get("kpis", [])]
+    row = _write_table_block(ws, row, "KPIs principales", ["Indicador", "Valor", "Estado"], kpi_rows, table_name="DiagKpis")
 
-    # keep the visible area clean
+    section_rows = []
+    for s in diag.get("section_summary", []):
+        section_rows.append([s.get("section"), s.get("contractor_amount"), s.get("market_amount"), s.get("difference_amount"), (float(s.get("difference_pct") or 0)/100 if s.get("difference_pct") is not None else None), (float(s.get("participation_pct") or 0)/100), _status_label(s.get("status")), s.get("comment")])
+    row = _write_table_block(ws, row, "Resumen por secciones APU", ["Sección", "Importe", "Mercado", "Diferencia $", "Diferencia %", "% total", "Estado", "Comentario"], section_rows, money_cols=[2,3,4], pct_cols=[5,6], table_name="DiagSections")
+
+    mat_rows = [[i.get("code"), i.get("description"), i.get("unit"), i.get("quantity"), i.get("contractor_unit_price"), i.get("market_unit_price"), i.get("difference_amount"), (float(i.get("difference_pct") or 0)/100 if i.get("difference_pct") is not None else None), i.get("impact_amount"), i.get("market_reference"), i.get("recommended_action")] for i in diag.get("top_materials", [])[:10]]
+    row = _write_table_block(ws, row, "Top 10 materiales por impacto", ["Código", "Descripción", "Unidad", "Cantidad", "P.U.", "P.U. mercado", "Dif. $", "Dif. %", "Importe", "Referencia", "Acción"], mat_rows, money_cols=[5,6,7,9], pct_cols=[8], table_name="DiagMaterials")
+
+    lab_rows = [[i.get("code"), i.get("description"), i.get("unit"), i.get("operator"), i.get("quantity"), i.get("contractor_unit_price"), i.get("market_unit_price"), i.get("difference_amount"), (float(i.get("difference_pct") or 0)/100 if i.get("difference_pct") is not None else None), i.get("impact_amount"), i.get("recommended_action")] for i in diag.get("top_labor", [])[:10]]
+    row = _write_table_block(ws, row, "Top 10 mano de obra / cuadrillas", ["Código", "Descripción", "Unidad", "Op.", "Rend./Cant.", "P.U.", "P.U. mercado", "Dif. $", "Dif. %", "Importe", "Acción"], lab_rows, money_cols=[6,7,8,10], pct_cols=[9], table_name="DiagLabor")
+
+    eq_rows = [[i.get("code"), i.get("description"), i.get("unit"), i.get("quantity"), i.get("contractor_unit_price"), i.get("market_unit_price"), i.get("difference_amount"), (float(i.get("difference_pct") or 0)/100 if i.get("difference_pct") is not None else None), i.get("impact_amount"), i.get("recommended_action")] for i in diag.get("top_equipment", [])[:10]]
+    row = _write_table_block(ws, row, "Top 10 maquinaria / equipo", ["Código", "Descripción", "Unidad", "Cantidad", "P.U.", "P.U. mercado", "Dif. $", "Dif. %", "Importe", "Acción"], eq_rows, money_cols=[5,6,7,9], pct_cols=[8], table_name="DiagEquipment")
+
+    concept_rows = [[c.get("concept_code"), c.get("description"), c.get("contractor_amount"), c.get("market_amount"), c.get("difference_amount"), (float(c.get("difference_pct") or 0)/100 if c.get("difference_pct") is not None else None), (float(c.get("participation_pct") or 0)/100), c.get("probable_cause"), c.get("priority_action")] for c in diag.get("critical_concepts", [])[:10]]
+    row = _write_table_block(ws, row, "Partidas críticas del catálogo", ["Partida", "Descripción", "Importe", "Mercado", "Dif. $", "Dif. %", "% total", "Causa probable", "Acción prioritaria"], concept_rows, money_cols=[3,4,5], pct_cols=[6,7], table_name="DiagConcepts")
+
+    alert_rows = [[a.get("severity"), a.get("alert_type"), a.get("item"), a.get("section"), a.get("contractor_value"), a.get("market_value"), (float(a.get("deviation_pct") or 0)/100 if a.get("deviation_pct") is not None else None), a.get("analyst_check")] for a in diag.get("market_alerts", [])[:20]]
+    row = _write_table_block(ws, row, "Alertas contra mercado", ["Severidad", "Tipo", "Partida/Insumo", "Sección", "Valor", "Mercado", "Desviación", "Qué revisar"], alert_rows, money_cols=[5,6], pct_cols=[7], table_name="DiagAlerts")
+
+    plan_rows = [[p.get("priority"), p.get("what_to_review"), p.get("why_it_matters"), p.get("where_to_check"), p.get("decision_needed")] for p in diag.get("analyst_review_plan", [])[:10]]
+    row = _write_table_block(ws, row, "Plan de revisión para el analista", ["Prioridad", "Qué revisar", "Por qué importa", "Dónde buscar", "Decisión requerida"], plan_rows, int_cols=[1], table_name="DiagPlan")
+
+    pd = diag.get("professional_diagnosis", {})
+    diagnosis_rows = [["Riesgo principal", pd.get("risk_summary")], ["Driver de costo", pd.get("main_cost_driver")], ["Trazabilidad", pd.get("market_traceability")], ["Recomendación", pd.get("recommendation")]]
+    row = _write_table_block(ws, row, "Diagnóstico profesional breve", ["Tema", "Lectura"], diagnosis_rows, table_name="DiagBrief")
+
+    final_rows = [[_status_label(headline.get("general_status", "REVIEW")), decision.get("main_reason"), decision.get("next_action"), decision.get("priority")]]
+    row = _write_table_block(ws, row, "Conclusión ejecutiva", ["Dictamen", "Motivo principal", "Próxima acción", "Prioridad"], final_rows, table_name="DiagDecision")
     ws.freeze_panes = "A7"
+
 def _write_base_budget_report(wb):
     """Generate the independent base-budget workbook.
 
@@ -2752,80 +3139,94 @@ def _html_bar(label: str, value: float, total: float) -> str:
     return '<div class="bar"><div><b>{}</b><span>{} / {}</span></div><i><em style="width:{:.2f}%"></em></i></div>'.format(_html_escape(label), _html_money(value), _html_pct(pct), pct)
 
 
-def _run_ai_report_html(run: CanonicalRun, summary: dict[str, Any] | None = None) -> str:
-    analysis = generate_expert_ai_analysis(run, summary)
-    context = analysis.get("context") or _run_analysis_context(run, summary)
-    sections = analysis.get("sections") or []
-    kind = context.get("kind")
-    mode = str(analysis.get("mode") or "LOCAL_EXPERT")
-    provider = str(analysis.get("provider") or "local")
-    model = str(analysis.get("model") or "deterministic")
-    is_external = "EXTERNAL" in mode.upper()
-    title = "Diagnostico IA - Presupuesto base" if kind == "base_budget" else "Diagnostico IA - Comparativa APU"
-    badge = "Diagnóstico generado"
-    badge_cls = "ok"
 
-    cards = []
-    bars = ""
-    tables = []
+def _html_status_chip(status: str) -> str:
+    s = str(status or "REVIEW").upper()
+    cls = "ok" if s in {"OK", "LOW"} else "bad" if s in {"CRITICAL", "HIGH", "HIGH_RISK"} else "warn"
+    return f"<span class='chip {cls}'>{_html_escape(_status_label(s))}</span>"
 
-    if kind == "base_budget":
-        total = float(context.get("total_amount", 0) or 0)
-        direct = float(context.get("direct_cost", 0) or 0)
-        indirect = float(context.get("indirect_cost", 0) or 0)
-        coverage = float(context.get("coverage_pct", 0) or 0)
-        cards = [
-            _html_kpi("Monto total", _html_money(total), "Presupuesto base"),
-            _html_kpi("Costo directo", _html_money(direct), "Antes de indirecto"),
-            _html_kpi("Indirecto 25%", _html_money(indirect), "Regla financiera"),
-            _html_kpi("Cobertura", _html_pct(coverage), f"{context.get('matched_matrices',0)} match / {context.get('unmatched_matrices',0)} revision"),
-        ]
-        br = context.get("section_breakdown") or {}
-        for key, label in [("materials","Materiales"),("labor","Mano de obra"),("equipment","Maquinaria / equipo"),("basics","Basicos"),("indirect","Indirecto")]:
-            amount = float(br.get(key, 0) or 0)
-            if amount:
-                bars += _html_bar(label, amount, total)
-        top_rows = []
-        for item in (context.get("top_concepts") or [])[:10]:
-            top_rows.append([item.get("code",""), item.get("description",""), item.get("unit",""), item.get("quantity",0), _html_money(item.get("amount",0)), _html_pct(item.get("weight_pct",0)), item.get("state","")])
-        tables.append(("Partidas criticas por impacto", _html_table(["Codigo","Descripcion corta","Unidad","Cantidad","Importe","% Part.","Estado"], top_rows)))
+
+def _html_value(value: Any, fmt: str | None = None) -> str:
+    return _html_escape(_diag_value(value, fmt))
+
+
+def _html_diag_table(headers: list[str], rows: list[list[Any]], classes: str = "") -> str:
+    head = ''.join(f'<th>{_html_escape(h)}</th>' for h in headers)
+    if not rows:
+        body = f'<tr><td colspan="{len(headers)}" class="muted">Sin datos calculados para esta sección</td></tr>'
     else:
-        providers = context.get("providers") or []
-        count = int(context.get("providers_count", len(providers)) or 0)
-        cards = [
-            _html_kpi("Tipo de corrida", "1 proveedor" if count <= 1 else f"{count} proveedores", "No hay ranking" if count <= 1 else "Ranking economico"),
-            _html_kpi("Brecha economica", _html_pct(context.get("economic_spread_pct", 0)), "No aplica" if count <= 1 else "Entre extremos"),
-            _html_kpi("Sin referencia", str(context.get("total_no_reference_items", 0)), "Insumos"),
-            _html_kpi("Sin referencia plena", str(context.get("total_fallback_items", 0)), "Valores sujetos a revisión"),
-        ]
-        provider_rows = []
-        for p in providers:
-            provider_rows.append([p.get("name",""), _html_money(p.get("total_amount",0)), _html_money(p.get("market_total_amount",0)), _html_money(p.get("overcost_amount",0)), _html_pct(p.get("overcost_pct",0)), p.get("concepts_executable",0), p.get("reference_items",0), p.get("fallback_items",0), p.get("no_reference_items",0)])
-        title_table = "Lectura individual contra mercado" if count <= 1 else "Ranking economico por contratista"
-        tables.append((title_table, _html_table(["Proveedor","Monto","Mercado","Diferencia","%","Conceptos","Referencias","Sin ref. plena","Sin referencia"], provider_rows)))
-        if providers:
-            p0 = providers[0]
-            total = float(p0.get("total_amount", 0) or 0)
-            br = (p0.get("section_breakdown") or {}).get("contractor") or {}
-            for key, label in [("materials","Materiales"),("labor","Mano de obra"),("equipment","Maquinaria / equipo"),("direct","Costo directo"),("indirect","Indirectos")]:
-                amount = float(br.get(key, 0) or 0)
-                if amount:
-                    bars += _html_bar(label, amount, total)
-        alert_rows = []
-        for p in providers:
-            for item in (p.get("top_overcost_items") or [])[:10]:
-                alert_rows.append([p.get("name",""), item.get("code",""), item.get("description",""), item.get("section",""), _html_money(item.get("amount",0)), _html_money(item.get("market_amount",0)), _html_money(item.get("delta",0)), _html_pct(item.get("delta_pct",0)), item.get("match","")])
-        if alert_rows:
-            tables.append(("Alertas de sobrecosto contra mercado", _html_table(["Contratista","Codigo","Descripcion","Seccion","Importe","Mercado","Diferencia","%","Match"], alert_rows)))
+        body = ''
+        for row in rows:
+            body += '<tr>' + ''.join(f'<td>{v if isinstance(v, str) and v.startswith("<") else _html_escape(v)}</td>' for v in row) + '</tr>'
+    return f'<div class="table-wrap {classes}"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
-    insight_html = ''.join('<article class="insight"><h3>{}</h3><p>{}</p></article>'.format(_html_escape(s.get("section","")), _html_escape(s.get("content",""))) for s in sections)
-    table_html = ''.join('<section class="panel"><h2>{}</h2>{}</section>'.format(_html_escape(t), body) for t, body in tables)
-    error = analysis.get("error")
-    error_html = ''
+
+def _run_ai_report_html(run: CanonicalRun, summary: dict[str, Any] | None = None) -> str:
+    diag = generate_professional_diagnostic(run, summary)
+    headline = diag.get("headline", {})
+    decision = diag.get("final_decision", {})
+    ctx = diag.get("_context", {})
+    title = "Diagnóstico profesional"
+    run_label = _diagnostic_run_label(headline.get("run_type", ctx.get("run_type", "")))
+    status = str(headline.get("general_status", "REVIEW") or "REVIEW").upper()
+    traffic = headline.get("traffic_light", _traffic_from_status(status))
+    executive = headline.get("executive_line", "Revisar partidas de mayor impacto y referencias sin trazabilidad plena.")
+
+    kpi_cards = ''
+    for k in diag.get("kpis", [])[:13]:
+        kpi_cards += "<article class='kpi'><span>{}</span><strong>{}</strong><small>{}</small></article>".format(_html_escape(k.get("label", "")), _html_value(k.get("value"), k.get("format")), _html_escape(k.get("status", "")))
+
+    sec_rows = []
+    for s in diag.get("section_summary", []):
+        sec_rows.append([s.get("section"), _html_money(s.get("contractor_amount",0)), _html_money(s.get("market_amount",0)) if s.get("market_amount") is not None else "N/A", _html_money(s.get("difference_amount",0)) if s.get("difference_amount") is not None else "N/A", _html_pct(s.get("difference_pct",0)) if s.get("difference_pct") is not None else "N/A", _html_pct(s.get("participation_pct",0)), _html_status_chip(s.get("status")), s.get("comment", "")])
+    section_table = _html_diag_table(["Sección", "Importe", "Mercado", "Dif. $", "Dif. %", "% total", "Estado", "Comentario"], sec_rows)
+
+    bars = ''
+    total = float(ctx.get("total_amount", 0) or 0)
+    for s in diag.get("section_summary", []):
+        amount = float(s.get("contractor_amount", 0) or 0)
+        if amount:
+            bars += _html_bar(str(s.get("section", "")), amount, total)
+
+    def top_item_rows(items: list[dict[str, Any]], kind: str) -> list[list[Any]]:
+        rows = []
+        for i in (items or [])[:10]:
+            if kind == 'labor':
+                rows.append([i.get("code"), i.get("description"), i.get("unit"), i.get("operator"), i.get("quantity"), _html_money(i.get("contractor_unit_price",0)), _html_money(i.get("market_unit_price",0)) if i.get("market_unit_price") is not None else "N/A", _html_money(i.get("difference_amount",0)) if i.get("difference_amount") is not None else "N/A", _html_pct(i.get("difference_pct",0)) if i.get("difference_pct") is not None else "N/A", _html_money(i.get("impact_amount",0)), i.get("recommended_action", "")])
+            else:
+                rows.append([i.get("code"), i.get("description"), i.get("unit"), i.get("quantity"), _html_money(i.get("contractor_unit_price",0)), _html_money(i.get("market_unit_price",0)) if i.get("market_unit_price") is not None else "N/A", _html_money(i.get("difference_amount",0)) if i.get("difference_amount") is not None else "N/A", _html_pct(i.get("difference_pct",0)) if i.get("difference_pct") is not None else "N/A", _html_money(i.get("impact_amount",0)), i.get("market_reference", ""), i.get("recommended_action", "")])
+        return rows
+
+    materials_table = _html_diag_table(["Código", "Descripción", "Unidad", "Cant.", "P.U.", "P.U. mercado", "Dif. $", "Dif. %", "Importe", "Referencia", "Acción"], top_item_rows(diag.get("top_materials", []), 'materials'))
+    labor_table = _html_diag_table(["Código", "Descripción", "Unidad", "Op.", "Rend./Cant.", "P.U.", "P.U. mercado", "Dif. $", "Dif. %", "Importe", "Acción"], top_item_rows(diag.get("top_labor", []), 'labor'))
+    equipment_table = _html_diag_table(["Código", "Descripción", "Unidad", "Cant.", "P.U.", "P.U. mercado", "Dif. $", "Dif. %", "Importe", "Referencia", "Acción"], top_item_rows(diag.get("top_equipment", []), 'equipment'))
+
+    concept_rows = []
+    for c in diag.get("critical_concepts", [])[:10]:
+        concept_rows.append([c.get("concept_code"), c.get("description"), _html_money(c.get("contractor_amount",0)), _html_money(c.get("market_amount",0)) if c.get("market_amount") is not None else "N/A", _html_money(c.get("difference_amount",0)) if c.get("difference_amount") is not None else "N/A", _html_pct(c.get("difference_pct",0)) if c.get("difference_pct") is not None else "N/A", _html_pct(c.get("participation_pct",0)), c.get("probable_cause", ""), c.get("priority_action", "")])
+    concepts_table = _html_diag_table(["Partida", "Descripción", "Importe", "Mercado", "Dif. $", "Dif. %", "% total", "Causa probable", "Acción"], concept_rows)
+
+    alert_rows = []
+    for a in diag.get("market_alerts", [])[:20]:
+        sev = str(a.get("severity", "MEDIUM")).upper()
+        chip = "<span class='chip {}'>{}</span>".format("bad" if sev == "HIGH" else "warn" if sev == "MEDIUM" else "ok", _html_escape(sev))
+        alert_rows.append([chip, a.get("alert_type"), a.get("item"), a.get("section"), _html_money(a.get("contractor_value",0)) if a.get("contractor_value") is not None else "N/A", _html_money(a.get("market_value",0)) if a.get("market_value") is not None else "N/A", _html_pct(a.get("deviation_pct",0)) if a.get("deviation_pct") is not None else "N/A", a.get("analyst_check")])
+    alerts_table = _html_diag_table(["Severidad", "Tipo", "Partida/Insumo", "Sección", "Valor", "Mercado", "Desviación", "Qué revisar"], alert_rows)
+
+    plan_rows = []
+    for pitem in diag.get("analyst_review_plan", [])[:10]:
+        plan_rows.append([pitem.get("priority"), pitem.get("what_to_review"), pitem.get("why_it_matters"), pitem.get("where_to_check"), pitem.get("decision_needed")])
+    plan_table = _html_diag_table(["Prioridad", "Qué revisar", "Por qué importa", "Dónde buscar", "Decisión requerida"], plan_rows)
+
+    pd = diag.get("professional_diagnosis", {})
+    diag_table = _html_diag_table(["Tema", "Lectura"], [["Riesgo principal", pd.get("risk_summary")], ["Driver de costo", pd.get("main_cost_driver")], ["Trazabilidad", pd.get("market_traceability")], ["Recomendación", pd.get("recommendation")]])
+    final_table = _html_diag_table(["Dictamen", "Motivo principal", "Próxima acción", "Prioridad"], [[_status_label(status), decision.get("main_reason"), decision.get("next_action"), decision.get("priority")]])
+
     css = """
-    body{margin:0;background:#07111f;color:#eaf1fb;font-family:Inter,Segoe UI,Arial,sans-serif}.wrap{max-width:1320px;margin:auto;padding:34px}.hero,.panel,.insight{background:linear-gradient(135deg,#132642,#0f1d33);border:1px solid #263850;border-radius:24px;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.25)}h1{margin:10px 0;font-size:34px}p{line-height:1.58;color:#c7d2e5}.badge{display:inline-flex;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:800;background:#20324d;color:#dbeafe}.badge.ok{background:rgba(74,222,128,.16);color:#86efac}.badge.warn{background:rgba(251,191,36,.16);color:#fde68a}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:18px}.kpi{background:#081525;border:1px solid #263850;border-radius:18px;padding:16px}.kpi-t{font-size:12px;color:#9fb0c7;text-transform:uppercase;letter-spacing:.08em}.kpi-v{font-size:24px;font-weight:900;margin-top:7px}.kpi-s{font-size:13px;color:#9fb0c7;margin-top:5px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}.insights{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:18px}.bar{margin:12px 0}.bar div{display:flex;justify-content:space-between;color:#9fb0c7;font-size:13px}.bar b{color:#eaf1fb}.bar i{display:block;height:12px;background:#081525;border:1px solid #263850;border-radius:999px;overflow:hidden;margin-top:6px}.bar em{display:block;height:100%;background:linear-gradient(90deg,#67a8ff,#4ade80)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #263850;padding:10px;text-align:left;vertical-align:top}th{background:rgba(103,168,255,.12);color:#dbeafe}.table-wrap{overflow:auto}.actions{display:flex;gap:12px;margin-top:18px}.btn{background:#2563eb;color:white;text-decoration:none;border-radius:12px;padding:12px 16px;font-weight:800}.btn.secondary{background:#17243a;border:1px solid #263850}.alert{margin-top:16px;background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.32);padding:14px;border-radius:16px;color:#fde68a}@media(max-width:900px){.kpis,.grid,.insights{grid-template-columns:1fr}.wrap{padding:18px}}
+    :root{--bg:#07111f;--card:#0f1d33;--card2:#132642;--line:#263850;--text:#eaf1fb;--muted:#9fb0c7;--blue:#67a8ff;--green:#4ade80;--yellow:#fbbf24;--red:#fb7185}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#142844,#07111f 60%);color:var(--text);font-family:Inter,Segoe UI,Arial,sans-serif}.wrap{max-width:1440px;margin:auto;padding:34px}.hero,.panel{background:linear-gradient(135deg,rgba(19,38,66,.96),rgba(15,29,51,.96));border:1px solid var(--line);border-radius:24px;padding:24px;box-shadow:0 22px 70px rgba(0,0,0,.25)}.hero{display:grid;grid-template-columns:1.3fr .7fr;gap:20px;align-items:center}h1{margin:6px 0 8px;font-size:36px}h2{font-size:20px;margin:0 0 14px}p{color:#c7d2e5;line-height:1.56}.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.14em;color:#a8c7ff;font-weight:900}.chip{display:inline-flex;align-items:center;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:900}.chip.ok{background:rgba(74,222,128,.16);color:#86efac}.chip.warn{background:rgba(251,191,36,.16);color:#fde68a}.chip.bad{background:rgba(251,113,133,.16);color:#fecdd3}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:18px 0}.kpi{background:rgba(8,21,37,.9);border:1px solid var(--line);border-radius:18px;padding:16px}.kpi span{display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.kpi strong{display:block;font-size:23px;margin-top:8px}.kpi small{display:block;color:var(--muted);margin-top:5px}.grid{display:grid;grid-template-columns:.85fr 1.15fr;gap:18px;margin-top:18px}.stack{display:grid;gap:18px;margin-top:18px}.bar{margin:12px 0}.bar div{display:flex;justify-content:space-between;color:var(--muted);font-size:13px}.bar b{color:var(--text)}.bar i{display:block;height:12px;background:#081525;border:1px solid var(--line);border-radius:999px;overflow:hidden;margin-top:6px}.bar em{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--green))}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:16px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid var(--line);padding:10px;text-align:left;vertical-align:top}th{background:rgba(103,168,255,.13);color:#dbeafe;white-space:nowrap}tr:last-child td{border-bottom:0}.muted{color:var(--muted)}.actions{display:flex;gap:12px;margin-top:18px}.btn{background:#2563eb;color:white;text-decoration:none;border-radius:12px;padding:12px 16px;font-weight:900}.btn.secondary{background:#17243a;border:1px solid var(--line)}.decision{border-left:5px solid var(--yellow)}.decision.green{border-left-color:var(--green)}.decision.red{border-left-color:var(--red)}@media(max-width:1000px){.hero,.grid,.kpis{grid-template-columns:1fr}.wrap{padding:18px}}
     """
-    return f"""<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_html_escape(title)}</title><style>{css}</style></head><body><main class='wrap'><section class='hero'><span class='badge {badge_cls}'>{_html_escape(badge)}</span><h1>{_html_escape(title)}</h1><p>Diagnóstico APU con KPIs, tablas de evidencia, desglose por secciones, alertas contra mercado y prioridades de revisión. Si solo hay un proveedor, el resultado se presenta como lectura individual contra mercado, sin ranking artificial.</p><div class='actions'><a class='btn' href='/api/real-runs/{_html_escape(run.run_id)}/report'>Descargar Excel</a></div>{error_html}<div class='kpis'>{''.join(cards)}</div></section><div class='grid'><section class='panel'><h2>Resumen por sección</h2>{bars or '<p>Sin desglose por sección disponible.</p>'}</section><section class='panel'><h2>Criterio de lectura</h2><p>El diagnóstico prioriza impacto económico, trazabilidad de referencia, desviación contra mercado y concentración del costo. Las tablas muestran la evidencia calculada de la corrida para facilitar revisión y negociación.</p></section></div><section class='insights'>{insight_html}</section>{table_html}</main></body></html>"""
+    decision_cls = "green" if status == "OK" else "red" if status == "CRITICAL" else ""
+    return f"""<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_html_escape(title)}</title><style>{css}</style></head><body><main class='wrap'><section class='hero'><div><div class='eyebrow'>{_html_escape(run_label)}</div><h1>{_html_escape(title)}</h1><p>{_html_escape(executive)}</p><div class='actions'><a class='btn' href='/api/real-runs/{_html_escape(run.run_id)}/report'>Descargar Excel</a><a class='btn secondary' href='#plan'>Ver plan de revisión</a></div></div><div class='panel decision {decision_cls}'><h2>Dictamen</h2>{_html_status_chip(status)}<p><b>{_html_escape(decision.get('next_action','Revisar prioridades del diagnóstico.'))}</b></p><p class='muted'>{_html_escape(decision.get('main_reason',''))}</p></div></section><section class='kpis'>{kpi_cards}</section><div class='grid'><section class='panel'><h2>Participación por sección</h2>{bars or '<p class="muted">Sin desglose disponible.</p>'}</section><section class='panel'><h2>Resumen por secciones APU</h2>{section_table}</section></div><section class='stack'><section class='panel'><h2>Top 10 materiales por impacto</h2>{materials_table}</section><section class='panel'><h2>Top 10 mano de obra / cuadrillas</h2>{labor_table}</section><section class='panel'><h2>Top 10 maquinaria / equipo</h2>{equipment_table}</section><section class='panel'><h2>Partidas críticas del catálogo</h2>{concepts_table}</section><section class='panel'><h2>Alertas contra mercado</h2>{alerts_table}</section><section class='panel' id='plan'><h2>Plan de revisión para el analista</h2>{plan_table}</section><section class='panel'><h2>Diagnóstico profesional breve</h2>{diag_table}</section><section class='panel'><h2>Conclusión ejecutiva</h2>{final_table}</section></section></main></body></html>"""
 
 @app.get("/api/real-runs/{run_id}/summary")
 def real_run_summary(run_id: str):
