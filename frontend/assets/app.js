@@ -506,32 +506,131 @@ function comparisonProcessing(){
   shell(`${pageHead('Generando análisis profesional', 'Procesamiento de archivos XLSX, cálculo APU y preparación del diagnóstico profesional.')}<div class="card"><div class="progress"><span></span></div><div class="grid cols-2" style="margin-top:18px"><div><h3>Etapas</h3><p>✓ Recepción de archivos .xlsx<br>✓ Parser de conceptos<br>✓ Parser de matriz/APU<br>✓ Modelo de análisis<br>✓ Comparación económica inicial<br>✓ Generación de Excel</p></div><div><h3>Mensaje actual</h3><p>Identificando componentes que explican diferencias: materiales, mano de obra, maquinaria, porcentajes e indirectos.</p><button class="btn btn-primary" data-nav="comparison-results">Ver diagnóstico profesional</button></div></div></div>`, 'Procesamiento');
 }
 
+
 function diagnosticReportUrl(url){
   if(!url || url === '#') return '#';
   const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}theme=${encodeURIComponent(state.theme)}`;
 }
 
-async function mountDiagnosticReport(url){
-  const frame = $('#diagnostic-report-frame');
-  const status = $('#diagnostic-report-status');
-  if(!frame) return;
-  if(status) status.innerHTML = '<strong>Preparando diagnóstico profesional...</strong><br><span class="muted">Cargando KPIs, tablas de evidencia y plan de revisión.</span>';
-  try{
-    const themedUrl = diagnosticReportUrl(url);
-    const res = await fetch(themedUrl, {cache:'no-store'});
-    if(!res.ok) throw new Error(`No fue posible cargar el diagnóstico (${res.status})`);
-    const html = await res.text();
-    frame.srcdoc = html;
-    frame.classList.remove('hidden');
-    if(status) status.classList.add('hidden');
-  }catch(err){
-    frame.classList.add('hidden');
-    if(status){
-      status.classList.remove('hidden');
-      status.innerHTML = `<strong>No fue posible embeber el diagnóstico.</strong><br><span class="muted">${err.message}</span><div class="actions" style="margin-top:12px"><a class="btn btn-primary" href="${diagnosticReportUrl(url)}" target="_blank">Abrir diagnóstico profesional</a></div>`;
-    }
-  }
+function esc(v){
+  return String(v ?? '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+}
+function diagVal(item){
+  if(!item) return '—';
+  const v = item.value ?? item;
+  const f = item.format || '';
+  if(v === null || v === undefined || v === '') return '—';
+  if(f === 'currency') return fmtMoney(v);
+  if(f === 'percent') return fmtPct(v);
+  if(typeof v === 'number') return new Intl.NumberFormat('es-MX',{maximumFractionDigits:2}).format(v);
+  return esc(v);
+}
+function statusChip(status){
+  const s = String(status || 'REVIEW').toUpperCase();
+  const cls = s === 'OK' || s === 'LOW' || s === 'ACCEPTABLE' ? 'ok' : (s === 'CRITICAL' || s === 'HIGH' || s === 'HIGH_RISK' ? 'bad' : 'warn');
+  const label = {OK:'Correcto', REVIEW:'Revisar', CRITICAL:'Crítico', LOW:'Bajo', MEDIUM:'Medio', HIGH:'Alto', ACCEPTABLE:'Aceptable', REVIEW_REQUIRED:'Requiere revisión', HIGH_RISK:'Alto riesgo'}[s] || esc(s);
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+function diagTable(headers, rows){
+  const body = (rows && rows.length) ? rows.map(r=>`<tr>${r.map(c=>`<td>${c ?? '—'}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${headers.length}" class="muted">Sin datos calculados para esta sección</td></tr>`;
+  return `<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function shortText(v, max=70){
+  const t = String(v ?? '').trim();
+  return esc(t.length > max ? t.slice(0,max-1)+'…' : t);
+}
+function renderProfessionalDiagnostic(diag, meta={}){
+  const h = diag?.headline || {};
+  const decision = diag?.final_decision || {};
+  const sections = diag?.section_summary || [];
+  const maxSection = Math.max(...sections.map(s=>Number(s.participation_pct||0)), 1);
+  const kpiCards = (diag?.kpis || []).slice(0,12).map(k=>`<div class="card kpi diag-kpi"><label>${esc(k.label)}</label><strong>${diagVal(k)}</strong><span>${statusChip(k.status || 'neutral')}</span></div>`).join('');
+  const sectionRows = sections.map(s=>[
+    `<strong>${esc(s.section)}</strong>`,
+    s.contractor_amount == null ? 'N/A' : fmtMoney(s.contractor_amount),
+    s.market_amount == null ? 'N/A' : fmtMoney(s.market_amount),
+    s.difference_amount == null ? 'N/A' : fmtMoney(s.difference_amount),
+    s.difference_pct == null ? 'N/A' : fmtPct(s.difference_pct),
+    fmtPct(s.participation_pct),
+    statusChip(s.status),
+    shortText(s.comment, 80)
+  ]);
+  const sectionBars = sections.map(s=>`<div class="bar-row"><div class="bar-meta"><strong>${esc(s.section)}</strong><span>${fmtPct(s.participation_pct)} · ${s.contractor_amount==null?'N/A':fmtMoney(s.contractor_amount)}</span></div><div class="bar-track"><span style="width:${Math.max(2, Math.min(100, Number(s.participation_pct||0)/maxSection*100))}%"></span></div></div>`).join('');
+  const topRows = (arr, kind)=> (arr||[]).slice(0,10).map(i=>[
+    esc(i.code || i.concept_code || '—'),
+    shortText(i.description || i.item || '', 80),
+    esc(i.unit || '—'),
+    kind==='labor' ? esc(i.operator || i.op || '—') : new Intl.NumberFormat('es-MX',{maximumFractionDigits:4}).format(Number(i.quantity || 0)),
+    i.contractor_unit_price == null ? 'N/A' : fmtMoney(i.contractor_unit_price),
+    i.market_unit_price == null ? 'N/A' : fmtMoney(i.market_unit_price),
+    i.difference_amount == null ? 'N/A' : fmtMoney(i.difference_amount),
+    i.difference_pct == null ? 'N/A' : fmtPct(i.difference_pct),
+    i.impact_amount == null ? 'N/A' : fmtMoney(i.impact_amount),
+    kind==='materials' || kind==='equipment' ? shortText(i.market_reference, 70) : shortText(i.recommended_action, 90),
+    kind==='materials' || kind==='equipment' ? shortText(i.recommended_action, 90) : ''
+  ].filter((_,idx)=> kind==='labor' ? idx!==9 : true));
+  const conceptRows = (diag?.critical_concepts || []).slice(0,10).map(c=>[
+    esc(c.concept_code || '—'), shortText(c.description, 80),
+    c.contractor_amount==null?'N/A':fmtMoney(c.contractor_amount),
+    c.market_amount==null?'N/A':fmtMoney(c.market_amount),
+    c.difference_amount==null?'N/A':fmtMoney(c.difference_amount),
+    c.difference_pct==null?'N/A':fmtPct(c.difference_pct),
+    c.participation_pct==null?'N/A':fmtPct(c.participation_pct),
+    shortText(c.probable_cause, 90), shortText(c.priority_action, 100)
+  ]);
+  const alertRows = (diag?.market_alerts || []).slice(0,20).map(a=>[
+    statusChip(a.severity), shortText(a.alert_type, 70), shortText(a.item, 70), esc(a.section || '—'),
+    a.contractor_value==null?'N/A':fmtMoney(a.contractor_value),
+    a.market_value==null?'N/A':fmtMoney(a.market_value),
+    a.deviation_pct==null?'N/A':fmtPct(a.deviation_pct),
+    shortText(a.analyst_check, 120)
+  ]);
+  const planRows = (diag?.analyst_review_plan || []).slice(0,10).map(p=>[
+    `<strong>${esc(p.priority || '')}</strong>`, shortText(p.what_to_review, 100), shortText(p.why_it_matters, 130), shortText(p.where_to_check, 110), shortText(p.decision_needed, 120)
+  ]);
+  const pd = diag?.professional_diagnosis || {};
+  const diagRows = [['Riesgo principal', pd.risk_summary], ['Driver de costo', pd.main_cost_driver], ['Trazabilidad de mercado', pd.market_traceability], ['Recomendación', pd.recommendation]].map(r=>[r[0], shortText(r[1], 180)]);
+  const title = h.title || 'Diagnóstico profesional APU';
+  const line = h.executive_line || 'Revisar partidas de mayor impacto y referencias sin trazabilidad plena.';
+  return `
+    <div class="diagnostic-native">
+      <div class="diag-hero card">
+        <div>
+          <div class="eyebrow"><span></span>${esc(meta.runType || h.run_type || 'Diagnóstico profesional')}</div>
+          <h2>${esc(title)}</h2>
+          <p>${esc(line)}</p>
+          <div class="actions"><a class="btn btn-primary" href="${esc(meta.download || '#')}">Descargar Excel</a>${meta.aiReport ? `<a class="btn btn-secondary" href="${esc(diagnosticReportUrl(meta.aiReport))}" target="_blank">Abrir versión imprimible</a>` : ''}</div>
+        </div>
+        <div class="decision-card ${String(h.general_status||'REVIEW').toLowerCase()}">
+          <label>Dictamen</label>
+          ${statusChip(h.general_status)}
+          <strong>${esc(decision.verdict || 'REVIEW_REQUIRED')}</strong>
+          <p>${esc(decision.main_reason || line)}</p>
+        </div>
+      </div>
+      <div class="grid cols-4 diag-kpi-grid">${kpiCards || '<div class="callout">Sin KPIs disponibles.</div>'}</div>
+      <div class="grid cols-2" style="margin-top:16px">
+        <div class="card"><h3>Participación por sección</h3>${sectionBars || '<p class="muted">Sin desglose disponible.</p>'}</div>
+        <div class="card"><h3>Resumen por secciones APU</h3>${diagTable(['Sección','Importe','Mercado','Dif. $','Dif. %','% total','Estado','Comentario'], sectionRows)}</div>
+      </div>
+      <div class="card" style="margin-top:16px"><h3>Top 10 materiales por impacto</h3>${diagTable(['Código','Descripción','Unidad','Cantidad','P.U.','P.U. mercado','Dif. $','Dif. %','Importe','Referencia','Acción'], topRows(diag?.top_materials,'materials'))}</div>
+      <div class="card" style="margin-top:16px"><h3>Top 10 mano de obra / cuadrillas</h3>${diagTable(['Código','Descripción','Unidad','Op.','P.U.','P.U. mercado','Dif. $','Dif. %','Importe','Acción'], topRows(diag?.top_labor,'labor'))}</div>
+      <div class="card" style="margin-top:16px"><h3>Top 10 maquinaria / equipo</h3>${diagTable(['Código','Descripción','Unidad','Cantidad','P.U.','P.U. mercado','Dif. $','Dif. %','Importe','Referencia','Acción'], topRows(diag?.top_equipment,'equipment'))}</div>
+      <div class="card" style="margin-top:16px"><h3>Partidas críticas del catálogo</h3>${diagTable(['Partida','Descripción','Importe','Mercado','Dif. $','Dif. %','% total','Causa probable','Acción'], conceptRows)}</div>
+      <div class="card" style="margin-top:16px"><h3>Alertas contra mercado</h3>${diagTable(['Severidad','Tipo','Partida/Insumo','Sección','Valor','Mercado','Desviación','Qué revisar'], alertRows)}</div>
+      <div class="card" style="margin-top:16px" id="plan"><h3>Plan de revisión para el analista</h3>${diagTable(['Prioridad','Qué revisar','Por qué importa','Dónde buscar','Decisión requerida'], planRows)}</div>
+      <div class="grid cols-2" style="margin-top:16px">
+        <div class="card"><h3>Diagnóstico profesional breve</h3>${diagTable(['Tema','Lectura'], diagRows)}</div>
+        <div class="card"><h3>Conclusión ejecutiva</h3>${diagTable(['Dictamen','Motivo principal','Próxima acción','Prioridad'], [[statusChip(decision.verdict), shortText(decision.main_reason,130), shortText(decision.next_action,130), statusChip(decision.priority)]])}</div>
+      </div>
+    </div>`;
+}
+
+async function fetchProfessionalDiagnostic(runId){
+  const res = await fetch(`/api/real-runs/${encodeURIComponent(runId)}/professional-diagnostic`, {cache:'no-store'});
+  if(!res.ok){ const err = await res.json().catch(()=>({detail:'No fue posible cargar el diagnóstico'})); throw new Error(err.detail || 'No fue posible cargar el diagnóstico'); }
+  return await res.json();
 }
 
 function comparisonResults(){
@@ -541,14 +640,22 @@ function comparisonResults(){
     const providers = real.providers || [];
     const summary = real.summary || {};
     const download = real.downloadUrl || reportUrl();
-    const aiReport = summary.aiReportUrl || real.aiReportUrl || (real.id ? `/api/real-runs/${real.id}/ai-report` : '#');
-    const themedReport = diagnosticReportUrl(aiReport);
+    const runId = real.id || summary.runId || summary.run_id;
+    const aiReport = summary.aiReportUrl || real.aiReportUrl || (runId ? `/api/real-runs/${runId}/ai-report` : '#');
     const single = (summary.providersCount || providers.length) <= 1;
-    shell(`${pageHead('Diagnóstico profesional', single?'Lectura individual contra mercado, con evidencias y acciones de revisión.':'Comparativa contra mercado con ranking, evidencias y acciones de revisión.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><a class="btn btn-secondary" href="${themedReport}" target="_blank">Abrir en nueva pestaña</a>`)}
-      <div class="callout" style="margin-bottom:16px"><strong>Resultado principal:</strong> este tablero concentra KPIs, tablas de evidencia, alertas contra mercado, top insumos y plan de revisión para el analista.</div>
-      <div id="diagnostic-report-status" class="card" style="margin-bottom:16px"></div>
-      <iframe id="diagnostic-report-frame" title="Diagnóstico profesional" class="hidden" style="width:100%;height:calc(100vh - 220px);min-height:820px;border:1px solid var(--line);border-radius:22px;background:var(--panel);box-shadow:var(--shadow);"></iframe>`, 'Diagnóstico profesional');
-    mountDiagnosticReport(aiReport);
+    shell(`${pageHead('Diagnóstico profesional', single?'Lectura individual contra mercado, con evidencias y acciones de revisión.':'Comparativa contra mercado con ranking, evidencias y acciones de revisión.', `<a class="btn btn-primary" href="${download}">Descargar Excel</a><a class="btn btn-secondary" href="${diagnosticReportUrl(aiReport)}" target="_blank">Abrir versión imprimible</a>`)}
+      <div id="diagnostic-root"><div class="card"><strong>Preparando diagnóstico profesional...</strong><br><span class="muted">Construyendo KPIs, tablas de evidencia y plan de revisión en la misma pantalla.</span></div></div>`, 'Diagnóstico profesional');
+    if(!runId){
+      $('#diagnostic-root').innerHTML = '<div class="callout"><strong>No se encontró el identificador de corrida.</strong> Ejecuta nuevamente la comparativa.</div>';
+      return;
+    }
+    fetchProfessionalDiagnostic(runId).then(diag=>{
+      const root = $('#diagnostic-root');
+      if(root) root.innerHTML = renderProfessionalDiagnostic(diag, {download, aiReport, runType: single?'Comparativa individual contra mercado':'Comparativa múltiple'});
+    }).catch(err=>{
+      const root = $('#diagnostic-root');
+      if(root) root.innerHTML = `<div class="callout"><strong>No fue posible cargar el diagnóstico profesional.</strong><br>${esc(err.message)}<div class="actions" style="margin-top:12px"><a class="btn btn-primary" href="${download}">Descargar Excel</a></div></div>`;
+    });
     return;
   }
   shell(`${pageHead('Diagnóstico profesional', multi?'Genera una comparativa para ver el diagnóstico profesional.':'Genera una comparativa individual para ver el diagnóstico profesional.', `<button class="btn btn-primary" data-nav="comparison-new">Nueva comparación</button>`)}<div class="callout"><strong>Sin corrida real:</strong> carga archivos .xlsx y ejecuta el análisis para generar el diagnóstico profesional.</div>`, 'Diagnóstico profesional');

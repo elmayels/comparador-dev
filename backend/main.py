@@ -3587,8 +3587,27 @@ def latest_base_run_summary():
     return summary
 
 
+@app.get("/api/real-runs/{run_id}/professional-diagnostic")
+def real_run_professional_diagnostic(run_id: str):
+    run = REAL_RUNS.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Corrida no encontrada")
+    summary = BASE_RUN_SUMMARIES.get(run_id)
+    diag = generate_professional_diagnostic(run, summary)
+    # Eliminar cualquier detalle interno antes de exponerlo al producto.
+    if isinstance(diag, dict):
+        diag.pop("_context", None)
+        diag.pop("mode", None)
+        diag.pop("provider", None)
+        diag.pop("model", None)
+        diag.pop("error", None)
+    return diag
+
+
 @app.get("/api/real-runs/{run_id}/ai-report", response_class=HTMLResponse)
 def real_run_ai_report(run_id: str, theme: str = Query("dark")):
+    # Mantiene compatibilidad para abrir en nueva pestaña, pero la webapp principal
+    # ya no embebe este HTML ni usa iframe: consume professional-diagnostic y renderiza nativo.
     run = REAL_RUNS.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Corrida no encontrada")
