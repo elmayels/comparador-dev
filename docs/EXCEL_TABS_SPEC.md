@@ -384,3 +384,42 @@ Regla de detalle: `Detalle Base` debe conservar la estructura por secciones: mat
 - El archivo cargado se envía como `concepts_file` y se parsea con `parse_base_concepts`.
 - El reporte descargado usa `build_real_base_report` y contiene conceptos/Detalle Base generados desde el archivo real + `data/construdata_matrices.xlsx`.
 - `/api/reports/base` se conserva solo como demo legado; no es el flujo canónico de presupuesto base real.
+
+## Tab `Análisis IA`
+
+El tab `Análisis IA` muestra un resumen ejecutivo profesional basado en el contexto canónico de la corrida. Incluye:
+
+- modo de análisis usado;
+- resumen ejecutivo;
+- hallazgos principales;
+- cobertura y trazabilidad;
+- riesgo económico;
+- acciones recomendadas.
+
+El contenido debe ser conciso, sin repetir nombres largos de servicios, sin inventar datos y sin modificar cálculos.
+
+### V3.4 - Tab `Análisis IA` mejorado
+
+El tab `Análisis IA` debe contener 5 bloques ejecutivos:
+
+1. Resumen ejecutivo.
+2. Sobrecostos y mercado / Alertas de mercado.
+3. Resumen por sección: Materiales, Mano de obra, Maquinaria/equipo, Básicos e Indirectos.
+4. Partidas críticas.
+5. Riesgo y acciones.
+
+Cada bloque debe usar valores reales del modelo canónico, incluyendo montos, porcentajes, contratistas, cobertura Construdata, fallback y referencias de mercado cuando existan. No se deben inventar datos ni repetir frases genéricas.
+
+## V3.5 - `Análisis IA` enriched layout
+
+The `Análisis IA` sheet is no longer only a paragraph table. It must contain:
+
+1. Analysis mode and methodology control.
+2. Expert narrative sections.
+3. KPI block with total, direct cost, indirect cost, coverage and executable concepts for base budgets.
+4. Cost breakdown by section.
+5. Critical concepts by impact.
+6. Market / Construdata alerts with code, section, contractor amount, market amount, delta and matched reference.
+7. For comparisons, provider ranking and overcost alert tables per contractor.
+
+All values must come from the canonical run model. The AI narrative must not invent values.

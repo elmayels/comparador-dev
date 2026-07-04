@@ -211,3 +211,119 @@ Senales de que el flujo es real:
 - El Excel debe contener `Detalle Base`.
 - El resumen debe mostrar conceptos reales del archivo, no proyectos demo.
 - El endpoint `/api/reports/base` queda solo como legado/demo y no se usa desde la UI de presupuesto base.
+
+## V3.3 - Capa IA para analista APU
+
+Esta versión agrega una capa canónica de análisis profesional para el tab `Análisis IA` y para el summary web.
+
+### Bandera única
+
+```bash
+ENABLE_AI_ANALYSIS=1
+```
+
+Si la bandera está apagada o no existe API key, el sistema no llama servicios externos y genera un resumen experto determinístico basado únicamente en los datos calculados.
+
+### Proveedores soportados
+
+```bash
+AI_ANALYSIS_PROVIDER=openai
+OPENAI_API_KEY=...
+AI_ANALYSIS_MODEL=gpt-4o-mini
+```
+
+O bien:
+
+```bash
+AI_ANALYSIS_PROVIDER=anthropic
+ANTHROPIC_API_KEY=...
+AI_ANALYSIS_MODEL=claude-3-5-sonnet-latest
+```
+
+### Regla canónica
+
+La IA interpreta datos ya calculados. No modifica importes, operadores, cantidades, precios unitarios, matches Construdata ni validaciones.
+
+### Tipos de corrida soportados
+
+- Presupuesto base.
+- Comparativa de un proveedor.
+- Comparativa de múltiples proveedores.
+
+El contexto enviado a IA es un JSON compacto con KPIs, cobertura, validaciones, top conceptos y resumen por proveedor. La instrucción exige lenguaje natural, profesional, conciso y sin datos inventados.
+
+## V3.4 - Análisis IA APU mejorado
+
+Esta versión fortalece el resumen del tab `Análisis IA` y el summary de webapp para que el análisis sea útil para un analista de precios unitarios:
+
+- Incluye montos y porcentajes calculados por el modelo canónico.
+- Usa nombres cortos de contratistas cuando la corrida es comparativa.
+- Reporta sobrecostos contra mercado cuando existen referencias.
+- Agrega resumen por Materiales, Mano de obra, Maquinaria/equipo, Básicos e Indirectos.
+- Señala fallback, insumos sin referencia y conceptos sin matriz directa.
+- Mantiene la bandera única `ENABLE_AI_ANALYSIS`.
+- Si IA externa no está disponible, el fallback local conserva el mismo nivel de estructura y datos.
+
+La IA sigue sin modificar precios, importes, operadores, cantidades, porcentajes ni matches Construdata.
+
+## V3.5 - AI APU professional analysis upgrade
+
+- The `Análisis IA` tab was upgraded from a short narrative to a professional APU diagnostic sheet.
+- The narrative now must include concrete values when available: totals, direct cost, indirect cost, contractor names, market totals, overcosts, coverage, Materials, Labor, Equipment and Indirects.
+- The same tab now includes auditable canonical evidence tables:
+  - KPI block.
+  - Section cost mix.
+  - Critical concepts by impact.
+  - Market / Construdata overcost alerts.
+  - Provider ranking and provider-level alerts for comparison runs.
+- External AI remains controlled by `ENABLE_AI_ANALYSIS=1`; if unavailable, the local expert fallback now produces a richer professional analysis from the same canonical context.
+
+## V3.6 - Prueba real de Análisis IA
+
+La capa de Análisis IA ya puede probarse sin ejecutar un Excel completo mediante:
+
+```bash
+GET  /api/ai-analysis/status
+POST /api/ai-analysis/test
+```
+
+Configuración Anthropic:
+
+```bash
+export ENABLE_AI_ANALYSIS=1
+export AI_ANALYSIS_PROVIDER=anthropic
+export ANTHROPIC_API_KEY="tu_api_key"
+export AI_ANALYSIS_MODEL="claude-3-5-sonnet-latest"
+python run.py
+```
+
+Configuración OpenAI:
+
+```bash
+export ENABLE_AI_ANALYSIS=1
+export AI_ANALYSIS_PROVIDER=openai
+export OPENAI_API_KEY="tu_api_key"
+export AI_ANALYSIS_MODEL="gpt-4o-mini"
+python run.py
+```
+
+Prueba rápida:
+
+```bash
+curl -X POST http://localhost:8000/api/ai-analysis/test \
+  -H "Content-Type: application/json"
+```
+
+Resultado esperado con API key válida:
+
+```json
+{
+  "mode": "EXTERNAL_AI",
+  "provider": "anthropic",
+  "model": "claude-3-5-sonnet-latest",
+  "hasKey": true,
+  "sections": [ ... ]
+}
+```
+
+Si la API falla o no hay key, el sistema no rompe el Excel y devuelve fallback local con `LOCAL_EXPERT_FALLBACK_NO_KEY` o `LOCAL_EXPERT_FALLBACK_AI_ERROR`. Cuando ocurra un error, el tab `Análisis IA` y `/api/ai-analysis/status` muestran el motivo sin exponer secretos.

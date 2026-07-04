@@ -364,3 +364,49 @@ Esto evita crear un flujo paralelo y mantiene la matriz base asociada al modelo 
 - El archivo cargado se envía como `concepts_file` y se parsea con `parse_base_concepts`.
 - El reporte descargado usa `build_real_base_report` y contiene conceptos/Detalle Base generados desde el archivo real + `data/construdata_matrices.xlsx`.
 - `/api/reports/base` se conserva solo como demo legado; no es el flujo canónico de presupuesto base real.
+
+## Capa canónica de análisis IA
+
+La capa IA queda desacoplada del cálculo. El modelo genera primero una corrida canónica (`CanonicalRun`) y posteriormente construye un contexto estructurado para análisis:
+
+- tipo de corrida: presupuesto base o comparativa;
+- importes ya calculados;
+- conceptos ejecutables;
+- filas de matriz;
+- cobertura Construdata;
+- validaciones;
+- top conceptos por impacto;
+- resumen por proveedor cuando aplique.
+
+La bandera única es `ENABLE_AI_ANALYSIS`. Si está apagada, se genera un resumen experto determinístico local. Si está encendida y existe API key, se llama al proveedor configurado (`openai` o `anthropic`). Si la llamada falla, el sistema usa fallback local para no bloquear la generación del Excel.
+
+La IA no calcula ni modifica datos. Solo interpreta hallazgos sobre la información ya calculada.
+
+### V3.4 - Contexto enriquecido para análisis IA
+
+El contexto canónico de IA ahora debe incluir, cuando existan:
+
+- Montos totales por corrida.
+- Costo directo e indirecto 25% para presupuesto base.
+- Desglose por Materiales, Mano de obra, Maquinaria/equipo, Básicos e Indirectos.
+- Nombre corto de contratistas en comparativas.
+- Total ofertado, total mercado, sobrecosto monetario y sobrecosto porcentual por contratista.
+- Insumos sin referencia Construdata y valores fallback.
+- Top conceptos por impacto económico.
+- Top insumos con sobrecosto contra mercado.
+
+La capa IA debe interpretar este contexto y no recalcular ni inventar datos. Si `ENABLE_AI_ANALYSIS=0` o falta API key, el fallback local genera el mismo tipo de análisis estructurado.
+
+## V3.5 - Professional APU AI analysis evidence contract
+
+The AI analysis layer is not allowed to calculate or modify APU values. The canonical model must provide a structured evidence context to the narrative layer, including when available:
+
+- Run type: base budget, single provider comparison, or multi-provider comparison.
+- Provider names and total amounts.
+- Market total amounts, overcost amounts and overcost percentages.
+- Cost section breakdown: Materials, Labor, Equipment/Machinery, Basics, Direct cost and Indirect cost.
+- Construdata coverage, unmatched matrices, fallback counts and no-reference counts.
+- Critical concepts by amount and participation.
+- Top APU overcost items with contractor amount, market amount, delta, delta percentage and matched Construdata reference.
+
+The Excel sheet `Análisis IA` must show both the narrative and the underlying canonical evidence tables so that an analyst can audit why the conclusion was generated.

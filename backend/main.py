@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Any
@@ -21,7 +23,7 @@ from openpyxl.comments import Comment
 
 from .real_data import (
     CanonicalProvider, CanonicalRun, ReferenceCatalog,
-    canonical_rows_from_items, parse_concepts, parse_base_concepts, parse_matrix, run_id, apply_provider_market_to_concepts, classify_xlsx_role, generate_base_budget_from_concepts,
+    canonical_rows_from_items, parse_concepts, parse_base_concepts, parse_matrix, run_id, apply_provider_market_to_concepts, classify_xlsx_role, generate_base_budget_from_concepts, canonical_key,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +32,23 @@ FRONTEND_DIR = ROOT / "frontend"
 RUNTIME_DIR = ROOT / "backend" / "runtime"
 REPORTS_DIR = RUNTIME_DIR / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Optional AI analysis layer
+# ---------------------------------------------------------------------------
+# Single feature flag requested for the first real version. When disabled or
+# when credentials are not available, the application still generates a
+# deterministic expert analysis from the canonical calculated data. No amounts,
+# quantities or matches are invented by this layer.
+AI_ANALYSIS_ENABLED = os.getenv("ENABLE_AI_ANALYSIS", "0").strip().lower() in {"1", "true", "yes", "on"}
+AI_ANALYSIS_PROVIDER = os.getenv("AI_ANALYSIS_PROVIDER", os.getenv("AI_PROVIDER", "openai")).strip().lower()
+AI_ANALYSIS_MODEL = os.getenv("AI_ANALYSIS_MODEL", os.getenv("AI_MODEL", "gpt-4o-mini")).strip()
+AI_ANALYSIS_TIMEOUT = float(os.getenv("AI_ANALYSIS_TIMEOUT", "25") or 25)
+AI_ANALYSIS_MAX_INPUT_ITEMS = int(os.getenv("AI_ANALYSIS_MAX_INPUT_ITEMS", "12") or 12)
+AI_ANALYSIS_LAST_ERROR: str | None = None
+AI_ANALYSIS_LAST_PROVIDER_RESPONSE: str | None = None
+
 
 app = FastAPI(title="Quantia APU Canonical", version="1.0.0")
 app.add_middleware(
@@ -815,75 +834,747 @@ def _safe_amount(obj: Any) -> float:
     return 0.0
 
 
-def _write_analisis_ia(ws, run: CanonicalRun | None = None):
-    """Write a concise executive analysis based only on calculated data.
 
-    This sheet intentionally avoids long service descriptions. It cites counts,
-    totals, coverage and codes so an APU analyst can review findings without the
-    narrative inventing scope or amounts.
+def _money_text(value: Any) -> str:
+    try:
+        return f"${float(value or 0):,.2f}"
+    except Exception:
+        return "$0.00"
+
+
+def _pct_text(value: Any) -> str:
+    try:
+        return f"{float(value or 0):.1f}%"
+    except Exception:
+        return "0.0%"
+
+
+def _short_desc(text: str, limit: int = 72) -> str:
+    t = " ".join(str(text or "").split())
+    if len(t) <= limit:
+        return t
+    return t[:limit - 1].rstrip() + "…"
+
+
+def _section_label(section: str) -> str:
+    s = str(section or "").upper()
+    if "MATERIAL" in s:
+        return "Materiales"
+    if "MANO" in s or s in {"MO", "SUBTOTAL MO"}:
+        return "Mano de obra"
+    if "MAQUIN" in s or "EQUIPO" in s or "HERRAM" in s:
+        return "Maquinaria / equipo"
+    if "INDIRECT" in s:
+        return "Indirectos"
+    if "BASIC" in s or "BÁSIC" in s:
+        return "Básicos"
+    if "DIRECT" in s:
+        return "Costo directo"
+    return section or "Sin sección"
+
+
+def _item_amount_value(item: Any, market: bool = False) -> float:
+    val = getattr(item, "market_amount", None) if market else getattr(item, "amount", None)
+    try:
+        return float(val or 0)
+    except Exception:
+        return 0.0
+
+
+def _sum_scaled_items(items: list[Any], qty_by_key: dict[str, float], sections: set[str] | None = None, market: bool = False) -> float:
+    total = 0.0
+    for item in items or []:
+        sec = str(getattr(item, "section", "") or "").upper()
+        if sections and sec not in sections:
+            continue
+        qty = float(qty_by_key.get(getattr(item, "concept_key", ""), 1) or 1)
+        total += _item_amount_value(item, market=market) * qty
+    return total
+
+
+def _top_apu_overcost_items(items: list[Any], qty_by_key: dict[str, float], limit: int = 8) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for it in items or []:
+        if getattr(it, "market_amount", None) is None or getattr(it, "amount", None) is None:
+            continue
+        amount = float(getattr(it, "amount", 0) or 0)
+        market = float(getattr(it, "market_amount", 0) or 0)
+        delta = amount - market
+        if delta <= 0:
+            continue
+        qty = float(qty_by_key.get(getattr(it, "concept_key", ""), 1) or 1)
+        rows.append({
+            "code": getattr(it, "code", "") or "",
+            "description": _short_desc(getattr(it, "description", "") or "", 90),
+            "section": _section_label(getattr(it, "section", "") or ""),
+            "amount": round(amount * qty, 2),
+            "market_amount": round(market * qty, 2),
+            "delta": round(delta * qty, 2),
+            "delta_pct": round((delta / market * 100) if market else 0, 2),
+            "match": _short_desc(((getattr(it, "matched_reference_code", "") or "") + " - " + (getattr(it, "matched_reference_description", "") or "")).strip(" -"), 100),
+        })
+    return sorted(rows, key=lambda r: r["delta"], reverse=True)[:limit]
+
+
+def _base_section_breakdown_sequential(items: list[Any]) -> dict[str, float]:
+    totals = {"materials": 0.0, "labor": 0.0, "equipment": 0.0, "basics": 0.0, "direct": 0.0, "indirect": 0.0, "total_service": 0.0}
+    current_qty = 1.0
+    for item in items or []:
+        sec = str(getattr(item, "section", "") or "").upper()
+        desc = str(getattr(item, "description", "") or "").upper()
+        if sec == "PARTIDA":
+            try:
+                current_qty = float(getattr(item, "quantity", None) or 1)
+            except Exception:
+                current_qty = 1.0
+            continue
+        amount = _item_amount_value(item, market=False)
+        scaled = amount * current_qty
+        if sec == "SUBTOTAL MATERIALES":
+            totals["materials"] += scaled
+        elif sec in {"SUBTOTAL MANO DE OBRA", "SUBTOTAL MO"}:
+            totals["labor"] += scaled
+        elif sec in {"SUBTOTAL MAQUINARIA", "SUBTOTAL EQUIPO", "SUBTOTAL EQUIPO Y HERRAMIENTA"}:
+            totals["equipment"] += scaled
+        elif sec in {"SUBTOTAL BASICOS", "SUBTOTAL BÁSICOS"}:
+            totals["basics"] += scaled
+        elif sec == "COSTO DIRECTO":
+            totals["direct"] += scaled
+        elif sec in {"INDIRECTO", "COSTO INDIRECTO"}:
+            totals["indirect"] += scaled
+        elif sec == "TOTAL POR SERVICIO":
+            totals["total_service"] += amount
+    return {k: round(v, 2) for k, v in totals.items()}
+
+
+def _section_breakdown_for_run(run: CanonicalRun) -> dict[str, Any]:
+    if run.kind == "base":
+        return _base_section_breakdown_sequential(run.base_apu_items)
+    return {}
+
+
+def _provider_section_breakdown(provider: CanonicalProvider) -> dict[str, Any]:
+    qty_by_key = {canonical_key(c.code, c.description): float(c.quantity or 0) for c in provider.concepts if _is_valid_comparativa_concept(c)}
+    items = provider.apu_items or []
+    contractor = {
+        "materials": _sum_scaled_items(items, qty_by_key, {"SUBTOTAL MATERIALES"}, market=False),
+        "labor": _sum_scaled_items(items, qty_by_key, {"SUBTOTAL MANO DE OBRA", "SUBTOTAL MO"}, market=False),
+        "equipment": _sum_scaled_items(items, qty_by_key, {"SUBTOTAL MAQUINARIA", "SUBTOTAL EQUIPO", "SUBTOTAL EQUIPO Y HERRAMIENTA"}, market=False),
+        "direct": _sum_scaled_items(items, qty_by_key, {"COSTO DIRECTO"}, market=False),
+        "indirect": _sum_scaled_items(items, qty_by_key, {"INDIRECTO", "COSTO INDIRECTO"}, market=False),
+    }
+    market = {
+        "materials": _sum_scaled_items(items, qty_by_key, {"SUBTOTAL MATERIALES"}, market=True),
+        "labor": _sum_scaled_items(items, qty_by_key, {"SUBTOTAL MANO DE OBRA", "SUBTOTAL MO"}, market=True),
+        "equipment": _sum_scaled_items(items, qty_by_key, {"SUBTOTAL MAQUINARIA", "SUBTOTAL EQUIPO", "SUBTOTAL EQUIPO Y HERRAMIENTA"}, market=True),
+        "direct": _sum_scaled_items(items, qty_by_key, {"COSTO DIRECTO"}, market=True),
+        "indirect": _sum_scaled_items(items, qty_by_key, {"INDIRECTO", "COSTO INDIRECTO"}, market=True),
+    }
+    return {"contractor": {k: round(v,2) for k,v in contractor.items()}, "market": {k: round(v,2) for k,v in market.items()}}
+
+
+def _analysis_feature_status() -> dict[str, Any]:
+    if not AI_ANALYSIS_ENABLED:
+        return {"enabled": False, "mode": "DISABLED_LOCAL_EXPERT", "provider": "local", "model": "deterministic", "hasKey": False, "lastError": None}
+    has_key = False
+    if AI_ANALYSIS_PROVIDER == "anthropic":
+        has_key = bool(os.getenv("ANTHROPIC_API_KEY"))
+    elif AI_ANALYSIS_PROVIDER == "openai":
+        has_key = bool(os.getenv("OPENAI_API_KEY"))
+    return {
+        "enabled": True,
+        "mode": "EXTERNAL_AI" if has_key else "LOCAL_EXPERT_FALLBACK_NO_KEY",
+        "provider": AI_ANALYSIS_PROVIDER,
+        "model": AI_ANALYSIS_MODEL,
+        "hasKey": has_key,
+        "timeoutSeconds": AI_ANALYSIS_TIMEOUT,
+        "maxInputItems": AI_ANALYSIS_MAX_INPUT_ITEMS,
+        "lastError": AI_ANALYSIS_LAST_ERROR,
+    }
+
+
+def _run_analysis_context(run: CanonicalRun | None, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build a compact, auditable context for AI/expert interpretation.
+
+    The context intentionally contains only values already calculated by the
+    canonical run. The AI layer may interpret these fields, but it must not
+    calculate new amounts, modify prices or create facts outside this JSON.
     """
-    _setup_sheet(ws, "Análisis IA", "Resumen ejecutivo profesional basado únicamente en datos calculados del reporte.", 6)
-    _set_widths(ws, {"A": 24, "B": 112, "C": 18, "D": 18, "E": 18, "F": 18})
+    if not run:
+        return {"kind": "unknown", "available": False}
 
-    sections: list[list[str]] = []
-    if run and run.kind == "base":
+    if run.kind == "base":
         exec_concepts = [c for c in run.base_concepts if getattr(c, "is_executable", False)]
         total = sum(_safe_amount(c) for c in exec_concepts)
-        items = run.base_apu_items or []
         validations = run.validations or []
-        matched = len([v for v in validations if "→" in str(v.get("message", ""))])
-        missing = len([v for v in validations if "Sin matriz" in str(v.get("message", ""))])
-        matrix_rows = len(items)
-        top = sorted(exec_concepts, key=_safe_amount, reverse=True)[:5]
-        top_codes = _short_codes(top, 5)
-        coverage = (matched / len(exec_concepts)) if exec_concepts else 0
-        sections = [
-            ["Resumen ejecutivo", f"El presupuesto base se generó desde {len(exec_concepts)} conceptos ejecutables y {matrix_rows} filas de Detalle Base. El monto calculado es {total:,.2f}. La cobertura de matriz Construdata es {coverage:.1%} ({matched} con match y {missing} sin matriz directa)."],
-            ["Hallazgos", f"La concentración económica inicial se ubica en los códigos {top_codes}. Estos conceptos deben revisarse primero porque explican la mayor exposición del presupuesto base."],
-            ["Cobertura de referencia", f"Los conceptos con matriz directa usan estructura Construdata. Los conceptos sin matriz directa quedan trazados en Validaciones y no deben tratarse como definitivos sin revisión técnica."],
-            ["Riesgo económico", "El riesgo principal está en conceptos sin matriz equivalente o con match de confianza media/baja. No se identifican sobrecostos inventados; los importes provienen del cálculo del modelo canónico."],
-            ["Acciones recomendadas", "Revisar primero los códigos de mayor importe, validar alcance técnico de los conceptos sin matriz directa y cerrar criterios de indirecto/base antes de usar el presupuesto para licitación."],
-            ["Limitaciones", "Este resumen no reemplaza la revisión de APU. Solo interpreta los datos calculados y las validaciones generadas por el motor."],
-        ]
-    elif run and run.kind == "comparison":
-        providers = run.providers or []
-        totals = [(p, _canonical_amount_from_concepts(p.concepts)) for p in providers]
-        totals_sorted = sorted(totals, key=lambda x: x[1])
-        best = totals_sorted[0] if totals_sorted else (None, 0)
-        worst = totals_sorted[-1] if totals_sorted else (None, 0)
-        no_ref = sum(len([i for i in p.apu_items if i.state == "Sin referencia"]) for p in providers)
-        total_concepts = sum(len([c for c in p.concepts if _is_valid_comparativa_concept(c)]) for p in providers)
-        total_items = sum(len(p.apu_items) for p in providers)
-        spread = ((worst[1] / best[1]) - 1) if best[1] else 0
-        sections = [
-            ["Resumen ejecutivo", f"La comparativa incluye {len(providers)} proveedor(es), {total_concepts} conceptos ejecutables y {total_items} filas APU. La mejor posición económica detectada corresponde a {best[0].name if best[0] else '—'} con {best[1]:,.2f} detectados."],
-            ["Hallazgos", f"La brecha entre menor y mayor oferta detectada es {spread:.1%}. Las partidas de mayor peso deben revisarse por impacto económico, no solo por desviación porcentual."],
-            ["Mercado", f"Se detectaron {no_ref} insumos sin referencia granular. Esos casos usan fallback del contratista y deben validarse antes de negociar."],
-            ["Riesgo económico", "El riesgo se concentra en insumos sin referencia, porcentajes financieros fuera de criterio y conceptos de alto importe dentro del Pareto de cada proveedor."],
-            ["Acciones recomendadas", "Negociar primero partidas de mayor impacto, validar rendimientos y solicitar soporte técnico para insumos sin match Construdata."],
-            ["Limitaciones", "La IA interpreta resultados calculados; no modifica importes, operadores, cantidades ni precios unitarios."],
-        ]
-    else:
-        sections = [
-            ["Resumen ejecutivo", "No hay corrida real asociada a esta hoja. El análisis ejecutivo requiere datos calculados del modelo canónico."],
-            ["Hallazgos", "Sin datos calculados no se emiten hallazgos."],
-            ["Riesgos", "Sin datos calculados no se evalúa riesgo económico."],
-            ["Recomendaciones", "Ejecutar una corrida real y revisar Validaciones."],
-            ["Limitaciones", "No se inventan datos ni importes."],
-        ]
+        matched = len([c for c in exec_concepts if str(getattr(c, "market_state", "")).startswith("Match")])
+        unmatched = max(0, len(exec_concepts) - matched)
+        qty_by_key = {canonical_key(c.code, c.description): float(c.quantity or 0) for c in exec_concepts}
+        section_breakdown = _section_breakdown_for_run(run)
+        direct = float(section_breakdown.get("direct", 0) or 0)
+        indirect = float(section_breakdown.get("indirect", 0) or 0)
+        if not direct:
+            direct = max(0.0, total / 1.25) if total else 0.0
+        if not indirect and direct:
+            indirect = direct * 0.25
+        top = []
+        for c in sorted(exec_concepts, key=_safe_amount, reverse=True)[:AI_ANALYSIS_MAX_INPUT_ITEMS]:
+            amount = _safe_amount(c)
+            top.append({
+                "code": c.code or "",
+                "description": _short_desc(c.description, 90),
+                "unit": c.unit or "",
+                "quantity": float(c.quantity or 0),
+                "unit_price": round(float(c.unit_price or 0), 2),
+                "amount": round(amount, 2),
+                "weight_pct": round((amount / total * 100) if total else 0, 2),
+                "state": c.market_state or "",
+            })
+        severity_counts: dict[str, int] = {}
+        for v in validations:
+            sev = str(v.get("severity", "Info") or "Info")
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+        validation_samples = []
+        for v in validations[:AI_ANALYSIS_MAX_INPUT_ITEMS]:
+            validation_samples.append({
+                "severity": v.get("severity", "Info"),
+                "type": v.get("type", ""),
+                "message": _short_desc(str(v.get("message", "")), 130),
+            })
+        return {
+            "kind": "base_budget",
+            "project_name": run.project_name,
+            "run_id": run.run_id,
+            "total_amount": round(total, 2),
+            "direct_cost": round(direct, 2),
+            "indirect_cost": round(indirect, 2),
+            "indirect_pct": 25.0,
+            "section_breakdown": {k: round(v, 2) for k, v in section_breakdown.items()},
+            "concepts_read": len(run.base_concepts),
+            "concepts_executable": len(exec_concepts),
+            "detail_rows": len(run.base_apu_items),
+            "matched_matrices": matched,
+            "unmatched_matrices": unmatched,
+            "coverage_pct": round((matched / len(exec_concepts) * 100) if exec_concepts else 0, 2),
+            "validations_count": len(validations),
+            "validation_severity_counts": severity_counts,
+            "validation_samples": validation_samples,
+            "top_concepts": top,
+            "top_overcost_items": _top_apu_overcost_items(run.base_apu_items, qty_by_key, AI_ANALYSIS_MAX_INPUT_ITEMS),
+            "summary": summary or {},
+        }
 
-    headers = ["Sección", "Contenido"]
+    providers_ctx = []
+    totals = []
+    market_totals = []
+    for p in run.providers or []:
+        valid_concepts = [c for c in p.concepts if _is_valid_comparativa_concept(c)]
+        amount = _canonical_amount_from_concepts(valid_concepts)
+        market_amount = sum(float(getattr(c, "market_amount", 0) or 0) for c in valid_concepts)
+        if not market_amount:
+            market_amount = 0.0
+        totals.append(amount)
+        market_totals.append(market_amount)
+        no_ref = len([i for i in p.apu_items if str(i.state).upper().startswith("SIN REFERENCIA") or str(i.state).upper() == "SIN REFERENCIA"])
+        fallback_items = len([i for i in p.apu_items if getattr(i, "market_unit_price_is_fallback", False) or getattr(i, "market_amount_is_fallback", False)])
+        with_reference = len([i for i in p.apu_items if getattr(i, "matched_reference_code", "") or getattr(i, "matched_reference_description", "")])
+        top = []
+        for c in sorted(valid_concepts, key=_concept_amount, reverse=True)[:AI_ANALYSIS_MAX_INPUT_ITEMS]:
+            c_amount = _concept_amount(c)
+            m_amount = float(getattr(c, "market_amount", 0) or 0)
+            delta = c_amount - m_amount if m_amount else 0
+            top.append({
+                "code": c.code or "",
+                "description": _short_desc(c.description, 90),
+                "unit": c.unit or "",
+                "quantity": float(c.quantity or 0),
+                "unit_price": round(float(c.unit_price or 0), 2),
+                "amount": round(c_amount, 2),
+                "market_amount": round(m_amount, 2),
+                "overcost": round(delta, 2),
+                "overcost_pct": round((delta / m_amount * 100) if m_amount else 0, 2),
+                "weight_pct": round((c_amount / amount * 100) if amount else 0, 2),
+                "state": getattr(c, "market_state", "") or "",
+            })
+        section_breakdown = _provider_section_breakdown(p)
+        qty_by_key = {canonical_key(c.code, c.description): float(c.quantity or 0) for c in valid_concepts}
+        providers_ctx.append({
+            "name": p.name,
+            "total_amount": round(amount, 2),
+            "market_total_amount": round(market_amount, 2),
+            "overcost_amount": round(amount - market_amount, 2) if market_amount else 0,
+            "overcost_pct": round(((amount / market_amount) - 1) * 100, 2) if market_amount else 0,
+            "concepts_executable": len(valid_concepts),
+            "apu_rows": len(p.apu_items),
+            "reference_items": with_reference,
+            "fallback_items": fallback_items,
+            "no_reference_items": no_ref,
+            "section_breakdown": section_breakdown,
+            "top_concepts": top,
+            "top_overcost_items": _top_apu_overcost_items(p.apu_items, qty_by_key, AI_ANALYSIS_MAX_INPUT_ITEMS),
+            "validations_count": len(p.validations or []),
+        })
+    best_idx = min(range(len(totals)), key=lambda i: totals[i]) if totals else None
+    worst_idx = max(range(len(totals)), key=lambda i: totals[i]) if totals else None
+    spread = ((totals[worst_idx] / totals[best_idx]) - 1) if best_idx is not None and worst_idx is not None and totals[best_idx] else 0
+    return {
+        "kind": "comparison",
+        "project_name": run.project_name,
+        "run_id": run.run_id,
+        "providers_count": len(run.providers or []),
+        "providers": providers_ctx,
+        "best_provider": providers_ctx[best_idx]["name"] if best_idx is not None else "",
+        "worst_provider": providers_ctx[worst_idx]["name"] if worst_idx is not None else "",
+        "economic_spread_pct": round(spread * 100, 2),
+        "min_amount": round(min(totals), 2) if totals else 0,
+        "max_amount": round(max(totals), 2) if totals else 0,
+        "total_no_reference_items": sum(int(p.get("no_reference_items", 0) or 0) for p in providers_ctx),
+        "total_fallback_items": sum(int(p.get("fallback_items", 0) or 0) for p in providers_ctx),
+        "summary": summary or {},
+    }
+
+
+def _top_list_text(rows: list[dict[str, Any]], limit: int = 5, *, amount_key: str = "amount", pct_key: str = "weight_pct") -> str:
+    parts: list[str] = []
+    for row in (rows or [])[:limit]:
+        code = str(row.get("code") or "").strip() or _short_desc(str(row.get("description", "")), 18)
+        desc = _short_desc(str(row.get("description", "")), 34)
+        amount = _money_text(row.get(amount_key, 0))
+        pct = _pct_text(row.get(pct_key, 0)) if row.get(pct_key) is not None else ""
+        label = f"{code}"
+        if desc and desc.upper() != code.upper():
+            label += f" ({desc})"
+        parts.append(f"{label}: {amount}" + (f" · {pct}" if pct else ""))
+    return "; ".join(parts) or "sin datos priorizables calculados"
+
+
+def _section_mix_text(values: dict[str, Any], total: float | None = None) -> str:
+    total = float(total or 0)
+    order = [("materials", "Materiales"), ("labor", "MO"), ("equipment", "Maquinaria/equipo"), ("basics", "Básicos"), ("direct", "Costo directo"), ("indirect", "Indirectos")]
+    chunks: list[str] = []
+    for key, label in order:
+        val = float((values or {}).get(key, 0) or 0)
+        if val == 0:
+            continue
+        pct = f" ({_pct_text(val/total*100)})" if total else ""
+        chunks.append(f"{label}: {_money_text(val)}{pct}")
+    return "; ".join(chunks) or "sin desglose por sección disponible"
+
+
+def _market_alert_text(rows: list[dict[str, Any]], limit: int = 5) -> str:
+    alerts: list[str] = []
+    for row in (rows or [])[:limit]:
+        code = str(row.get("code") or "").strip() or _short_desc(str(row.get("description", "")), 20)
+        section = str(row.get("section") or "Sin sección")
+        delta = float(row.get("delta", 0) or 0)
+        pct = float(row.get("delta_pct", 0) or 0)
+        match = _short_desc(str(row.get("match") or ""), 45)
+        suffix = f" contra {match}" if match else " contra mercado"
+        alerts.append(f"{code} · {section}: sobrecosto {_money_text(delta)} ({_pct_text(pct)}){suffix}")
+    return "; ".join(alerts) or "no se identificaron sobrecostos monetarios contra referencias de mercado en los insumos priorizados"
+
+
+def _risk_level_from_values(coverage: float = 0, unmatched: int = 0, fallback: int = 0, no_ref: int = 0, spread: float = 0, overcost_pct: float = 0) -> str:
+    if coverage and coverage < 70:
+        return "alto"
+    if unmatched >= 5 or no_ref >= 20 or fallback >= 30 or spread >= 20 or overcost_pct >= 20:
+        return "alto"
+    if unmatched > 0 or no_ref > 0 or fallback > 0 or spread >= 8 or overcost_pct >= 8 or (coverage and coverage < 90):
+        return "medio"
+    return "bajo"
+
+
+def _local_expert_analysis(context: dict[str, Any]) -> list[dict[str, str]]:
+    """Deterministic expert narrative with numbers, priorities and market alerts.
+
+    This fallback is intentionally strict: it only uses calculated canonical data,
+    but it should read like a professional APU review, not a generic executive
+    paragraph. The external AI receives the same structure and is asked to match
+    this level of specificity.
+    """
+    kind = context.get("kind")
+    if kind == "base_budget":
+        top = context.get("top_concepts") or []
+        total = float(context.get("total_amount", 0) or 0)
+        direct = float(context.get("direct_cost", 0) or 0)
+        indirect = float(context.get("indirect_cost", 0) or 0)
+        coverage = float(context.get("coverage_pct", 0) or 0)
+        unmatched = int(context.get("unmatched_matrices", 0) or 0)
+        matched = int(context.get("matched_matrices", 0) or 0)
+        detail_rows = int(context.get("detail_rows", 0) or 0)
+        executable = int(context.get("concepts_executable", 0) or 0)
+        read = int(context.get("concepts_read", 0) or 0)
+        breakdown = context.get("section_breakdown") or {}
+        over = context.get("top_overcost_items") or []
+        risk = _risk_level_from_values(coverage=coverage, unmatched=unmatched)
+        top_text = _top_list_text(top, 6)
+        section_text = _section_mix_text(breakdown, total)
+        alert_text = _market_alert_text(over, 5)
+        top1 = top[0] if top else {}
+        concentration = float(top1.get("weight_pct", 0) or 0)
+        concentration_note = f"La mayor concentración está en {top1.get('code')} con {_money_text(top1.get('amount'))} ({_pct_text(concentration)} del total). " if top1 else ""
+        review_note = f"{unmatched} conceptos quedan en revisión por no contar con matriz directa; deben validarse técnicamente antes de cerrar el presupuesto." if unmatched else "No quedan conceptos sin matriz directa dentro de los ejecutables calculados."
+        return [
+            {"section": "Resumen ejecutivo APU", "content": f"Presupuesto base de {context.get('project_name') or 'la corrida'} por {_money_text(total)}. Se leyeron {read} conceptos, {executable} fueron ejecutables y se generaron {detail_rows} filas APU. El costo directo es {_money_text(direct)} y el indirecto 25% equivale a {_money_text(indirect)}. Cobertura Construdata: {_pct_text(coverage)} ({matched} con match, {unmatched} en revisión)."},
+            {"section": "Estructura del costo", "content": f"Desglose calculado: {section_text}. Esta separación permite ubicar si la presión económica está en materiales, MO, maquinaria/equipo o indirectos. El indirecto se mantiene fijo al 25%, por lo que el riesgo financiero se concentra en la correcta integración del costo directo."},
+            {"section": "Concentración y partidas críticas", "content": f"{concentration_note}Top de impacto: {top_text}. La revisión debe iniciar por estas claves, porque concentran el presupuesto y cualquier ajuste de rendimiento, alcance o matriz modifica de forma material el resultado."},
+            {"section": "Referencias de mercado y alertas", "content": f"{alert_text}. {review_note} Las filas con fallback o sin referencia no deben considerarse validación plena de mercado; requieren soporte del analista o sustitución por una matriz Construdata más representativa."},
+            {"section": "Riesgo económico", "content": f"Riesgo preliminar {risk}. La cobertura de {_pct_text(coverage)} permite usar el resultado como base de control, pero el cierre depende de validar las matrices asignadas a los conceptos críticos y documentar los casos en revisión."},
+            {"section": "Acciones recomendadas", "content": "Primero validar las partidas críticas por monto; después revisar insumos con sobrecosto contra mercado y finalmente confirmar conceptos sin matriz directa. No negociar por porcentaje aislado: priorizar desviación monetaria, trazabilidad Construdata y consistencia técnica de rendimientos."},
+        ]
+    if kind == "comparison":
+        providers = context.get("providers") or []
+        best = context.get("best_provider") or "—"
+        worst = context.get("worst_provider") or "—"
+        spread = float(context.get("economic_spread_pct", 0) or 0)
+        no_ref = int(context.get("total_no_reference_items", 0) or 0)
+        fallback = int(context.get("total_fallback_items", 0) or 0)
+        provider_lines = []
+        over_lines = []
+        section_lines = []
+        top_concept_lines = []
+        max_over_pct = 0.0
+        for p in providers:
+            name = p.get("name", "Proveedor")
+            total = float(p.get("total_amount", 0) or 0)
+            market = float(p.get("market_total_amount", 0) or 0)
+            over = float(p.get("overcost_amount", 0) or 0)
+            over_pct = float(p.get("overcost_pct", 0) or 0)
+            max_over_pct = max(max_over_pct, over_pct)
+            if market:
+                sign = "sobrecosto" if over >= 0 else "ahorro"
+                provider_lines.append(f"{name}: {_money_text(total)} vs mercado {_money_text(market)}; {sign} {_money_text(abs(over))} ({_pct_text(abs(over_pct))})")
+            else:
+                provider_lines.append(f"{name}: {_money_text(total)}; sin total mercado consolidado")
+            tops = p.get("top_overcost_items") or []
+            if tops:
+                over_lines.append(f"{name}: {_market_alert_text(tops, 3)}")
+            tc = p.get("top_concepts") or []
+            if tc:
+                top_concept_lines.append(f"{name}: {_top_list_text(tc, 4)}")
+            sb = p.get("section_breakdown") or {}
+            contractor = sb.get("contractor") or {}
+            market_sb = sb.get("market") or {}
+            if contractor:
+                section_lines.append(f"{name} declarado: {_section_mix_text(contractor, total)}")
+            if market_sb and any(float(v or 0) for v in market_sb.values()):
+                market_total = float(p.get("market_total_amount", 0) or 0)
+                section_lines.append(f"{name} mercado: {_section_mix_text(market_sb, market_total)}")
+        mode_text = "análisis individual contra mercado" if len(providers) <= 1 else f"comparativa de {len(providers)} contratistas"
+        risk = _risk_level_from_values(fallback=fallback, no_ref=no_ref, spread=spread, overcost_pct=max_over_pct)
+        provider_text = "; ".join(provider_lines[:6]) or "sin proveedores válidos"
+        over_text = " | ".join(over_lines[:4]) or "no se identificaron sobrecostos monetarios priorizados con referencia de mercado"
+        section_text = " | ".join(section_lines[:6]) or "sin desglose por sección disponible"
+        top_text = " | ".join(top_concept_lines[:4]) or "sin top de conceptos calculado"
+        return [
+            {"section": "Resumen ejecutivo APU", "content": f"Corrida de {mode_text}. Mejor posición económica: {best}; mayor monto: {worst}; brecha entre extremos {_pct_text(spread)}. Totales evaluados: {provider_text}."},
+            {"section": "Sobrecostos contra mercado", "content": f"Alertas por contratista: {over_text}. Estos hallazgos deben revisarse por desviación monetaria y no solo por porcentaje, porque las partidas de bajo importe pueden distorsionar la prioridad real."},
+            {"section": "Resumen por sección", "content": f"{section_text}. Separar Materiales, MO, Maquinaria/equipo e Indirectos permite identificar si la diferencia viene de precios de insumos, rendimientos, equipos o estructura financiera."},
+            {"section": "Partidas críticas", "content": f"Conceptos de mayor impacto: {top_text}. La negociación debe concentrarse en el 80% económico y en conceptos con sobrecosto frente a mercado, no en diferencias menores o aisladas."},
+            {"section": "Referencias y trazabilidad", "content": f"Se detectan {no_ref} insumos sin referencia y {fallback} valores fallback. Cuando el mercado usa fallback, el valor no representa validación Construdata; solo evita inventar un precio y debe quedar sujeto a revisión."},
+            {"section": "Riesgo y acciones", "content": f"Riesgo preliminar {risk}. Revisar primero al contratista con mayor sobrecosto, validar matches Construdata de partidas críticas, solicitar soporte de rendimientos y separar negociación de Materiales, MO, Maquinaria/equipo e Indirectos."},
+        ]
+    return [
+        {"section": "Resumen ejecutivo", "content": "No hay datos calculados suficientes para emitir un análisis profesional."},
+        {"section": "Limitaciones", "content": "El análisis no genera importes ni completa datos ausentes."},
+    ]
+
+
+def _ai_system_prompt() -> str:
+    return (
+        "Eres un experto senior en análisis de precios unitarios (APU). "
+        "Redacta en español natural, técnico-ejecutivo y útil para un analista de precios unitarios. "
+        "Usa únicamente los datos del JSON proporcionado; está prohibido inventar montos, porcentajes, contratistas, partidas, causas o referencias. "
+        "El análisis debe ser específico: menciona nombres cortos de contratistas cuando existan, montos totales, monto mercado, sobrecosto monetario y porcentual, cobertura Construdata, Materiales, Mano de obra, Maquinaria/equipo, Básicos e Indirectos cuando esos datos estén en el JSON. "
+        "Debes señalar alertas de mercado: fallback, sin referencia, conceptos sin matriz directa, sobrecostos por partida o insumo, y partidas de mayor impacto económico. "
+        "No copies nombres largos completos de servicios; usa códigos y descripciones cortas. No repitas la misma idea entre secciones. "
+        "La IA no calcula ni corrige importes; solo interpreta los valores ya calculados. Si un dato no está en el JSON, omítelo. "
+        "Devuelve SOLO JSON válido con la forma: {\"sections\":[{\"section\":\"...\",\"content\":\"...\"}]} . "
+        "Usa exactamente 6 secciones: Resumen ejecutivo APU, Sobrecostos contra mercado, Resumen por sección, Partidas críticas, Referencias y trazabilidad, Riesgo y acciones. "
+        "Cada content debe tener entre 55 y 130 palabras e incluir cifras concretas siempre que estén disponibles. "
+        "No escribas frases genéricas como 'revisar partidas importantes' sin decir cuáles, cuánto representan o por qué son relevantes."
+    )
+
+def _call_external_ai_analysis(context: dict[str, Any]) -> list[dict[str, str]] | None:
+    global AI_ANALYSIS_LAST_ERROR, AI_ANALYSIS_LAST_PROVIDER_RESPONSE
+    AI_ANALYSIS_LAST_ERROR = None
+    AI_ANALYSIS_LAST_PROVIDER_RESPONSE = None
+    status = _analysis_feature_status()
+    if not status.get("enabled") or status.get("mode") != "EXTERNAL_AI":
+        return None
+    payload_context = json.dumps(context, ensure_ascii=False, default=str)[:24000]
+    try:
+        if AI_ANALYSIS_PROVIDER == "anthropic":
+            key = os.getenv("ANTHROPIC_API_KEY")
+            if not key:
+                return None
+            body = {
+                "model": AI_ANALYSIS_MODEL or "claude-3-5-sonnet-latest",
+                "max_tokens": 900,
+                "temperature": 0.1,
+                "system": _ai_system_prompt(),
+                "messages": [{"role": "user", "content": payload_context}],
+            }
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"content-type":"application/json", "x-api-key":key, "anthropic-version":"2023-06-01"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=AI_ANALYSIS_TIMEOUT) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            text = "".join([part.get("text", "") for part in data.get("content", []) if part.get("type") == "text"])
+        else:
+            key = os.getenv("OPENAI_API_KEY")
+            if not key:
+                return None
+            body = {
+                "model": AI_ANALYSIS_MODEL or "gpt-4o-mini",
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": _ai_system_prompt()},
+                    {"role": "user", "content": payload_context},
+                ],
+            }
+            req = urllib.request.Request(
+                "https://api.openai.com/v1/chat/completions",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"content-type":"application/json", "authorization":f"Bearer {key}"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=AI_ANALYSIS_TIMEOUT) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        AI_ANALYSIS_LAST_PROVIDER_RESPONSE = str(text)[:4000]
+        parsed = json.loads(text)
+        sections = parsed.get("sections") or []
+        clean: list[dict[str, str]] = []
+        for item in sections[:6]:
+            section = str(item.get("section", "")).strip()[:80]
+            content = str(item.get("content", "")).strip()
+            if section and content:
+                clean.append({"section": section, "content": content})
+        if not clean:
+            AI_ANALYSIS_LAST_ERROR = "AI provider returned no valid sections"
+        return clean or None
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:1200]
+        except Exception:
+            body = ""
+        AI_ANALYSIS_LAST_ERROR = f"HTTP {exc.code} from {AI_ANALYSIS_PROVIDER}: {body}"
+        return None
+    except Exception as exc:
+        AI_ANALYSIS_LAST_ERROR = f"{type(exc).__name__}: {exc}"
+        return None
+
+
+def generate_expert_ai_analysis(run: CanonicalRun | None, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    context = _run_analysis_context(run, summary)
+    status = _analysis_feature_status()
+    sections = _call_external_ai_analysis(context)
+    mode = status.get("mode")
+    if not sections:
+        sections = _local_expert_analysis(context)
+        if status.get("enabled") and status.get("mode") == "EXTERNAL_AI":
+            mode = "LOCAL_EXPERT_FALLBACK_AI_ERROR"
+        else:
+            mode = status.get("mode")
+    return {
+        "mode": mode,
+        "provider": status.get("provider"),
+        "model": status.get("model"),
+        "enabled": bool(status.get("enabled")),
+        "sections": sections,
+        "context": context,
+        "error": AI_ANALYSIS_LAST_ERROR,
+    }
+
+
+
+def _write_analisis_ia(ws, run: CanonicalRun | None = None):
+    """Write a professional APU analysis sheet.
+
+    The sheet now has two layers:
+    1) narrative expert analysis, either external AI or local expert fallback;
+    2) auditable evidence tables with the same canonical values used by the AI.
+    This prevents the tab from becoming a generic paragraph and gives the price
+    analyst concrete amounts, percentages, contractors, sections and alerts.
+    """
+    analysis = generate_expert_ai_analysis(run)
+    sections = analysis.get("sections", [])
+    mode = analysis.get("mode", "LOCAL_EXPERT")
+    provider = analysis.get("provider", "local") or "local"
+    model = analysis.get("model", "deterministic") or "deterministic"
+    context = analysis.get("context", {}) or {}
+
+    _setup_sheet(ws, "Análisis IA", "Diagnóstico profesional basado únicamente en datos calculados del modelo canónico.", 10)
+    _set_widths(ws, {"A": 26, "B": 92, "C": 18, "D": 18, "E": 18, "F": 18, "G": 18, "H": 18, "I": 18, "J": 18})
+
+    ws.cell(3, 1, "Modo análisis")
+    ws.cell(3, 2, f"{mode} · {provider} · {model}")
+    ws.cell(3, 1).font = Font(bold=True, color=BRAND["navy"])
+    ws.cell(3, 2).font = Font(color=BRAND["muted"])
+    if analysis.get("error"):
+        ws.cell(3, 4, "Error IA")
+        ws.cell(3, 5, str(analysis.get("error"))[:220])
+        ws.cell(3, 4).font = Font(bold=True, color="B45309")
+        ws.cell(3, 5).font = Font(color="B45309")
+        ws.cell(3, 5).alignment = Alignment(wrap_text=True)
+    ws.cell(4, 1, "Regla metodológica")
+    ws.cell(4, 2, "La IA interpreta datos calculados; no modifica importes, operadores, cantidades, precios unitarios ni matches Construdata.")
+    ws.cell(4, 1).font = Font(bold=True, color=BRAND["navy"])
+    ws.cell(4, 2).alignment = Alignment(wrap_text=True)
+
+    headers = ["Sección", "Diagnóstico experto"]
     for c, h in enumerate(headers, 1):
-        ws.cell(5, c, h)
-    _header_style(ws, 5, 1, 2)
-    for r, row in enumerate(sections, 6):
-        ws.cell(r, 1, row[0]).font = Font(bold=True, color=BRAND["navy"])
-        ws.cell(r, 2, row[1])
+        ws.cell(6, c, h)
+    _header_style(ws, 6, 1, 2)
+    for r, item in enumerate(sections, 7):
+        ws.cell(r, 1, item.get("section", ""))
+        ws.cell(r, 2, item.get("content", ""))
+        ws.cell(r, 1).font = Font(bold=True, color=BRAND["navy"])
         ws.cell(r, 2).alignment = Alignment(wrap_text=True, vertical="top")
-        ws.row_dimensions[r].height = 58
-    _body_style(ws, 6, 5 + len(sections), 1, 2)
-    _add_table(ws, f"A5:B{5+len(sections)}", "AnalisisIATable", "TableStyleMedium2")
+        ws.row_dimensions[r].height = 72
+    if sections:
+        _body_style(ws, 7, 6 + len(sections), 1, 2)
+        _add_table(ws, f"A6:B{6+len(sections)}", "AnalisisIATable", "TableStyleMedium2")
 
+    row = 8 + len(sections)
+    _section_label(ws, row, "Evidencia canónica usada por el análisis", 10)
+    row += 2
+
+    if context.get("kind") == "base_budget":
+        # KPI block
+        kpis = [
+            ("Monto total", context.get("total_amount", 0), "Presupuesto base"),
+            ("Costo directo", context.get("direct_cost", 0), "Calculado"),
+            ("Indirecto 25%", context.get("indirect_cost", 0), "Regla estándar"),
+            ("Cobertura", context.get("coverage_pct", 0), "Construdata"),
+            ("Conceptos", context.get("concepts_executable", 0), "Ejecutables"),
+        ]
+        for idx, (title, value, foot) in enumerate(kpis):
+            col = 1 + idx * 2
+            _write_kpi(ws, row, col, title, value, foot, "F8FAFC")
+            if title in {"Monto total", "Costo directo", "Indirecto 25%"}:
+                ws.cell(row + 1, col).number_format = MONEY_FMT
+            if title == "Cobertura":
+                ws.cell(row + 1, col).number_format = PCT_FMT
+                try:
+                    ws.cell(row + 1, col).value = float(value or 0) / 100
+                except Exception:
+                    pass
+        row += 5
+
+        # Section mix table
+        _section_label(ws, row, "Resumen por sección", 6)
+        row += 1
+        for c, h in enumerate(["Sección", "Monto", "% del total", "Lectura APU"], 1):
+            ws.cell(row, c, h)
+        _header_style(ws, row, 1, 4)
+        start = row + 1
+        total = float(context.get("total_amount", 0) or 0)
+        labels = [("materials", "Materiales"), ("labor", "Mano de obra"), ("equipment", "Maquinaria / equipo"), ("basics", "Básicos"), ("indirect", "Indirectos")]
+        breakdown = context.get("section_breakdown") or {}
+        for key, label in labels:
+            amount = float(breakdown.get(key, 0) or 0)
+            if amount == 0:
+                continue
+            ws.cell(start, 1, label)
+            ws.cell(start, 2, amount)
+            ws.cell(start, 3, amount / total if total else 0)
+            lectura = "Impacto directo en el costo" if key in {"materials", "labor", "equipment", "basics"} else "Regla financiera fija al 25%"
+            ws.cell(start, 4, lectura)
+            start += 1
+        if start > row + 1:
+            _body_style(ws, row + 1, start - 1, 1, 4)
+            _apply_formats(ws, money_cols=[2], pct_cols=[3], start_row=row+1, end_row=start-1)
+            _add_table(ws, f"A{row}:D{start-1}", "AnalisisIASectionMix", "TableStyleMedium4")
+        row = start + 2
+
+        # Top concepts table
+        _section_label(ws, row, "Partidas críticas por impacto", 8)
+        row += 1
+        top_headers = ["Código", "Descripción corta", "Unidad", "Cantidad", "P.U.", "Importe", "%", "Estado"]
+        for c, h in enumerate(top_headers, 1):
+            ws.cell(row, c, h)
+        _header_style(ws, row, 1, len(top_headers))
+        start = row + 1
+        for item in (context.get("top_concepts") or [])[:10]:
+            vals = [item.get("code"), item.get("description"), item.get("unit"), item.get("quantity"), item.get("unit_price"), item.get("amount"), float(item.get("weight_pct", 0) or 0)/100, item.get("state")]
+            for c, v in enumerate(vals, 1):
+                ws.cell(start, c, v)
+            start += 1
+        if start > row + 1:
+            _body_style(ws, row + 1, start - 1, 1, len(top_headers))
+            _apply_formats(ws, money_cols=[5,6], pct_cols=[7], start_row=row+1, end_row=start-1)
+            _add_table(ws, f"A{row}:H{start-1}", "AnalisisIATopConcepts", "TableStyleMedium2")
+        row = start + 2
+
+        # Market alerts table
+        _section_label(ws, row, "Alertas contra mercado / Construdata", 8)
+        row += 1
+        alert_headers = ["Código", "Descripción", "Sección", "Importe", "Mercado", "Sobrecosto", "%", "Match Construdata"]
+        for c, h in enumerate(alert_headers, 1):
+            ws.cell(row, c, h)
+        _header_style(ws, row, 1, len(alert_headers))
+        start = row + 1
+        alerts = context.get("top_overcost_items") or []
+        if alerts:
+            for item in alerts[:12]:
+                vals = [item.get("code"), item.get("description"), item.get("section"), item.get("amount"), item.get("market_amount"), item.get("delta"), float(item.get("delta_pct", 0) or 0)/100, item.get("match")]
+                for c, v in enumerate(vals, 1):
+                    ws.cell(start, c, v)
+                start += 1
+        else:
+            ws.cell(start, 1, "Sin alertas monetarias priorizadas")
+            ws.merge_cells(start_row=start, start_column=1, end_row=start, end_column=8)
+            start += 1
+        _body_style(ws, row + 1, start - 1, 1, len(alert_headers))
+        _apply_formats(ws, money_cols=[4,5,6], pct_cols=[7], start_row=row+1, end_row=start-1)
+        _add_table(ws, f"A{row}:H{start-1}", "AnalisisIAMarketAlerts", "TableStyleMedium3")
+
+    elif context.get("kind") == "comparison":
+        # Provider ranking table
+        _section_label(ws, row, "Ranking económico por contratista", 9)
+        row += 1
+        headers_p = ["Contratista", "Monto", "Mercado", "Sobrecosto", "%", "Conceptos", "Refs.", "Fallback", "Sin referencia"]
+        for c, h in enumerate(headers_p, 1): ws.cell(row, c, h)
+        _header_style(ws, row, 1, len(headers_p))
+        start = row + 1
+        for p in (context.get("providers") or []):
+            vals = [p.get("name"), p.get("total_amount"), p.get("market_total_amount"), p.get("overcost_amount"), float(p.get("overcost_pct",0) or 0)/100, p.get("concepts_executable"), p.get("reference_items"), p.get("fallback_items"), p.get("no_reference_items")]
+            for c, v in enumerate(vals, 1): ws.cell(start, c, v)
+            start += 1
+        if start > row + 1:
+            _body_style(ws, row + 1, start - 1, 1, len(headers_p))
+            _apply_formats(ws, money_cols=[2,3,4], pct_cols=[5], int_cols=[6,7,8,9], start_row=row+1, end_row=start-1)
+            _add_table(ws, f"A{row}:I{start-1}", "AnalisisIAProviders", "TableStyleMedium4")
+        row = start + 2
+
+        _section_label(ws, row, "Alertas de sobrecosto por contratista", 8)
+        row += 1
+        headers_a = ["Contratista", "Código", "Descripción", "Sección", "Importe", "Mercado", "Sobrecosto", "%"]
+        for c, h in enumerate(headers_a, 1): ws.cell(row, c, h)
+        _header_style(ws, row, 1, len(headers_a))
+        start = row + 1
+        found = False
+        for p in (context.get("providers") or []):
+            for item in (p.get("top_overcost_items") or [])[:6]:
+                vals = [p.get("name"), item.get("code"), item.get("description"), item.get("section"), item.get("amount"), item.get("market_amount"), item.get("delta"), float(item.get("delta_pct",0) or 0)/100]
+                for c, v in enumerate(vals, 1): ws.cell(start, c, v)
+                start += 1; found = True
+        if not found:
+            ws.cell(start, 1, "Sin alertas monetarias priorizadas")
+            ws.merge_cells(start_row=start, start_column=1, end_row=start, end_column=8)
+            start += 1
+        _body_style(ws, row + 1, start - 1, 1, len(headers_a))
+        _apply_formats(ws, money_cols=[5,6,7], pct_cols=[8], start_row=row+1, end_row=start-1)
+        _add_table(ws, f"A{row}:H{start-1}", "AnalisisIAProviderAlerts", "TableStyleMedium3")
+
+    # keep the visible area clean
+    ws.freeze_panes = "A7"
 def _write_base_budget_report(wb):
     """Generate the independent base-budget workbook.
 
@@ -1017,26 +1708,18 @@ def _short_code_prefix(code: str) -> str:
 
 def _base_run_summary(run: CanonicalRun, report_path: Path | None = None, source_file: str = '') -> dict[str, Any]:
     exec_concepts = [c for c in run.base_concepts if getattr(c, 'is_executable', False)]
-    qty_by_key = {canonical_key(c.code, c.description): float(c.quantity or 0) for c in exec_concepts}
-
-    def scale(item):
-        return float(item.amount or 0) * float(qty_by_key.get(item.concept_key, 1) or 1)
-
+    section_totals = _base_section_breakdown_sequential(run.base_apu_items)
     total_amount = sum(float(c.amount or 0) for c in exec_concepts)
-    direct_cost = sum(scale(i) for i in run.base_apu_items if i.section == 'COSTO DIRECTO')
-    indirect_cost = sum(scale(i) for i in run.base_apu_items if i.section == 'INDIRECTO')
+    direct_cost = float(section_totals.get('direct', 0) or 0)
+    indirect_cost = float(section_totals.get('indirect', 0) or 0)
 
-    breakdown_map = {
-        'materials': ('Materiales', ['SUBTOTAL MATERIALES']),
-        'labor': ('Mano de obra', ['SUBTOTAL MANO DE OBRA', 'SUBTOTAL MO']),
-        'equipment': ('Maquinaria / equipo', ['SUBTOTAL MAQUINARIA', 'SUBTOTAL EQUIPO']),
-        'basics': ('Básicos', ['SUBTOTAL BASICOS', 'SUBTOTAL BÁSICOS']),
+    cost_breakdown = {
+        'materials': {'label': 'Materiales', 'amount': round(float(section_totals.get('materials', 0) or 0), 2)},
+        'labor': {'label': 'Mano de obra', 'amount': round(float(section_totals.get('labor', 0) or 0), 2)},
+        'equipment': {'label': 'Maquinaria / equipo', 'amount': round(float(section_totals.get('equipment', 0) or 0), 2)},
+        'basics': {'label': 'Básicos', 'amount': round(float(section_totals.get('basics', 0) or 0), 2)},
+        'indirect': {'label': 'Indirecto 25%', 'amount': round(indirect_cost, 2)},
     }
-    cost_breakdown = {}
-    for key, (label, sections) in breakdown_map.items():
-        amount = sum(scale(i) for i in run.base_apu_items if i.section in sections)
-        cost_breakdown[key] = {'label': label, 'amount': round(amount, 2)}
-    cost_breakdown['indirect'] = {'label': 'Indirecto 25%', 'amount': round(indirect_cost, 2)}
 
     matched = len([c for c in exec_concepts if str(getattr(c, 'market_state', '')).startswith('Match')])
     unmatched = max(0, len(exec_concepts) - matched)
@@ -1073,6 +1756,9 @@ def _base_run_summary(run: CanonicalRun, report_path: Path | None = None, source
     if unmatched:
         findings.append('Los conceptos sin matriz directa requieren validación técnica antes de emitir una versión final.')
 
+    analysis = generate_expert_ai_analysis(run)
+    findings = [s.get('content', '') for s in analysis.get('sections', []) if s.get('content')]
+
     return {
         'runId': run.run_id,
         'type': 'base_budget',
@@ -1098,6 +1784,9 @@ def _base_run_summary(run: CanonicalRun, report_path: Path | None = None, source
         'segments': segments,
         'topConcepts': top_concepts,
         'executiveFindings': findings,
+        'analysisMode': analysis.get('mode'),
+        'analysisProvider': analysis.get('provider'),
+        'analysisModel': analysis.get('model'),
     }
 
 
@@ -1705,13 +2394,44 @@ async def comparison_real_run(
     REAL_RUNS[rid] = run
     report_path = build_real_comparison_report(run)
     REAL_REPORTS[rid] = report_path
+    summary = _comparison_run_summary(run, report_path)
+    BASE_RUN_SUMMARIES[rid] = summary
     return {
         "id": rid,
         "status": "COMPLETED_WITH_WARNINGS",
         "projectName": projectName,
         "providers": [{"name": p.name, "concepts": len(p.concepts), "apuItems": len(p.apu_items), "conceptsFile": p.concepts_file, "matrixFile": p.matrix_file} for p in providers],
         "downloadUrl": f"/api/real-runs/{rid}/report",
+        "summaryUrl": f"/api/real-runs/{rid}/summary",
+        "summary": summary,
         "note": "Datos reales parseados con modelo canónico; homologación avanzada en evolución."
+    }
+
+
+
+def _comparison_run_summary(run: CanonicalRun, report_path: Path | None = None) -> dict[str, Any]:
+    context = _run_analysis_context(run)
+    analysis = generate_expert_ai_analysis(run)
+    providers = context.get("providers", [])
+    total_min = min([float(p.get("total_amount", 0) or 0) for p in providers], default=0)
+    total_max = max([float(p.get("total_amount", 0) or 0) for p in providers], default=0)
+    return {
+        "runId": run.run_id,
+        "type": "comparison",
+        "projectName": run.project_name,
+        "status": "COMPLETED_WITH_WARNINGS",
+        "downloadUrl": f"/api/real-runs/{run.run_id}/report",
+        "reportFile": report_path.name if report_path else "",
+        "providersCount": len(run.providers or []),
+        "bestProvider": context.get("best_provider", ""),
+        "worstProvider": context.get("worst_provider", ""),
+        "minAmount": round(total_min, 2),
+        "maxAmount": round(total_max, 2),
+        "economicSpreadPct": context.get("economic_spread_pct", 0),
+        "providers": providers,
+        "executiveFindings": [s.get("content", "") for s in analysis.get("sections", [])],
+        "analysisMode": analysis.get("mode"),
+        "analysisProvider": analysis.get("provider"),
     }
 
 
@@ -1754,6 +2474,94 @@ async def _execute_base_budget_real(projectName: str, concepts_file: UploadFile)
 @app.post("/api/base-budgets/real-run")
 async def base_budget_real_run(projectName: str = Form("Presupuesto base real"), concepts_file: UploadFile = File(...), matrix_file: UploadFile | None = File(default=None)):
     return await _execute_base_budget_real(projectName, concepts_file)
+
+
+
+
+
+def _sample_apu_ai_context() -> dict[str, Any]:
+    """Small deterministic context used to test the external AI path without uploading files."""
+    return {
+        "kind": "base_budget",
+        "project_name": "Prueba IA APU",
+        "run_id": "AI-SMOKE-TEST",
+        "total_amount": 22747686.09,
+        "direct_cost": 18198148.87,
+        "indirect_cost": 4549537.22,
+        "indirect_pct": 25.0,
+        "section_breakdown": {
+            "materials": 6249711.70,
+            "labor": 2347014.99,
+            "equipment": 9576096.32,
+            "basics": 25325.87,
+            "direct": 18198148.87,
+            "indirect": 4549537.22,
+            "total_service": 22747686.09,
+        },
+        "concepts_read": 83,
+        "concepts_executable": 61,
+        "detail_rows": 1458,
+        "matched_matrices": 57,
+        "unmatched_matrices": 4,
+        "coverage_pct": 93.4,
+        "validations_count": 4,
+        "validation_severity_counts": {"Media": 4},
+        "validation_samples": [
+            {"severity": "Media", "type": "Matriz", "message": "Concepto sin matriz directa; requiere validación técnica."}
+        ],
+        "top_concepts": [
+            {"code": "DD06", "description": "Partida dominante", "unit": "PZA", "quantity": 1, "unit_price": 12808910.91, "amount": 12808910.91, "weight_pct": 56.3, "state": "Match Construdata"},
+            {"code": "EM01", "description": "Partida electromecánica", "unit": "PZA", "quantity": 1, "unit_price": 2099259.68, "amount": 2099259.68, "weight_pct": 9.2, "state": "Match Construdata"},
+            {"code": "EM11", "description": "Partida relevante", "unit": "PZA", "quantity": 1, "unit_price": 1228824.33, "amount": 1228824.33, "weight_pct": 5.4, "state": "Match Construdata"},
+        ],
+        "top_overcost_items": [
+            {"code": "EQ-01", "description": "Equipo con presión económica", "section": "EQUIPO Y HERRAMIENTA", "amount": 480000.0, "market_amount": 390000.0, "overcost": 90000.0, "overcost_pct": 23.08, "state": "Match Construdata"}
+        ],
+    }
+
+
+def _execute_ai_analysis_for_context(context: dict[str, Any]) -> dict[str, Any]:
+    status = _analysis_feature_status()
+    sections = _call_external_ai_analysis(context)
+    mode = status.get("mode")
+    if not sections:
+        sections = _local_expert_analysis(context)
+        if status.get("enabled") and status.get("mode") == "EXTERNAL_AI":
+            mode = "LOCAL_EXPERT_FALLBACK_AI_ERROR"
+    return {
+        "mode": mode,
+        "provider": status.get("provider"),
+        "model": status.get("model"),
+        "enabled": bool(status.get("enabled")),
+        "hasKey": bool(status.get("hasKey")),
+        "error": AI_ANALYSIS_LAST_ERROR,
+        "sections": sections,
+        "contextKeys": list(context.keys()),
+    }
+
+
+@app.get("/api/ai-analysis/status")
+def ai_analysis_status():
+    status = _analysis_feature_status()
+    # Never expose secrets, only whether the configured provider has a key.
+    return status
+
+
+
+
+@app.post("/api/ai-analysis/test")
+def ai_analysis_test(payload: dict[str, Any] | None = None):
+    """Smoke test for the AI analysis layer.
+
+    With ENABLE_AI_ANALYSIS=1 and a valid provider API key, this endpoint calls
+    the external model using either the supplied payload or a compact APU sample
+    context. Without a key, it returns the local expert fallback and explains the
+    mode, so the integration can be verified before running a full workbook.
+    """
+    context = payload if payload else _sample_apu_ai_context()
+    if not isinstance(context, dict):
+        raise HTTPException(status_code=400, detail="El payload debe ser un JSON object")
+    return _execute_ai_analysis_for_context(context)
 
 
 @app.get("/api/real-runs/{run_id}/summary")
