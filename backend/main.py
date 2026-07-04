@@ -5,13 +5,14 @@ import os
 import time
 import urllib.request
 import urllib.error
+import html
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -1277,7 +1278,7 @@ def _local_expert_analysis(context: dict[str, Any]) -> list[dict[str, str]]:
             {"section": "Resumen ejecutivo APU", "content": f"Presupuesto base de {context.get('project_name') or 'la corrida'} por {_money_text(total)}. Se leyeron {read} conceptos, {executable} fueron ejecutables y se generaron {detail_rows} filas APU. El costo directo es {_money_text(direct)} y el indirecto 25% equivale a {_money_text(indirect)}. Cobertura Construdata: {_pct_text(coverage)} ({matched} con match, {unmatched} en revisión)."},
             {"section": "Estructura del costo", "content": f"Desglose calculado: {section_text}. Esta separación permite ubicar si la presión económica está en materiales, MO, maquinaria/equipo o indirectos. El indirecto se mantiene fijo al 25%, por lo que el riesgo financiero se concentra en la correcta integración del costo directo."},
             {"section": "Concentración y partidas críticas", "content": f"{concentration_note}Top de impacto: {top_text}. La revisión debe iniciar por estas claves, porque concentran el presupuesto y cualquier ajuste de rendimiento, alcance o matriz modifica de forma material el resultado."},
-            {"section": "Referencias de mercado y alertas", "content": f"{alert_text}. {review_note} Las filas con fallback o sin referencia no deben considerarse validación plena de mercado; requieren soporte del analista o sustitución por una matriz Construdata más representativa."},
+            {"section": "Referencias de mercado y alertas", "content": f"{alert_text}. {review_note} Las filas sin referencia plena o sin referencia no deben considerarse validación plena de mercado; requieren soporte del analista o sustitución por una matriz Construdata más representativa."},
             {"section": "Riesgo económico", "content": f"Riesgo preliminar {risk}. La cobertura de {_pct_text(coverage)} permite usar el resultado como base de control, pero el cierre depende de validar las matrices asignadas a los conceptos críticos y documentar los casos en revisión."},
             {"section": "Acciones recomendadas", "content": "Primero validar las partidas críticas por monto; después revisar insumos con sobrecosto contra mercado y finalmente confirmar conceptos sin matriz directa. No negociar por porcentaje aislado: priorizar desviación monetaria, trazabilidad Construdata y consistencia técnica de rendimientos."},
         ]
@@ -1325,12 +1326,28 @@ def _local_expert_analysis(context: dict[str, Any]) -> list[dict[str, str]]:
         over_text = " | ".join(over_lines[:4]) or "no se identificaron sobrecostos monetarios priorizados con referencia de mercado"
         section_text = " | ".join(section_lines[:6]) or "sin desglose por sección disponible"
         top_text = " | ".join(top_concept_lines[:4]) or "sin top de conceptos calculado"
+        if len(providers) <= 1:
+            p0 = providers[0] if providers else {}
+            pname = p0.get("name", "Proveedor")
+            total = float(p0.get("total_amount", 0) or 0)
+            market = float(p0.get("market_total_amount", 0) or 0)
+            over = float(p0.get("overcost_amount", 0) or 0)
+            over_pct = float(p0.get("overcost_pct", 0) or 0)
+            market_phrase = f" frente a mercado {_money_text(market)}, con diferencia {_money_text(over)} ({_pct_text(over_pct)})" if market else " sin total de mercado consolidado"
+            return [
+                {"section": "Resumen ejecutivo APU", "content": f"Análisis individual del proveedor {pname}: monto ofertado {_money_text(total)}{market_phrase}. Al existir un solo proveedor, la lectura correcta es competitividad contra mercado, trazabilidad de referencias y concentración del costo."},
+                {"section": "Sobrecostos contra mercado", "content": f"Alertas priorizadas: {over_text}. La revisión debe enfocarse en desviación monetaria, trazabilidad de mercado y partidas de mayor impacto."},
+                {"section": "Resumen por sección", "content": f"{section_text}. El diagnóstico separa Materiales, Mano de obra, Maquinaria/equipo e Indirectos para ubicar si la presión económica viene de insumos, rendimientos, equipos o estructura financiera."},
+                {"section": "Partidas críticas", "content": f"Conceptos de mayor impacto: {top_text}. Estas partidas explican la mayor parte del monto y deben revisarse antes que diferencias pequeñas o aisladas."},
+                {"section": "Referencias y trazabilidad", "content": f"Se detectan {no_ref} insumos sin referencia y {fallback} valores fallback. Todo valor sin referencia plena debe leerse como ausencia de validación Construdata, no como precio de mercado confirmado."},
+                {"section": "Riesgo y acciones", "content": f"Riesgo preliminar {risk}. Validar matches Construdata en partidas críticas, revisar rendimiento de MO/maquinaria, confirmar indirectos y documentar insumos sin referencia antes de usar la propuesta como base de negociación."},
+            ]
         return [
             {"section": "Resumen ejecutivo APU", "content": f"Corrida de {mode_text}. Mejor posición económica: {best}; mayor monto: {worst}; brecha entre extremos {_pct_text(spread)}. Totales evaluados: {provider_text}."},
             {"section": "Sobrecostos contra mercado", "content": f"Alertas por contratista: {over_text}. Estos hallazgos deben revisarse por desviación monetaria y no solo por porcentaje, porque las partidas de bajo importe pueden distorsionar la prioridad real."},
             {"section": "Resumen por sección", "content": f"{section_text}. Separar Materiales, MO, Maquinaria/equipo e Indirectos permite identificar si la diferencia viene de precios de insumos, rendimientos, equipos o estructura financiera."},
             {"section": "Partidas críticas", "content": f"Conceptos de mayor impacto: {top_text}. La negociación debe concentrarse en el 80% económico y en conceptos con sobrecosto frente a mercado, no en diferencias menores o aisladas."},
-            {"section": "Referencias y trazabilidad", "content": f"Se detectan {no_ref} insumos sin referencia y {fallback} valores fallback. Cuando el mercado usa fallback, el valor no representa validación Construdata; solo evita inventar un precio y debe quedar sujeto a revisión."},
+            {"section": "Referencias y trazabilidad", "content": f"Se detectan {no_ref} insumos sin referencia y {fallback} valores fallback. Cuando el mercado usa un valor sin referencia plena, el valor no representa validación Construdata; solo evita inventar un precio y debe quedar sujeto a revisión."},
             {"section": "Riesgo y acciones", "content": f"Riesgo preliminar {risk}. Revisar primero al contratista con mayor sobrecosto, validar matches Construdata de partidas críticas, solicitar soporte de rendimientos y separar negociación de Materiales, MO, Maquinaria/equipo e Indirectos."},
         ]
     return [
@@ -1345,7 +1362,7 @@ def _ai_system_prompt() -> str:
         "Redacta en español natural, profesional y accionable para un analista de precios unitarios. "
         "Usa únicamente los datos del JSON proporcionado. Está prohibido inventar montos, porcentajes, contratistas, partidas, causas, matches o referencias. "
         "Tu análisis debe usar cifras concretas cuando existan: nombres de contratistas, monto ofertado, monto mercado, sobrecosto monetario y porcentual, cobertura Construdata, Materiales, Mano de obra, Maquinaria/equipo, Básicos e Indirectos. "
-        "Señala alertas de mercado: fallback, sin referencia, conceptos sin matriz directa, sobrecostos por partida/insumo, partidas de mayor impacto y concentración 80/20. "
+        "Señala alertas de mercado: valores sin referencia plena, sin referencia, conceptos sin matriz directa, sobrecostos por partida/insumo, partidas de mayor impacto y concentración 80/20. "
         "No copies nombres largos completos de servicios; usa códigos y descripciones cortas. No repitas la misma idea entre secciones. "
         "La IA no calcula ni corrige importes; solo interpreta valores ya calculados. Si un dato no está en el JSON, omítelo. "
         "Devuelve SOLO un objeto JSON válido. No uses markdown, no uses backticks, no agregues texto antes o después del JSON. "
@@ -1546,21 +1563,16 @@ def _write_analisis_ia(ws, run: CanonicalRun | None = None):
     model = analysis.get("model", "deterministic") or "deterministic"
     context = analysis.get("context", {}) or {}
 
-    _setup_sheet(ws, "Análisis IA", "Diagnóstico profesional basado únicamente en datos calculados del modelo canónico.", 10)
+    _setup_sheet(ws, "Análisis IA", "Diagnóstico profesional para revisión de precios unitarios.", 10)
     _set_widths(ws, {"A": 26, "B": 92, "C": 18, "D": 18, "E": 18, "F": 18, "G": 18, "H": 18, "I": 18, "J": 18})
 
-    ws.cell(3, 1, "Modo análisis")
-    ws.cell(3, 2, f"{mode} · {provider} · {model}")
+    ws.cell(3, 1, "Tipo de análisis")
+    ws.cell(3, 2, "Diagnóstico profesional automatizado")
     ws.cell(3, 1).font = Font(bold=True, color=BRAND["navy"])
     ws.cell(3, 2).font = Font(color=BRAND["muted"])
-    if analysis.get("error"):
-        ws.cell(3, 4, "Error IA")
-        ws.cell(3, 5, str(analysis.get("error"))[:220])
-        ws.cell(3, 4).font = Font(bold=True, color="B45309")
-        ws.cell(3, 5).font = Font(color="B45309")
-        ws.cell(3, 5).alignment = Alignment(wrap_text=True)
-    ws.cell(4, 1, "Regla metodológica")
-    ws.cell(4, 2, "La IA interpreta datos calculados; no modifica importes, operadores, cantidades, precios unitarios ni matches Construdata.")
+    # Detalles técnicos de proveedor/modelo/error no se muestran en el Excel comercial.
+    ws.cell(4, 1, "Alcance")
+    ws.cell(4, 2, "El diagnóstico usa únicamente los datos calculados de la corrida; no modifica importes, operadores, cantidades, precios unitarios ni referencias de mercado.")
     ws.cell(4, 1).font = Font(bold=True, color=BRAND["navy"])
     ws.cell(4, 2).alignment = Alignment(wrap_text=True)
 
@@ -1579,7 +1591,7 @@ def _write_analisis_ia(ws, run: CanonicalRun | None = None):
         _add_table(ws, f"A6:B{6+len(sections)}", "AnalisisIATable", "TableStyleMedium2")
 
     row = 8 + len(sections)
-    _section_label(ws, row, "Evidencia canónica usada por el análisis", 10)
+    _section_label(ws, row, "Evidencia usada por el análisis", 10)
     row += 2
 
     if context.get("kind") == "base_budget":
@@ -1674,9 +1686,10 @@ def _write_analisis_ia(ws, run: CanonicalRun | None = None):
 
     elif context.get("kind") == "comparison":
         # Provider ranking table
-        _section_label(ws, row, "Ranking económico por contratista", 9)
+        label_p = "Lectura económica del proveedor" if len((context.get("providers") or [])) <= 1 else "Ranking económico por proveedor"
+        _section_label(ws, row, label_p, 9)
         row += 1
-        headers_p = ["Contratista", "Monto", "Mercado", "Sobrecosto", "%", "Conceptos", "Refs.", "Fallback", "Sin referencia"]
+        headers_p = ["Proveedor", "Monto", "Mercado", "Diferencia", "%", "Conceptos", "Referencias", "Sin ref. plena", "Sin referencia"]
         for c, h in enumerate(headers_p, 1): ws.cell(row, c, h)
         _header_style(ws, row, 1, len(headers_p))
         start = row + 1
@@ -1903,6 +1916,7 @@ def _base_run_summary(run: CanonicalRun, report_path: Path | None = None, source
         'status': 'COMPLETED_WITH_WARNINGS' if unmatched else 'COMPLETED',
         'sourceFile': source_file,
         'downloadUrl': f'/api/real-runs/{run.run_id}/report',
+        'aiReportUrl': f'/api/real-runs/{run.run_id}/ai-report',
         'reportFile': report_path.name if report_path else '',
         'conceptsRead': len(run.base_concepts),
         'conceptsExecutable': len(exec_concepts),
@@ -1921,9 +1935,6 @@ def _base_run_summary(run: CanonicalRun, report_path: Path | None = None, source
         'segments': segments,
         'topConcepts': top_concepts,
         'executiveFindings': findings,
-        'analysisMode': analysis.get('mode'),
-        'analysisProvider': analysis.get('provider'),
-        'analysisModel': analysis.get('model'),
     }
 
 
@@ -2539,6 +2550,7 @@ async def comparison_real_run(
         "projectName": projectName,
         "providers": [{"name": p.name, "concepts": len(p.concepts), "apuItems": len(p.apu_items), "conceptsFile": p.concepts_file, "matrixFile": p.matrix_file} for p in providers],
         "downloadUrl": f"/api/real-runs/{rid}/report",
+        "aiReportUrl": f"/api/real-runs/{rid}/ai-report",
         "summaryUrl": f"/api/real-runs/{rid}/summary",
         "summary": summary,
         "note": "Datos reales parseados con modelo canónico; homologación avanzada en evolución."
@@ -2558,6 +2570,7 @@ def _comparison_run_summary(run: CanonicalRun, report_path: Path | None = None) 
         "projectName": run.project_name,
         "status": "COMPLETED_WITH_WARNINGS",
         "downloadUrl": f"/api/real-runs/{run.run_id}/report",
+        "aiReportUrl": f"/api/real-runs/{run.run_id}/ai-report",
         "reportFile": report_path.name if report_path else "",
         "providersCount": len(run.providers or []),
         "bestProvider": context.get("best_provider", ""),
@@ -2567,8 +2580,6 @@ def _comparison_run_summary(run: CanonicalRun, report_path: Path | None = None) 
         "economicSpreadPct": context.get("economic_spread_pct", 0),
         "providers": providers,
         "executiveFindings": [s.get("content", "") for s in analysis.get("sections", [])],
-        "analysisMode": analysis.get("mode"),
-        "analysisProvider": analysis.get("provider"),
     }
 
 
@@ -2601,6 +2612,7 @@ async def _execute_base_budget_real(projectName: str, concepts_file: UploadFile)
         "apuItems": len(base_apu_items),
         "validations": len(base_validations),
         "downloadUrl": f"/api/real-runs/{rid}/report",
+        "aiReportUrl": f"/api/real-runs/{rid}/ai-report",
         "sourceFile": concepts_file.filename,
         "mode": "REAL",
         "summaryUrl": f"/api/real-runs/{rid}/summary",
@@ -2701,6 +2713,120 @@ def ai_analysis_test(payload: dict[str, Any] | None = None):
     return _execute_ai_analysis_for_context(context)
 
 
+
+def _html_money(value: Any) -> str:
+    try:
+        return f"${float(value or 0):,.2f}"
+    except Exception:
+        return "$0.00"
+
+
+def _html_pct(value: Any) -> str:
+    try:
+        return f"{float(value or 0):,.2f}%"
+    except Exception:
+        return "0.00%"
+
+
+def _html_escape(value: Any) -> str:
+    return html.escape(str(value if value is not None else ""))
+
+
+def _html_kpi(title: str, value: str, subtitle: str = "") -> str:
+    return '<div class="kpi"><div class="kpi-t">{}</div><div class="kpi-v">{}</div><div class="kpi-s">{}</div></div>'.format(_html_escape(title), _html_escape(value), _html_escape(subtitle))
+
+
+def _html_table(headers: list[str], rows: list[list[Any]]) -> str:
+    head = ''.join('<th>{}</th>'.format(_html_escape(h)) for h in headers)
+    body_rows = []
+    for row in rows:
+        cells = ''.join('<td>{}</td>'.format(_html_escape(v)) for v in row)
+        body_rows.append('<tr>{}</tr>'.format(cells))
+    body = ''.join(body_rows)
+    return '<div class="table-wrap"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table></div>'.format(head, body)
+
+
+def _html_bar(label: str, value: float, total: float) -> str:
+    pct = (value / total * 100) if total else 0
+    pct = max(0, min(100, pct))
+    return '<div class="bar"><div><b>{}</b><span>{} / {}</span></div><i><em style="width:{:.2f}%"></em></i></div>'.format(_html_escape(label), _html_money(value), _html_pct(pct), pct)
+
+
+def _run_ai_report_html(run: CanonicalRun, summary: dict[str, Any] | None = None) -> str:
+    analysis = generate_expert_ai_analysis(run, summary)
+    context = analysis.get("context") or _run_analysis_context(run, summary)
+    sections = analysis.get("sections") or []
+    kind = context.get("kind")
+    mode = str(analysis.get("mode") or "LOCAL_EXPERT")
+    provider = str(analysis.get("provider") or "local")
+    model = str(analysis.get("model") or "deterministic")
+    is_external = "EXTERNAL" in mode.upper()
+    title = "Diagnostico IA - Presupuesto base" if kind == "base_budget" else "Diagnostico IA - Comparativa APU"
+    badge = "Diagnóstico generado"
+    badge_cls = "ok"
+
+    cards = []
+    bars = ""
+    tables = []
+
+    if kind == "base_budget":
+        total = float(context.get("total_amount", 0) or 0)
+        direct = float(context.get("direct_cost", 0) or 0)
+        indirect = float(context.get("indirect_cost", 0) or 0)
+        coverage = float(context.get("coverage_pct", 0) or 0)
+        cards = [
+            _html_kpi("Monto total", _html_money(total), "Presupuesto base"),
+            _html_kpi("Costo directo", _html_money(direct), "Antes de indirecto"),
+            _html_kpi("Indirecto 25%", _html_money(indirect), "Regla financiera"),
+            _html_kpi("Cobertura", _html_pct(coverage), f"{context.get('matched_matrices',0)} match / {context.get('unmatched_matrices',0)} revision"),
+        ]
+        br = context.get("section_breakdown") or {}
+        for key, label in [("materials","Materiales"),("labor","Mano de obra"),("equipment","Maquinaria / equipo"),("basics","Basicos"),("indirect","Indirecto")]:
+            amount = float(br.get(key, 0) or 0)
+            if amount:
+                bars += _html_bar(label, amount, total)
+        top_rows = []
+        for item in (context.get("top_concepts") or [])[:10]:
+            top_rows.append([item.get("code",""), item.get("description",""), item.get("unit",""), item.get("quantity",0), _html_money(item.get("amount",0)), _html_pct(item.get("weight_pct",0)), item.get("state","")])
+        tables.append(("Partidas criticas por impacto", _html_table(["Codigo","Descripcion corta","Unidad","Cantidad","Importe","% Part.","Estado"], top_rows)))
+    else:
+        providers = context.get("providers") or []
+        count = int(context.get("providers_count", len(providers)) or 0)
+        cards = [
+            _html_kpi("Tipo de corrida", "1 proveedor" if count <= 1 else f"{count} proveedores", "No hay ranking" if count <= 1 else "Ranking economico"),
+            _html_kpi("Brecha economica", _html_pct(context.get("economic_spread_pct", 0)), "No aplica" if count <= 1 else "Entre extremos"),
+            _html_kpi("Sin referencia", str(context.get("total_no_reference_items", 0)), "Insumos"),
+            _html_kpi("Sin referencia plena", str(context.get("total_fallback_items", 0)), "Valores sujetos a revisión"),
+        ]
+        provider_rows = []
+        for p in providers:
+            provider_rows.append([p.get("name",""), _html_money(p.get("total_amount",0)), _html_money(p.get("market_total_amount",0)), _html_money(p.get("overcost_amount",0)), _html_pct(p.get("overcost_pct",0)), p.get("concepts_executable",0), p.get("reference_items",0), p.get("fallback_items",0), p.get("no_reference_items",0)])
+        title_table = "Lectura individual contra mercado" if count <= 1 else "Ranking economico por contratista"
+        tables.append((title_table, _html_table(["Proveedor","Monto","Mercado","Diferencia","%","Conceptos","Referencias","Sin ref. plena","Sin referencia"], provider_rows)))
+        if providers:
+            p0 = providers[0]
+            total = float(p0.get("total_amount", 0) or 0)
+            br = (p0.get("section_breakdown") or {}).get("contractor") or {}
+            for key, label in [("materials","Materiales"),("labor","Mano de obra"),("equipment","Maquinaria / equipo"),("direct","Costo directo"),("indirect","Indirectos")]:
+                amount = float(br.get(key, 0) or 0)
+                if amount:
+                    bars += _html_bar(label, amount, total)
+        alert_rows = []
+        for p in providers:
+            for item in (p.get("top_overcost_items") or [])[:10]:
+                alert_rows.append([p.get("name",""), item.get("code",""), item.get("description",""), item.get("section",""), _html_money(item.get("amount",0)), _html_money(item.get("market_amount",0)), _html_money(item.get("delta",0)), _html_pct(item.get("delta_pct",0)), item.get("match","")])
+        if alert_rows:
+            tables.append(("Alertas de sobrecosto contra mercado", _html_table(["Contratista","Codigo","Descripcion","Seccion","Importe","Mercado","Diferencia","%","Match"], alert_rows)))
+
+    insight_html = ''.join('<article class="insight"><h3>{}</h3><p>{}</p></article>'.format(_html_escape(s.get("section","")), _html_escape(s.get("content",""))) for s in sections)
+    table_html = ''.join('<section class="panel"><h2>{}</h2>{}</section>'.format(_html_escape(t), body) for t, body in tables)
+    error = analysis.get("error")
+    error_html = ''
+    css = """
+    body{margin:0;background:#07111f;color:#eaf1fb;font-family:Inter,Segoe UI,Arial,sans-serif}.wrap{max-width:1320px;margin:auto;padding:34px}.hero,.panel,.insight{background:linear-gradient(135deg,#132642,#0f1d33);border:1px solid #263850;border-radius:24px;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.25)}h1{margin:10px 0;font-size:34px}p{line-height:1.58;color:#c7d2e5}.badge{display:inline-flex;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:800;background:#20324d;color:#dbeafe}.badge.ok{background:rgba(74,222,128,.16);color:#86efac}.badge.warn{background:rgba(251,191,36,.16);color:#fde68a}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:18px}.kpi{background:#081525;border:1px solid #263850;border-radius:18px;padding:16px}.kpi-t{font-size:12px;color:#9fb0c7;text-transform:uppercase;letter-spacing:.08em}.kpi-v{font-size:24px;font-weight:900;margin-top:7px}.kpi-s{font-size:13px;color:#9fb0c7;margin-top:5px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}.insights{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:18px}.bar{margin:12px 0}.bar div{display:flex;justify-content:space-between;color:#9fb0c7;font-size:13px}.bar b{color:#eaf1fb}.bar i{display:block;height:12px;background:#081525;border:1px solid #263850;border-radius:999px;overflow:hidden;margin-top:6px}.bar em{display:block;height:100%;background:linear-gradient(90deg,#67a8ff,#4ade80)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #263850;padding:10px;text-align:left;vertical-align:top}th{background:rgba(103,168,255,.12);color:#dbeafe}.table-wrap{overflow:auto}.actions{display:flex;gap:12px;margin-top:18px}.btn{background:#2563eb;color:white;text-decoration:none;border-radius:12px;padding:12px 16px;font-weight:800}.btn.secondary{background:#17243a;border:1px solid #263850}.alert{margin-top:16px;background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.32);padding:14px;border-radius:16px;color:#fde68a}@media(max-width:900px){.kpis,.grid,.insights{grid-template-columns:1fr}.wrap{padding:18px}}
+    """
+    return f"""<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_html_escape(title)}</title><style>{css}</style></head><body><main class='wrap'><section class='hero'><span class='badge {badge_cls}'>{_html_escape(badge)}</span><h1>{_html_escape(title)}</h1><p>Diagnóstico APU con KPIs, tablas de evidencia, desglose por secciones, alertas contra mercado y prioridades de revisión. Si solo hay un proveedor, el resultado se presenta como lectura individual contra mercado, sin ranking artificial.</p><div class='actions'><a class='btn' href='/api/real-runs/{_html_escape(run.run_id)}/report'>Descargar Excel</a></div>{error_html}<div class='kpis'>{''.join(cards)}</div></section><div class='grid'><section class='panel'><h2>Resumen por sección</h2>{bars or '<p>Sin desglose por sección disponible.</p>'}</section><section class='panel'><h2>Criterio de lectura</h2><p>El diagnóstico prioriza impacto económico, trazabilidad de referencia, desviación contra mercado y concentración del costo. Las tablas muestran la evidencia calculada de la corrida para facilitar revisión y negociación.</p></section></div><section class='insights'>{insight_html}</section>{table_html}</main></body></html>"""
+
 @app.get("/api/real-runs/{run_id}/summary")
 def real_run_summary(run_id: str):
     summary = BASE_RUN_SUMMARIES.get(run_id)
@@ -2715,6 +2841,15 @@ def latest_base_run_summary():
     if not summary:
         raise HTTPException(status_code=404, detail="No hay presupuesto base real generado en esta sesión")
     return summary
+
+
+@app.get("/api/real-runs/{run_id}/ai-report", response_class=HTMLResponse)
+def real_run_ai_report(run_id: str):
+    run = REAL_RUNS.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Corrida no encontrada")
+    summary = BASE_RUN_SUMMARIES.get(run_id)
+    return HTMLResponse(_run_ai_report_html(run, summary))
 
 
 @app.get("/api/real-runs/{run_id}/report")

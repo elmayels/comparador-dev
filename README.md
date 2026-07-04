@@ -378,3 +378,8 @@ AI_ANALYSIS_PROVIDER=anthropic
 ANTHROPIC_API_KEY=your_key
 AI_ANALYSIS_MODEL=claude-haiku-4-5
 ```
+
+
+## V3.8.1 Product-facing diagnostic cleanup
+- Product UI and Excel no longer expose AI provider/model/fallback/error technical details.
+- Diagnostic remains available in Excel and HTML, but commercial wording focuses on KPIs, market evidence, overcosts, references and review priorities.
