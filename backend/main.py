@@ -856,7 +856,7 @@ def _short_desc(text: str, limit: int = 72) -> str:
     return t[:limit - 1].rstrip() + "…"
 
 
-def _section_label(section: str) -> str:
+def _apu_section_name(section: str) -> str:
     s = str(section or "").upper()
     if "MATERIAL" in s:
         return "Materiales"
@@ -906,7 +906,7 @@ def _top_apu_overcost_items(items: list[Any], qty_by_key: dict[str, float], limi
         rows.append({
             "code": getattr(it, "code", "") or "",
             "description": _short_desc(getattr(it, "description", "") or "", 90),
-            "section": _section_label(getattr(it, "section", "") or ""),
+            "section": _apu_section_name(getattr(it, "section", "") or ""),
             "amount": round(amount * qty, 2),
             "market_amount": round(market * qty, 2),
             "delta": round(delta * qty, 2),
