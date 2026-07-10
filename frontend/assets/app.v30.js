@@ -649,19 +649,21 @@ function renderProfessionalDiagnostic(diag, meta={}){
     shortText(s.comment, 80)
   ]);
   const sectionBars = sections.map(s=>`<div class="bar-row"><div class="bar-meta"><strong>${esc(s.section)}</strong><span>${fmtPct(s.participation_pct)} · ${s.contractor_amount==null?'N/A':fmtMoney(s.contractor_amount)}</span></div><div class="bar-track"><span style="width:${Math.max(2, Math.min(100, Number(s.participation_pct||0)/maxSection*100))}%"></span></div></div>`).join('');
-  const topRows = (arr, kind)=> (arr||[]).slice(0,10).map(i=>[
-    esc(i.code || i.concept_code || '—'),
-    shortText(i.description || i.item || '', 80),
-    esc(i.unit || '—'),
-    kind==='labor' ? esc(i.operator || i.op || '—') : new Intl.NumberFormat('es-MX',{maximumFractionDigits:4}).format(Number(i.quantity || 0)),
-    i.contractor_unit_price == null ? 'N/A' : fmtMoney(i.contractor_unit_price),
-    i.market_unit_price == null ? 'N/A' : fmtMoney(i.market_unit_price),
-    i.difference_amount == null ? 'N/A' : fmtMoney(i.difference_amount),
-    i.difference_pct == null ? 'N/A' : fmtPct(i.difference_pct),
-    i.impact_amount == null ? 'N/A' : fmtMoney(i.impact_amount),
-    kind==='materials' || kind==='equipment' ? shortText(i.market_reference, 70) : shortText(i.recommended_action, 90),
-    kind==='materials' || kind==='equipment' ? shortText(i.recommended_action, 90) : ''
-  ].filter((_,idx)=> kind==='labor' ? idx!==9 : true));
+  const topRows = (arr, kind)=> (arr||[]).slice(0,10).map(i=>{
+    const common = [
+      esc(i.code || i.concept_code || '—'),
+      shortText(i.description || i.item || '', 80),
+      esc(i.unit || '—'),
+      kind==='labor' ? esc(i.operator || i.op || '—') : new Intl.NumberFormat('es-MX',{maximumFractionDigits:4}).format(Number(i.quantity || 0)),
+      i.contractor_unit_price == null ? 'N/A' : fmtMoney(i.contractor_unit_price),
+      i.market_unit_price == null ? 'N/A' : fmtMoney(i.market_unit_price),
+      i.difference_amount == null ? 'N/A' : fmtMoney(i.difference_amount),
+      i.difference_pct == null ? 'N/A' : fmtPct(i.difference_pct),
+      i.impact_amount == null ? 'N/A' : fmtMoney(i.impact_amount)
+    ];
+    if(kind==='labor') return [...common, shortText(i.recommended_action, 90)];
+    return [...common, shortText(i.market_reference, 70), shortText(i.recommended_action, 90)];
+  });
   const conceptRows = (diag?.critical_concepts || []).slice(0,10).map(c=>[
     esc(c.concept_code || '—'), shortText(c.description, 80),
     c.contractor_amount==null?'N/A':fmtMoney(c.contractor_amount),
