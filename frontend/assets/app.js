@@ -620,45 +620,6 @@ function statusChip(status){
   return `<span class="badge ${statusClass(s)}">${statusLabel(s)}</span>`;
 }
 
-function riskLevelKeyFromDecision(decision, headline){
-  const raw = String(decision?.verdict || decision?.priority || headline?.general_status || 'REVIEW').toUpperCase();
-  if(raw.includes('HIGH') || raw.includes('CRITICAL')) return 'HIGH';
-  if(raw.includes('ACCEPT') || raw === 'OK' || raw === 'LOW') return 'LOW';
-  return 'MEDIUM';
-}
-function riskDriverRows(diag){
-  const rows = diag?.risk_metrics || [];
-  if(rows.length) return rows.slice(0,9).map(r=>[
-    esc(r.metric || r.label || 'Métrica'),
-    esc(r.value_label || r.value || 'N/A'),
-    statusChip(r.level || 'MEDIUM'),
-    shortText(r.why || r.reason || r.criteria || '', 120),
-    shortText(r.action || '', 120)
-  ]);
-  const alerts = diag?.market_alerts || [];
-  return alerts.slice(0,6).map(a=>[
-    shortText(a.alert_type || 'Alerta', 60),
-    a.deviation_pct == null ? 'N/A' : fmtPct(a.deviation_pct),
-    statusChip(a.severity || 'MEDIUM'),
-    shortText(a.item || a.section || '', 120),
-    shortText(a.analyst_check || '', 120)
-  ]);
-}
-function riskDecisionPanel(diag){
-  const h = diag?.headline || {};
-  const decision = diag?.final_decision || {};
-  const active = riskLevelKeyFromDecision(decision, h);
-  const levels = [
-    ['LOW','Bajo','Sin desviaciones materiales o alertas críticas.'],
-    ['MEDIUM','Medio','Existen variables a revisar antes del cierre.'],
-    ['HIGH','Alto','Hay impacto económico, trazabilidad o concentración crítica.']
-  ];
-  return `<div class="risk-decision-panel card">
-    <div class="risk-scale">${levels.map(([key,label,desc])=>`<div class="risk-step ${key===active?'active':''} ${statusClass(key)}"><span>${esc(label)}</span><small>${esc(desc)}</small></div>`).join('')}</div>
-    <div class="risk-driver-head"><h3>Variables que explican el dictamen</h3><p class="muted">El nivel se ubica por impacto económico, desviación contra mercado, trazabilidad e indirectos declarados.</p></div>
-    ${diagTable(['Variable','Valor','Nivel','Por qué pesa','Acción'], riskDriverRows(diag))}
-  </div>`;
-}
 function diagTable(headers, rows){
   const body = (rows && rows.length) ? rows.map(r=>`<tr>${r.map(c=>`<td>${c ?? '—'}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${headers.length}" class="muted">Sin datos calculados para esta sección</td></tr>`;
   return `<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
@@ -672,7 +633,11 @@ function renderProfessionalDiagnostic(diag, meta={}){
   const decision = diag?.final_decision || {};
   const sections = diag?.section_summary || [];
   const maxSection = Math.max(...sections.map(s=>Number(s.participation_pct||0)), 1);
-  const kpiCards = (diag?.kpis || []).slice(0,12).map(k=>`<div class="card kpi diag-kpi"><label>${esc(k.label)}</label><strong>${diagVal(k)}</strong><span>${statusChip(k.status || 'neutral')}</span></div>`).join('');
+  const hiddenKpis = new Set(['CON REFERENCIA','SIN REFERENCIA PLENA','COBERTURA DE MERCADO','ALERTAS CRITICAS','ALERTAS CRÍTICAS']);
+  const kpiCards = (diag?.kpis || [])
+    .filter(k => !hiddenKpis.has(String(k.label || '').trim().toUpperCase()))
+    .slice(0,12)
+    .map(k=>`<div class="card kpi diag-kpi"><label>${esc(k.label)}</label><strong>${diagVal(k)}</strong><span>${statusChip(k.status || 'neutral')}</span></div>`).join('');
   const sectionRows = sections.map(s=>[
     `<strong>${esc(s.section)}</strong>`,
     s.contractor_amount == null ? 'N/A' : fmtMoney(s.contractor_amount),
@@ -730,29 +695,10 @@ function renderProfessionalDiagnostic(diag, meta={}){
   const reviewCount = (diag?.analyst_review_plan || []).length;
   return `
     <div class="diagnostic-native">
-      <div class="risk-banner ${riskClass}">
-        <div class="risk-mark">${riskClass === 'bad' ? '!' : (riskClass === 'warn' ? 'i' : '✓')}</div>
-        <div class="risk-copy">
-          <span>${esc(riskTitle)}</span>
-          <strong>${statusLabel(riskKey)}</strong>
-          <p>${esc(decision.main_reason || line)}</p>
-        </div>
-        <div class="risk-mini"><label>Alertas altas</label><strong>${criticalAlerts}</strong></div>
-        <div class="risk-mini"><label>Acciones de revisión</label><strong>${reviewCount}</strong></div>
-      </div>
-      ${riskDecisionPanel(diag)}
-      <div class="diag-hero card ${riskClass}">
-        <div>
-          <div class="eyebrow"><span></span>${esc(meta.runType || h.run_type || 'Diagnóstico profesional')}</div>
-          <h2>${esc(title)}</h2>
-          <p>${esc(line)}</p>
-        </div>
-        <div class="decision-card ${riskClass}">
-          <label>Dictamen general</label>
-          <strong>${statusLabel(riskKey)}</strong>
-          <p>${esc(decision.next_action || decision.main_reason || line)}</p>
-          <div class="decision-actions">${statusChip(riskKey)}<span>Prioridad: ${statusLabel(decision.priority || riskKey)}</span></div>
-        </div>
+      <div class="card diagnostic-head">
+        <div class="eyebrow"><span></span>${esc(meta.runType || h.run_type || 'Diagnóstico profesional')}</div>
+        <h2>${esc(title)}</h2>
+        <p>${esc(line)}</p>
       </div>
       <div class="grid cols-4 diag-kpi-grid">${kpiCards || '<div class="callout">Sin KPIs disponibles.</div>'}</div>
       <div class="grid cols-2" style="margin-top:16px">
@@ -765,10 +711,7 @@ function renderProfessionalDiagnostic(diag, meta={}){
       <div class="card" style="margin-top:16px"><h3>Partidas críticas del catálogo</h3>${diagTable(['Partida','Descripción','Importe','Mercado','Dif. $','Dif. %','% total','Causa probable','Acción'], conceptRows)}</div>
       <div class="card" style="margin-top:16px"><h3>Alertas contra mercado</h3>${diagTable(['Severidad','Tipo','Partida/Insumo','Sección','Valor','Mercado','Desviación','Qué revisar'], alertRows)}</div>
       <div class="card" style="margin-top:16px" id="plan"><h3>Plan de revisión para el analista</h3>${diagTable(['Prioridad','Qué revisar','Por qué importa','Dónde buscar','Decisión requerida'], planRows)}</div>
-      <div class="grid cols-2" style="margin-top:16px">
-        <div class="card"><h3>Diagnóstico profesional breve</h3>${diagTable(['Tema','Lectura'], diagRows)}</div>
-        <div class="card"><h3>Conclusión ejecutiva</h3>${diagTable(['Dictamen','Motivo principal','Próxima acción','Prioridad'], [[statusChip(decision.verdict), shortText(decision.main_reason,130), shortText(decision.next_action,130), statusChip(decision.priority)]])}</div>
-      </div>
+      <div class="card" style="margin-top:16px"><h3>Diagnóstico profesional breve</h3>${diagTable(['Tema','Lectura'], diagRows)}</div>
     </div>`;
 }
 

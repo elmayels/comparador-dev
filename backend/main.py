@@ -2898,6 +2898,19 @@ def _write_base_budget_report(wb):
     detail = wb.create_sheet("Detalle Base")
     _write_canonical_apu_detail_sheet(detail, "BASE", "1F4E79", variant="A", include_market=False, source_type="BASE_BUDGET")
 
+def _prune_temp_comparison_sheets(wb):
+    """Temporary commercial output: hide/remove non-required comparison tabs.
+    Keep only Comparativa, Detalle - <Proveedor> and Análisis IA.
+    This does not change calculations or internal diagnostics.
+    """
+    allowed_exact = {"Comparativa", "Análisis IA"}
+    for sheet in list(wb.worksheets):
+        title = str(sheet.title or "")
+        keep = title in allowed_exact or title.startswith("Detalle - ")
+        if not keep:
+            wb.remove(sheet)
+
+
 def _write_comparison_report(wb, provider_names: Optional[List[str]] = None):
     names = _safe_provider_names(provider_names)
     ws = wb.active
@@ -2912,6 +2925,7 @@ def _write_comparison_report(wb, provider_names: Optional[List[str]] = None):
     _write_validaciones(wb.create_sheet("Validaciones"))
     _write_analisis_ia(wb.create_sheet("Análisis IA"))
     _write_metricas_riesgo(wb.create_sheet("Métricas de Riesgo"))
+    _prune_temp_comparison_sheets(wb)
 
 
 def build_report(kind: str, provider_names: Optional[List[str]] = None) -> Path:
@@ -3554,6 +3568,7 @@ def build_real_comparison_report(run: CanonicalRun) -> Path:
     _write_real_validaciones(wb.create_sheet("Validaciones"), run)
     _write_analisis_ia(wb.create_sheet("Análisis IA"), run)
     _write_metricas_riesgo(wb.create_sheet("Métricas de Riesgo"), run)
+    _prune_temp_comparison_sheets(wb)
     for sheet in wb.worksheets:
         sheet.sheet_view.showGridLines = False
     out = REPORTS_DIR / f"apu_v1_real_comparison_{run.run_id}.xlsx"
